@@ -85,11 +85,27 @@ func (n *Node) refreshPeers() error {
 		return err
 	}
 
+	channelsResp, err := n.lightning.ListPeerChannels("")
+	if err != nil {
+		n.Logln(glightning.Unusual, err)
+		return err
+	}
+
 	n.PeersLock.Lock()
 	defer n.PeersLock.Unlock()
+
 	for _, peer := range peers {
+		peer.Channels = make([]*glightning.PeerChannel, 0)
 		n.Peers[peer.Id] = peer
 	}
+
+	for _, channel := range channelsResp.Channels {
+		peer, ok := n.Peers[channel.PeerId]
+		if ok {
+			peer.Channels = append(peer.Channels, channel)
+		}
+	}
+
 	return nil
 }
 

@@ -18,6 +18,8 @@ github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/elementsproject/glightning v0.0.0-20230525134205-ef34d849f564 h1:orSb6yU9D1Ow9epbRZJVAfGF6vC1HxaPqg9zLWga6Hw=
 github.com/elementsproject/glightning v0.0.0-20230525134205-ef34d849f564/go.mod h1:YAdIeSyx8VEhDCtEaGOJLmWNpPaQ3x4vYSAj9Vrppdo=
+github.com/elementsproject/glightning v0.0.0-20260409131056-8efd9d33aff3 h1:foTgfVjLH2AAJWN+D/rNI/vuRxlo7T1kD4LkcK9vxqY=
+github.com/elementsproject/glightning v0.0.0-20260409131056-8efd9d33aff3/go.mod h1:YAdIeSyx8VEhDCtEaGOJLmWNpPaQ3x4vYSAj9Vrppdo=
 github.com/gammazero/deque v0.2.1 h1:qSdsbG6pgp6nL7A0+K/B7s12mcCY/5l5SIUpMOl+dC0=
 github.com/gammazero/deque v0.2.1/go.mod h1:LFroj8x4cMYCukHJDbxFCkT+r9AndaJnFMuZDV34tuU=
 github.com/gogo/protobuf v1.3.2 h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q=
