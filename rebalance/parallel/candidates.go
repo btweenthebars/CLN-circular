@@ -8,11 +8,11 @@ import (
 )
 
 func (r *AbstractRebalance) FindCandidates(exclude string) error {
-	r.Node.PeersLock.RLock()
-	defer r.Node.PeersLock.RUnlock()
-
 	r.Node.Logln(glightning.Debug, "Looking for candidates")
+
+	r.Node.PeersLock.RLock()
 	peers := r.GetCandidatesList()
+	r.Node.PeersLock.RUnlock()
 
 	r.Candidates = deque.New[*graph.Channel]()
 	for _, p := range peers {
@@ -67,9 +67,12 @@ func (r *AbstractRebalance) GetCandidatesList() []*glightning.Peer {
 func (r *AbstractRebalance) GetNextCandidate() (*graph.Channel, error) {
 	var candidate *graph.Channel
 	r.Node.Logln(glightning.Debug, "getting next candidate")
-	for r.Candidates.Len() > 0 {
-
+	for {
 		r.QueueLock.Lock()
+		if r.Candidates.Len() == 0 {
+			r.QueueLock.Unlock()
+			break
+		}
 		candidate = r.Candidates.PopFront()
 		r.QueueLock.Unlock()
 		r.Node.Logln(glightning.Debug, "got candidate:", candidate.ShortChannelId)

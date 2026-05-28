@@ -30,8 +30,6 @@ func (s *Stats) Call() (jrpc2.Result, error) {
 
 func (n *Node) GetStats() *Stats {
 	defer util.TimeTrack(time.Now(), "node.GetStats", n.Logf)
-	n.PeersLock.RLock()
-	defer n.PeersLock.RUnlock()
 
 	successes, err := n.DB.ListSuccesses()
 	if err != nil {
