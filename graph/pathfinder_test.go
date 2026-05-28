@@ -4,6 +4,7 @@ import (
 	"circular/util"
 	"encoding/json"
 	"fmt"
+	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 	"math/rand"
 	"os"
@@ -94,4 +95,97 @@ func BenchmarkGraph_GetRoute(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestPathfinderInboundFee(t *testing.T) {
+	g := NewGraph()
+
+	a := "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	b1 := "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb11"
+	b2 := "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb22"
+	cNode := "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+	g.Inbound[a] = make(map[string]Edge)
+	g.Inbound[b1] = make(map[string]Edge)
+	g.Inbound[b2] = make(map[string]Edge)
+	g.Inbound[cNode] = make(map[string]Edge)
+
+	chAB1 := NewChannel(&glightning.Channel{
+		Source:              a,
+		Destination:         b1,
+		ShortChannelId:      "1x1x1",
+		IsActive:            true,
+		BaseFeeMillisatoshi: 100,
+		FeePerMillionth:     0,
+		Delay:               10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
+	}, 5000000, 0)
+	g.AddChannel(chAB1)
+	g.Channels["1x1x1/"+util.GetDirection(a, b1)] = chAB1
+
+	chB1C := NewChannel(&glightning.Channel{
+		Source:              b1,
+		Destination:         cNode,
+		ShortChannelId:      "2x1x1",
+		IsActive:            true,
+		BaseFeeMillisatoshi: 500,
+		FeePerMillionth:     0,
+		Delay:               10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
+	}, 5000000, 0)
+	g.AddChannel(chB1C)
+	g.Channels["2x1x1/"+util.GetDirection(b1, cNode)] = chB1C
+
+	chAB2 := NewChannel(&glightning.Channel{
+		Source:              a,
+		Destination:         b2,
+		ShortChannelId:      "3x1x1",
+		IsActive:            true,
+		BaseFeeMillisatoshi: 200,
+		FeePerMillionth:     0,
+		Delay:               10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
+	}, 5000000, 0)
+	g.AddChannel(chAB2)
+	g.Channels["3x1x1/"+util.GetDirection(a, b2)] = chAB2
+
+	chB2C := NewChannel(&glightning.Channel{
+		Source:              b2,
+		Destination:         cNode,
+		ShortChannelId:      "4x1x1",
+		IsActive:            true,
+		BaseFeeMillisatoshi: 500,
+		FeePerMillionth:     0,
+		Delay:               10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
+	}, 5000000, 0)
+	g.AddChannel(chB2C)
+	g.Channels["4x1x1/"+util.GetDirection(b2, cNode)] = chB2C
+
+	hops, err := g.dijkstra(a, cNode, 1000000, nil, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(hops))
+	assert.Equal(t, "1x1x1", hops[0].ShortChannelId)
+	assert.Equal(t, "2x1x1", hops[1].ShortChannelId)
+
+	g.SetInboundFee("4x1x1/"+util.GetDirection(b2, cNode), -300, 0)
+
+	hops, err = g.dijkstra(a, cNode, 1000000, nil, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(hops))
+	assert.Equal(t, "3x1x1", hops[0].ShortChannelId)
+	assert.Equal(t, "4x1x1", hops[1].ShortChannelId)
+
+	route := NewRoute(a, cNode, 1000000, hops, g)
+	assert.Equal(t, uint64(400), route.Fee())
+
+	chB2C.BaseFeeMillisatoshi = 100
+	hops, err = g.dijkstra(a, cNode, 1000000, nil, 10)
+	assert.NoError(t, err)
+	route = NewRoute(a, cNode, 1000000, hops, g)
+	assert.Equal(t, uint64(200), route.Fee())
 }

@@ -16,6 +16,11 @@ const (
 // Edge contains All the SCIDs of the channels going from nodeA to nodeB
 type Edge []string
 
+type InboundFee struct {
+	BaseFee int32 `json:"base_fee"`
+	FeeRate int32 `json:"fee_rate"`
+}
+
 // Graph is the lightning network graph from the perspective of our node
 // It has been built from the gossip received by lightningd.
 // To access the edges flowing into a node, use: g.Inbound[node]
@@ -26,6 +31,7 @@ type Graph struct {
 	Channels          map[string]*Channel        `json:"channels"`
 	Inbound           map[string]map[string]Edge `json:"-"`
 	Aliases           map[string]string          `json:"-"`
+	InboundFees       map[string]*InboundFee     `json:"inbound_fees"`
 	adjacencyListLock *sync.RWMutex
 	channelsLock      *sync.RWMutex
 	aliasesLock       *sync.RWMutex
@@ -36,6 +42,7 @@ func NewGraph() *Graph {
 		Channels:          make(map[string]*Channel),
 		Inbound:           make(map[string]map[string]Edge),
 		Aliases:           make(map[string]string),
+		InboundFees:       make(map[string]*InboundFee),
 		adjacencyListLock: &sync.RWMutex{},
 		channelsLock:      &sync.RWMutex{},
 		aliasesLock:       &sync.RWMutex{},
@@ -203,3 +210,27 @@ func (g *Graph) RefreshLiquidity(refreshThreshold time.Duration) int {
 
 	return hits
 }
+
+func (g *Graph) SetInboundFee(channelId string, baseFee, feeRate int32) {
+	g.channelsLock.Lock()
+	defer g.channelsLock.Unlock()
+	g.InboundFees[channelId] = &InboundFee{
+		BaseFee: baseFee,
+		FeeRate: feeRate,
+	}
+}
+
+func (g *Graph) GetInboundFee(c *Channel, amount uint64) int64 {
+	g.channelsLock.RLock()
+	defer g.channelsLock.RUnlock()
+
+	key := c.ShortChannelId + "/" + util.GetDirection(c.Source, c.Destination)
+	fee, ok := g.InboundFees[key]
+	if !ok {
+		return 0
+	}
+	amt := int64(amount)
+	prop := (amt * int64(fee.FeeRate)) / 1000000
+	return int64(fee.BaseFee) + prop
+}
+

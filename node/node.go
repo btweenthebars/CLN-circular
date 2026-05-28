@@ -89,6 +89,9 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 	n.Logln(glightning.Debug, "setting up cronjobs")
 	n.setupCronJobs(options)
 
+	n.Logln(glightning.Debug, "starting gossip store parser")
+	go n.StartGossipParser(info.LightningDir, info.Network)
+
 	n.Logln(glightning.Info, "node initialized")
 }
 
@@ -120,11 +123,19 @@ func (n *Node) setOptions(lightning *glightning.Lightning, plugin *glightning.Pl
 }
 
 func (n *Node) Logf(level glightning.LogLevel, format string, v ...any) {
-	n.plugin.Log(util.GetCallInfo()+fmt.Sprintf(format, v...), level)
+	if n.plugin != nil {
+		n.plugin.Log(util.GetCallInfo()+fmt.Sprintf(format, v...), level)
+	} else {
+		log.Printf(format, v...)
+	}
 }
 
 func (n *Node) Logln(level glightning.LogLevel, v ...any) {
-	n.plugin.Log(util.GetCallInfo()+fmt.Sprint(v...), level)
+	if n.plugin != nil {
+		n.plugin.Log(util.GetCallInfo()+fmt.Sprint(v...), level)
+	} else {
+		log.Println(v...)
+	}
 }
 
 func (n *Node) RefreshChannel(channel *graph.Channel) {

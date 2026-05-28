@@ -54,7 +54,16 @@ func (r *Route) recomputeFeeAndDelay() {
 	for i := len(r.Hops) - 2; i >= 0; i-- {
 		hop := r.Hops[i+1]
 		amountToForward := hop.MilliSatoshi
-		r.Hops[i].MilliSatoshi = amountToForward + hop.ComputeFee(amountToForward)
+		
+		outboundFee := hop.ComputeFee(amountToForward)
+		inboundFee := r.Graph.GetInboundFee(r.Hops[i].Channel, amountToForward)
+		
+		hopFee := int64(outboundFee) + inboundFee
+		if hopFee < 0 {
+			hopFee = 0
+		}
+		
+		r.Hops[i].MilliSatoshi = amountToForward + uint64(hopFee)
 
 		delay := hop.Delay
 		r.Hops[i].Delay = delay + hop.Channel.Delay

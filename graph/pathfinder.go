@@ -105,7 +105,12 @@ func (g *Graph) dijkstra(src, dst string, amount uint64, exclude map[string]bool
 
 				// compute fees and update the priority queue if we found a better way to reach v
 				channelFee := channel.ComputeFee(amount)
-				newDistance := distance[u] + int(channelFee)
+				inboundFee := g.GetInboundFee(channel, amount)
+				hopFee := int64(channelFee) + inboundFee
+				if hopFee < 0 {
+					hopFee = 0
+				}
+				newDistance := distance[u] + int(hopFee)
 				if newDistance < distance[v] {
 
 					// now v is reachable from u with a lower distance
@@ -114,12 +119,12 @@ func (g *Graph) dijkstra(src, dst string, amount uint64, exclude map[string]bool
 					// add v to the priority queue while computing fees, delay and hops
 					hop[v] = RouteHop{
 						channel,
-						amount + channelFee,
+						amount + uint64(hopFee),
 						delay + channel.Delay,
 					}
 					heap.Push(&pq, &Item{value: &PqItem{
 						Node:   v,
-						Amount: amount + channelFee,
+						Amount: amount + uint64(hopFee),
 						Delay:  delay + channel.Delay,
 						Hops:   hops + 1,
 					}, priority: newDistance})
