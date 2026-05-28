@@ -62,6 +62,9 @@ func (r *Rebalance) Run() *Result {
 		if err == nil {
 			result.Attempts = uint64(i)
 			r.Node.Logln(glightning.Info, result.Message)
+			if result.Route != nil {
+				r.Node.Logln(glightning.Info, "\n" + result.Route.String())
+			}
 			r.Node.Logln(glightning.Debug, result)
 			return result
 		}
