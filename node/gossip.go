@@ -55,6 +55,7 @@ func (n *Node) StartGossipParser(lightningDir string, network string) {
 
 	var file *os.File
 	var err error
+	count := 0
 
 	for {
 		if n.Stopped {
@@ -151,6 +152,11 @@ func (n *Node) StartGossipParser(lightningDir string, network string) {
 		msgType := binary.BigEndian.Uint16(body[0:2])
 		if msgType == 258 { // channel_update
 			n.parseChannelUpdate(body)
+		}
+
+		count++
+		if count%500 == 0 {
+			time.Sleep(1 * time.Millisecond)
 		}
 	}
 }

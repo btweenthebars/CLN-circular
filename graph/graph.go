@@ -35,6 +35,7 @@ type Graph struct {
 	adjacencyListLock *sync.RWMutex
 	channelsLock      *sync.RWMutex
 	aliasesLock       *sync.RWMutex
+	inboundFeesLock   *sync.RWMutex
 }
 
 func NewGraph() *Graph {
@@ -46,6 +47,7 @@ func NewGraph() *Graph {
 		adjacencyListLock: &sync.RWMutex{},
 		channelsLock:      &sync.RWMutex{},
 		aliasesLock:       &sync.RWMutex{},
+		inboundFeesLock:   &sync.RWMutex{},
 	}
 }
 
@@ -53,9 +55,11 @@ func (g *Graph) Lock() {
 	g.channelsLock.Lock()
 	g.adjacencyListLock.Lock()
 	g.aliasesLock.Lock()
+	g.inboundFeesLock.Lock()
 }
 
 func (g *Graph) Unlock() {
+	g.inboundFeesLock.Unlock()
 	g.aliasesLock.Unlock()
 	g.adjacencyListLock.Unlock()
 	g.channelsLock.Unlock()
@@ -212,8 +216,8 @@ func (g *Graph) RefreshLiquidity(refreshThreshold time.Duration) int {
 }
 
 func (g *Graph) SetInboundFee(channelId string, baseFee, feeRate int32) {
-	g.channelsLock.Lock()
-	defer g.channelsLock.Unlock()
+	g.inboundFeesLock.Lock()
+	defer g.inboundFeesLock.Unlock()
 	g.InboundFees[channelId] = &InboundFee{
 		BaseFee: baseFee,
 		FeeRate: feeRate,
@@ -221,8 +225,8 @@ func (g *Graph) SetInboundFee(channelId string, baseFee, feeRate int32) {
 }
 
 func (g *Graph) GetInboundFee(c *Channel, amount uint64) int64 {
-	g.channelsLock.RLock()
-	defer g.channelsLock.RUnlock()
+	g.inboundFeesLock.RLock()
+	defer g.inboundFeesLock.RUnlock()
 
 	key := c.ShortChannelId + "/" + util.GetDirection(c.Source, c.Destination)
 	fee, ok := g.InboundFees[key]
