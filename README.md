@@ -19,6 +19,7 @@ It features a custom pathfinding algorithm that takes into account liquidity inf
 * `circular`: Rebalance a channel by scid
 * `circular-node`: Rebalance a channel by node id
 * `circular-stats`: Get stats about the usage of the plugin
+* `circular-active`: Get currently active in-flight rebalancing payments
 * `circular-delete-stats`: Delete stats about the usage of the plugin
 * `circular-stop`: Stop `circular` from firing new htlcs. Currently running htlcs will be completed.
 * `circular-resume`: Resume normal activity after a `circular-stop`
@@ -139,6 +140,14 @@ This command will return the following stats:
 
 It's a good idea to pipe the output into a file, since it can be quite big.
 ⚠ To limit the size, `circular` will only keep the last 14 days of stats.
+
+### Get active in-flight payments
+```bash
+lightning-cli circular-active
+```
+This returns a JSON list of all currently active, in-flight rebalancing payments (useful to monitor what parallel commands like `circular-pull` or `circular-push` are waiting on):
+* `active_payments`: JSON array containing the payment hash, amount (msat), creation time, and routing hops of each active payment.
+
 
 ## Benchmarks
 Here is the performance of the pathfinding algorithm on the mainnet lightning network graph as of August 2022 (about 16000 nodes and 80000 channels). The benchmarks consist in finding a route between two random nodes and measuring the time it takes to find the route. Different values of `maxhops` are tested to show that shorter routes take less time to compute. Those routes are preferred by `circular`, since the longer the route, the most likely it is to fail.
