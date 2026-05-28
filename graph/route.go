@@ -37,7 +37,23 @@ func (r *Route) Fee() uint64 {
 }
 
 func (r *Route) FeePPM() uint64 {
+	if r.Amount == 0 {
+		return 0
+	}
 	return (r.Fee() * 1000000) / r.Amount
+}
+
+func (r *Route) GetFeeWithoutInboundFee() uint64 {
+	if len(r.Hops) < 2 {
+		return 0
+	}
+	amountToForward := r.Amount
+	for i := len(r.Hops) - 2; i >= 0; i-- {
+		hop := r.Hops[i+1]
+		outboundFee := hop.ComputeFee(amountToForward)
+		amountToForward += outboundFee
+	}
+	return amountToForward - r.Amount
 }
 
 func (r *Route) Prepend(channel *Channel) {

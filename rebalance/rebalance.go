@@ -61,6 +61,7 @@ func (r *Rebalance) Run() *Result {
 		// success
 		if err == nil {
 			result.Attempts = uint64(i)
+			r.Node.Logln(glightning.Info, result.Message)
 			r.Node.Logln(glightning.Debug, result)
 			return result
 		}
@@ -133,6 +134,14 @@ func (r *Rebalance) runAttempt(maxHops int) (*Result, error) {
 	result.Message = fmt.Sprintf("successfully rebalanced %d sats from %s to %s at %d ppm. Total fees paid: %.3f sats",
 		result.Amount, r.Node.Graph.GetAlias(r.OutChannel.Destination), r.Node.Graph.GetAlias(r.InChannel.Source),
 		result.PPM, float64(result.Fee)/1000)
+
+	if route.InboundSavingsMSat != 0 {
+		if route.InboundSavingsMSat > 0 {
+			result.Message += fmt.Sprintf(" (saved %d msat / %d ppm due to inbound discounts)", route.InboundSavingsMSat, route.InboundSavingsPPM)
+		} else {
+			result.Message += fmt.Sprintf(" (extra %d msat / %d ppm due to inbound surcharges)", -route.InboundSavingsMSat, -route.InboundSavingsPPM)
+		}
+	}
 
 	return result, nil
 }

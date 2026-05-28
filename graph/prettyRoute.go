@@ -13,18 +13,22 @@ type PrettyRouteHop struct {
 	Delay          uint   `json:"delay"`
 	Fee            uint64 `json:"fee"`
 	FeePPM         uint64 `json:"ppm"`
+	OutboundFee    uint64 `json:"outbound_fee"`
+	InboundFee     int64  `json:"inbound_fee"`
 }
 
 type PrettyRoute struct {
-	PaymentHash      string           `json:"payment_hash"`
-	SourceId         string           `json:"source_id"`
-	DestinationId    string           `json:"destination_id"`
-	SourceAlias      string           `json:"source_alias"`
-	DestinationAlias string           `json:"destination_alias"`
-	Amount           uint64           `json:"amount_sat"`
-	Fee              uint64           `json:"fee_msat"`
-	FeePPM           uint64           `json:"ppm"`
-	Hops             []PrettyRouteHop `json:"hops"`
+	PaymentHash        string           `json:"payment_hash"`
+	SourceId           string           `json:"source_id"`
+	DestinationId      string           `json:"destination_id"`
+	SourceAlias        string           `json:"source_alias"`
+	DestinationAlias   string           `json:"destination_alias"`
+	Amount             uint64           `json:"amount_sat"`
+	Fee                uint64           `json:"fee_msat"`
+	FeePPM             uint64           `json:"ppm"`
+	Hops               []PrettyRouteHop `json:"hops"`
+	InboundSavingsMSat int64            `json:"inbound_savings_msat"`
+	InboundSavingsPPM  int64            `json:"inbound_savings_ppm"`
 }
 
 func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
@@ -39,6 +43,8 @@ func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
 		Delay:          route.Hops[0].Delay,
 		Fee:            0,
 		FeePPM:         0,
+		OutboundFee:    0,
+		InboundFee:     0,
 	}
 
 	hops[0].Alias = route.Graph.GetAlias(from)
@@ -47,6 +53,11 @@ func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
 		fee := route.Hops[i-1].MilliSatoshi - route.Hops[i].MilliSatoshi
 		feePPM := fee * 1000000 / route.Hops[i].MilliSatoshi
 		from = route.Hops[i].Source
+		
+		amountToForward := route.Hops[i].MilliSatoshi
+		outboundFee := route.Hops[i].ComputeFee(amountToForward)
+		inboundFee := route.Graph.GetInboundFee(route.Hops[i-1].Channel, amountToForward)
+
 		hops[i] = PrettyRouteHop{
 			Id:             from,
 			ShortChannelId: route.Hops[i].ShortChannelId,
@@ -54,20 +65,32 @@ func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
 			Delay:          route.Hops[i].Delay,
 			Fee:            fee,
 			FeePPM:         feePPM,
+			OutboundFee:    outboundFee,
+			InboundFee:     inboundFee,
 		}
 		hops[i].Alias = route.Graph.GetAlias(from)
 	}
 
+	feeWithout := route.GetFeeWithoutInboundFee()
+	feeWithoutPPM := uint64(0)
+	if route.Amount > 0 {
+		feeWithoutPPM = (feeWithout * 1000000) / route.Amount
+	}
+	actualFee := route.Fee()
+	actualFeePPM := route.FeePPM()
+
 	return &PrettyRoute{
-		PaymentHash:      paymentHash,
-		SourceId:         route.Source,
-		DestinationId:    route.Destination,
-		SourceAlias:      route.Graph.GetAlias(route.Source),
-		DestinationAlias: route.Graph.GetAlias(route.Destination),
-		Amount:           route.Amount / 1000,
-		Fee:              route.Fee(),
-		FeePPM:           route.FeePPM(),
-		Hops:             hops,
+		PaymentHash:        paymentHash,
+		SourceId:           route.Source,
+		DestinationId:      route.Destination,
+		SourceAlias:        route.Graph.GetAlias(route.Source),
+		DestinationAlias:   route.Graph.GetAlias(route.Destination),
+		Amount:             route.Amount / 1000,
+		Fee:                actualFee,
+		FeePPM:             actualFeePPM,
+		Hops:               hops,
+		InboundSavingsMSat: int64(feeWithout) - int64(actualFee),
+		InboundSavingsPPM:  int64(feeWithoutPPM) - int64(actualFeePPM),
 	}
 }
 
@@ -77,6 +100,13 @@ func (r *PrettyRoute) String() string {
 	result += "Amount: " + strconv.FormatUint(r.Amount, 10) + "\n"
 	result += "Fee: " + strconv.FormatUint(r.Fee, 10) + "msat\n"
 	result += "Fee PPM: " + strconv.FormatUint(r.FeePPM, 10) + "\n"
+	if r.InboundSavingsMSat != 0 {
+		if r.InboundSavingsMSat > 0 {
+			result += fmt.Sprintf("Inbound Fee Savings: %d msat (%d PPM)\n", r.InboundSavingsMSat, r.InboundSavingsPPM)
+		} else {
+			result += fmt.Sprintf("Inbound Fee Overspent: %d msat (%d PPM)\n", -r.InboundSavingsMSat, -r.InboundSavingsPPM)
+		}
+	}
 	result += "Hops: " + strconv.Itoa(len(r.Hops)) + "\n"
 
 	for i := 0; i < len(r.Hops); i++ {
@@ -86,10 +116,19 @@ func (r *PrettyRoute) String() string {
 		delay := r.Hops[i].Delay
 		shortChannelId := r.Hops[i].ShortChannelId
 
-		result += fmt.Sprintf("Hop %2d: %40s, fee: %8.3f, ppm: %5d, scid: %s, delay: %d\n",
-			i+1, alias,
-			float64(fee)/1000, feePPM,
-			shortChannelId, delay)
+		if i > 0 && r.Hops[i].InboundFee != 0 {
+			result += fmt.Sprintf("Hop %2d: %40s, fee: %8.3f msat, ppm: %5d, scid: %s, delay: %d (outbound: %.3f msat, inbound: %.3f msat)\n",
+				i+1, alias,
+				float64(fee)/1000, feePPM,
+				shortChannelId, delay,
+				float64(r.Hops[i].OutboundFee)/1000,
+				float64(r.Hops[i].InboundFee)/1000)
+		} else {
+			result += fmt.Sprintf("Hop %2d: %40s, fee: %8.3f msat, ppm: %5d, scid: %s, delay: %d\n",
+				i+1, alias,
+				float64(fee)/1000, feePPM,
+				shortChannelId, delay)
+		}
 	}
 	return result
 }
@@ -99,6 +138,15 @@ func (r *PrettyRoute) Simple() string {
 	result += "Sending " + strconv.FormatUint(r.Amount, 10) + " sats from [" + r.SourceAlias + "] to [" + r.DestinationAlias
 	result += "] over " + strconv.Itoa(len(r.Hops)) + " hops, costing " + strconv.FormatUint(r.Fee, 10) + "msat ("
 	result += strconv.FormatUint(r.FeePPM, 10) + "PPM)"
+	
+	if r.InboundSavingsMSat != 0 {
+		if r.InboundSavingsMSat > 0 {
+			result += fmt.Sprintf(" [Saved %dmsat (%dPPM) due to inbound discount]", r.InboundSavingsMSat, r.InboundSavingsPPM)
+		} else {
+			result += fmt.Sprintf(" [Extra %dmsat (%dPPM) due to inbound surcharge]", -r.InboundSavingsMSat, -r.InboundSavingsPPM)
+		}
+	}
+	
 	result += " via "
 	for i := 0; i < len(r.Hops); i++ {
 		alias := r.Hops[i].Alias

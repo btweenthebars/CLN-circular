@@ -189,3 +189,102 @@ func TestPathfinderInboundFee(t *testing.T) {
 	route = NewRoute(a, cNode, 1000000, hops, g)
 	assert.Equal(t, uint64(200), route.Fee())
 }
+
+func TestPrettyRouteSavings(t *testing.T) {
+	g := NewGraph()
+
+	self := "02selfaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	a := "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	b := "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	c := "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+	g.Inbound[self] = make(map[string]Edge)
+	g.Inbound[a] = make(map[string]Edge)
+	g.Inbound[b] = make(map[string]Edge)
+	g.Inbound[c] = make(map[string]Edge)
+
+	chOut := NewChannel(&glightning.Channel{
+		Source:              self,
+		Destination:         a,
+		ShortChannelId:      "9x9x9",
+		IsActive:            true,
+		BaseFeeMillisatoshi: 0,
+		FeePerMillionth:     0,
+		Delay:               10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
+	}, 5000000, 0)
+	g.AddChannel(chOut)
+	g.Channels["9x9x9/"+util.GetDirection(self, a)] = chOut
+
+	chAB := NewChannel(&glightning.Channel{
+		Source:              a,
+		Destination:         b,
+		ShortChannelId:      "1x1x1",
+		IsActive:            true,
+		BaseFeeMillisatoshi: 100,
+		FeePerMillionth:     0,
+		Delay:               10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
+	}, 5000000, 0)
+	g.AddChannel(chAB)
+	g.Channels["1x1x1/"+util.GetDirection(a, b)] = chAB
+
+	chBC := NewChannel(&glightning.Channel{
+		Source:              b,
+		Destination:         c,
+		ShortChannelId:      "2x1x1",
+		IsActive:            true,
+		BaseFeeMillisatoshi: 500,
+		FeePerMillionth:     0,
+		Delay:               10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
+	}, 5000000, 0)
+	g.AddChannel(chBC)
+	g.Channels["2x1x1/"+util.GetDirection(b, c)] = chBC
+
+	chIn := NewChannel(&glightning.Channel{
+		Source:              c,
+		Destination:         self,
+		ShortChannelId:      "8x8x8",
+		IsActive:            true,
+		BaseFeeMillisatoshi: 0,
+		FeePerMillionth:     0,
+		Delay:               10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
+	}, 5000000, 0)
+	g.AddChannel(chIn)
+	g.Channels["8x8x8/"+util.GetDirection(c, self)] = chIn
+
+	// Test 1: Inbound fee is 0. No savings.
+	hops, err := g.dijkstra(a, c, 1000000, nil, 10)
+	assert.NoError(t, err)
+	route := NewRoute(a, c, 1000000, hops, g)
+	route.Prepend(chOut)
+	route.Append(chIn)
+	pr := NewPrettyRoute(route, "hash")
+	assert.Equal(t, int64(0), pr.InboundSavingsMSat)
+
+	// Test 2: Set a negative inbound fee on chAB
+	g.SetInboundFee("1x1x1/"+util.GetDirection(a, b), -200, 0)
+	hops, err = g.dijkstra(a, c, 1000000, nil, 10)
+	assert.NoError(t, err)
+	route = NewRoute(a, c, 1000000, hops, g)
+	route.Prepend(chOut)
+	route.Append(chIn)
+	pr = NewPrettyRoute(route, "hash")
+	assert.Equal(t, int64(200), pr.InboundSavingsMSat)
+
+	// Test 3: Positive inbound fee (surcharge)
+	g.SetInboundFee("1x1x1/"+util.GetDirection(a, b), 150, 0)
+	hops, err = g.dijkstra(a, c, 1000000, nil, 10)
+	assert.NoError(t, err)
+	route = NewRoute(a, c, 1000000, hops, g)
+	route.Prepend(chOut)
+	route.Append(chIn)
+	pr = NewPrettyRoute(route, "hash")
+	assert.Equal(t, int64(-150), pr.InboundSavingsMSat)
+}
