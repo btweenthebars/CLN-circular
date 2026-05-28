@@ -33,6 +33,11 @@ func registerMethods(p *glightning.Plugin) {
 	rpcStats.Category = "utility"
 	p.RegisterMethod(rpcStats)
 
+	rpcActive := glightning.NewRpcMethod(&node.ActivePaymentsCmd{}, "Get active in-flight rebalances")
+	rpcActive.LongDesc = "Get the list of active in-flight rebalancing payments currently being waited on"
+	rpcActive.Category = "utility"
+	p.RegisterMethod(rpcActive)
+
 	rpfDeleteStats := glightning.NewRpcMethod(&node.DeleteStats{}, "Delete Stats")
 	rpfDeleteStats.LongDesc = "Delete the stats of the usage of circular"
 	rpfDeleteStats.Category = "utility"
