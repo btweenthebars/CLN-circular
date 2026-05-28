@@ -36,6 +36,8 @@ type Node struct {
 	DB                  *Store
 	LiquidityUpdateChan chan *LiquidityUpdate
 	Stopped             bool
+	ActivePayments      map[string]*ActivePayment
+	activePaymentsLock  *sync.RWMutex
 }
 
 func GetNode() *Node {
@@ -46,6 +48,8 @@ func GetNode() *Node {
 			PeersLock:           &sync.RWMutex{},
 			Peers:               make(map[string]*glightning.Peer),
 			LiquidityUpdateChan: make(chan *LiquidityUpdate, 16),
+			ActivePayments:      make(map[string]*ActivePayment),
+			activePaymentsLock:  &sync.RWMutex{},
 		}
 		go singleton.UpdateLiquidity()
 	})

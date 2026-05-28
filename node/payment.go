@@ -17,9 +17,37 @@ const (
 	SENDPAY_TIMEOUT = 120 // 2 minutes
 )
 
+type ActivePayment struct {
+	PaymentHash string             `json:"payment_hash"`
+	Route       *graph.PrettyRoute `json:"route"`
+	AmountMsat  uint64             `json:"amount_msat"`
+	CreatedAt   time.Time          `json:"created_at"`
+}
+
+func (n *Node) AddActivePayment(paymentHash string, route *graph.PrettyRoute, amount uint64) {
+	n.activePaymentsLock.Lock()
+	defer n.activePaymentsLock.Unlock()
+	n.ActivePayments[paymentHash] = &ActivePayment{
+		PaymentHash: paymentHash,
+		Route:       route,
+		AmountMsat:  amount,
+		CreatedAt:   time.Now(),
+	}
+}
+
+func (n *Node) RemoveActivePayment(paymentHash string) {
+	n.activePaymentsLock.Lock()
+	defer n.activePaymentsLock.Unlock()
+	delete(n.ActivePayments, paymentHash)
+}
+
 func (n *Node) SendPay(route *graph.Route, paymentHash string) (*glightning.SendPayFields, error) {
 	defer util.TimeTrack(time.Now(), "node.SendPay", n.Logf)
 	finalRoute := route.ToLightningRoute()
+
+	prettyRoute := graph.NewPrettyRoute(route, paymentHash)
+	n.AddActivePayment(paymentHash, prettyRoute, route.Amount)
+	defer n.RemoveActivePayment(paymentHash)
 
 	n.Logln(glightning.Debug, "sending payment")
 	if _, err := n.lightning.SendPayLite(finalRoute, paymentHash); err != nil {
