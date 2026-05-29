@@ -46,7 +46,7 @@ func (r *RebalancePull) Call() (jrpc2.Result, error) {
 
 	r.CandidatesList = r.OutList
 	if r.CandidatesList != nil {
-		r.Node.Logln(glightning.Info, "Using outlist:", r.CandidatesList)
+		r.Node.Logln(glightning.Debug, "Using outlist:", r.CandidatesList)
 		// if an outlist was supplied, ignore maxoutppm. To do this we put it to "infinity"
 		r.MaxOutPPM = 1 << 63
 	}
@@ -104,7 +104,7 @@ func (r *RebalancePull) CanUseChannel(channel *glightning.PeerChannel) error {
 }
 
 func (r *RebalancePull) Fire(candidate *graph.Channel) {
-	r.Node.Logln(glightning.Info, "Firing candidate: ", candidate.ShortChannelId, " for attempts: ", r.attempts)
+	r.Node.Logln(glightning.Debug, "Firing candidate: ", candidate.ShortChannelId, " for attempts: ", r.attempts)
 	rebalance := rebalance2.NewRebalance(candidate, r.TargetChannel, r.splitAmount, r.maxPPM, r.attempts, r.maxHops)
 
 	go func() {

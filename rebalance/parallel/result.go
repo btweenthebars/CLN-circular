@@ -45,13 +45,14 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 
 	// while there's something inflight, wait for results
 	for r.InFlightAmount > 0 {
-		r.Node.Logln(glightning.Info, "Waiting for result, InFlightAmount:", r.InFlightAmount)
+		r.Node.Logln(glightning.Debug, "Waiting for result, InFlightAmount:", r.InFlightAmount)
 		rebalanceResult := <-r.RebalanceResultChan
 
 		r.TotalAttempts += rebalanceResult.Attempts
 
 		if rebalanceResult.Status == "success" {
-			r.Node.Logf(glightning.Info, "Successful rebalance: %+v", rebalanceResult)
+			r.Node.Logln(glightning.Info, rebalanceResult.Message)
+			r.Node.Logf(glightning.Debug, "Successful rebalance details: %+v", rebalanceResult)
 
 			// update results data
 			r.AddSuccess(rebalanceResult)
@@ -59,7 +60,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 			// put the candidate back in front of the queue
 			r.EnqueueCandidate(rebalanceResult)
 		} else {
-			r.Node.Logf(glightning.Info, "Failed rebalance attempt: %s", rebalanceResult.Message)
+			r.Node.Logf(glightning.Debug, "Failed rebalance attempt: %s", rebalanceResult.Message)
 		}
 
 		// update inflight and rebalanced amount

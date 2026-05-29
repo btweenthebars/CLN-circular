@@ -51,7 +51,7 @@ func (r *Rebalance) tryRoute(maxHops int) (*graph.PrettyRoute, error) {
 		r.Node.Logln(glightning.Unusual, "unable to save route to db: ", err)
 	}
 	r.Node.Logln(glightning.Debug, prettyRoute)
-	r.Node.Logln(glightning.Info, prettyRoute.Simple())
+	r.Node.Logln(glightning.Debug, prettyRoute.Simple())
 
 	_, err = r.Node.SendPay(route, paymentSecretHash)
 	if err != nil {

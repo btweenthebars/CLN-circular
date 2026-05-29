@@ -46,7 +46,7 @@ func (r *RebalancePush) Call() (jrpc2.Result, error) {
 
 	r.CandidatesList = r.InList
 	if r.CandidatesList != nil {
-		r.Node.Logln(glightning.Info, "Using inlist:", r.CandidatesList)
+		r.Node.Logln(glightning.Debug, "Using inlist:", r.CandidatesList)
 		// if an inlist was supplied, ignore minoutppm. To do this we put it to zero
 		r.MinOutPPM = 0
 	}
@@ -113,7 +113,7 @@ func (r *RebalancePush) CanUseChannel(channel *glightning.PeerChannel) error {
 }
 
 func (r *RebalancePush) Fire(candidate *graph.Channel) {
-	r.Node.Logln(glightning.Info, "Firing candidate: ", candidate.ShortChannelId, " for attempts: ", r.attempts)
+	r.Node.Logln(glightning.Debug, "Firing candidate: ", candidate.ShortChannelId, " for attempts: ", r.attempts)
 	rebalance := rebalance2.NewRebalance(r.TargetChannel, candidate, r.splitAmount, r.maxPPM, r.attempts, r.maxHops)
 
 	go func() {

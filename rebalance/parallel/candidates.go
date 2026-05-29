@@ -39,7 +39,7 @@ func (r *AbstractRebalance) FindCandidates(exclude string) error {
 		return util.ErrNoCandidates
 	}
 
-	r.Node.Logln(glightning.Info, "found ", r.Candidates.Len(), " candidates")
+	r.Node.Logln(glightning.Debug, "found ", r.Candidates.Len(), " candidates")
 	return nil
 }
 
