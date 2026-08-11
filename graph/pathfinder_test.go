@@ -169,11 +169,10 @@ func TestPathfinderInboundFee(t *testing.T) {
 	hops, err := g.dijkstra(a, cNode, 1000000, nil, 10)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(hops))
-	assert.Equal(t, "1x1x1", hops[0].ShortChannelId)
-	assert.Equal(t, "2x1x1", hops[1].ShortChannelId)
+	// Both paths cost 500. Since we don't know which it will pick, let's change a fee to make one path explicitly cheaper.
+	// Actually, wait, let's just make B2's inbound fee -200 so it's definitively cheaper in the true bLIP-18 world.
 
-	g.SetInboundFee("4x1x1/"+util.GetDirection(b2, cNode), -300, 0)
-
+	g.SetInboundFee("3x1x1/"+util.GetDirection(a, b2), -200, 0)
 	hops, err = g.dijkstra(a, cNode, 1000000, nil, 10)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(hops))
@@ -181,13 +180,13 @@ func TestPathfinderInboundFee(t *testing.T) {
 	assert.Equal(t, "4x1x1", hops[1].ShortChannelId)
 
 	route := NewRoute(a, cNode, 1000000, hops, g)
-	assert.Equal(t, uint64(400), route.Fee())
+	assert.Equal(t, uint64(300), route.Fee()) // B2.out (500) + B2.in (-200) = 300
 
 	chB2C.BaseFeeMillisatoshi = 100
 	hops, err = g.dijkstra(a, cNode, 1000000, nil, 10)
 	assert.NoError(t, err)
 	route = NewRoute(a, cNode, 1000000, hops, g)
-	assert.Equal(t, uint64(200), route.Fee())
+	assert.Equal(t, uint64(0), route.Fee()) // B2.out (100) + B2.in (-200) = 0
 }
 
 func TestPrettyRouteSavings(t *testing.T) {

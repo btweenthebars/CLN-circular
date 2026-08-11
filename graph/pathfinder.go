@@ -18,8 +18,6 @@ func (g *Graph) GetRoute(src, dst string, amount uint64, exclude map[string]bool
 }
 
 func (g *Graph) dijkstra(src, dst string, amount uint64, exclude map[string]bool, maxHops int) ([]RouteHop, error) {
-	// start from the destination and find the source so that we can compute fees
-	// TODO: consider that 32bits fees can be a problem but the api does it in that way
 	g.channelsLock.RLock()
 	g.adjacencyListLock.RLock()
 	defer g.channelsLock.RUnlock()
@@ -32,115 +30,147 @@ func (g *Graph) dijkstra(src, dst string, amount uint64, exclude map[string]bool
 		return nil, util.ErrNoSuchNode
 	}
 
-	// initialize data structures
 	distance := make(map[string]int)
-	maxDistance := 1 << 31
-	for u := range g.Inbound {
-		distance[u] = maxDistance
-	}
-	distance[dst] = 0
 	hop := make(map[string]RouteHop)
+	nextEdge := make(map[string]string)
+	maxDistance := 1 << 31
 
-	// initialize priority queue, put destination in
-	pq := make(PriorityQueue, 1, 16)
-	pq[0] = &Item{value: &PqItem{
-		Node:   dst,
-		Amount: amount,
-		Delay:  0,
-		Hops:   0,
-	}, priority: 0}
+	getDistance := func(key string) int {
+		if d, ok := distance[key]; ok {
+			return d
+		}
+		return maxDistance
+	}
+
+	pq := make(PriorityQueue, 0, 16)
 	heap.Init(&pq)
 
-	// main loop
+	for v, edge := range g.Inbound[dst] {
+		if exclude[v] {
+			continue
+		}
+		for _, scid := range edge {
+			var sb strings.Builder
+			sb.WriteString(scid)
+			sb.WriteString("/")
+			sb.WriteString(util.GetDirection(v, dst))
+			channelId := sb.String()
+
+			if channel, ok := g.Channels[channelId]; ok {
+				if !channel.CanForward(amount) {
+					continue
+				}
+				distance[channelId] = 0
+				hop[channelId] = RouteHop{
+					Channel:      channel,
+					MilliSatoshi: amount,
+					Delay:        channel.Delay,
+				}
+				heap.Push(&pq, &Item{value: &PqItem{
+					Node:   v,
+					Edge:   channelId,
+					Amount: amount,
+					Delay:  channel.Delay,
+					Hops:   1,
+				}, priority: 0})
+			}
+		}
+	}
+
+	var bestSrcEdge string
+	bestDistance := maxDistance
+
 	for pq.Len() > 0 {
-		// get the node with the lowest distance from the priority queue
 		pqItem := heap.Pop(&pq).(*Item)
 		u := pqItem.value.Node
-		amount := pqItem.value.Amount
+		edgeU := pqItem.value.Edge
+		currentAmount := pqItem.value.Amount
 		delay := pqItem.value.Delay
 		hops := pqItem.value.Hops
 		priority := pqItem.priority
-		// if we already visited this node with a lower distance, ignore it
-		if priority > distance[u] {
+
+		if priority > getDistance(edgeU) {
 			continue
 		}
 
-		// if we reached the source, we are done
 		if u == src {
+			if priority < bestDistance {
+				bestDistance = priority
+				bestSrcEdge = edgeU
+			}
 			break
 		}
 
-		// if we reached the maximum number of hops, discard this node
 		if hops >= maxHops {
 			continue
 		}
 
-		// check all the neighbors of the current node
-		for v, edge := range g.Inbound[u] {
-			if exclude[v] {
+		channelU := g.Channels[edgeU]
+		outboundFeeU := channelU.ComputeFee(currentAmount)
+
+		for w, edge := range g.Inbound[u] {
+			if exclude[w] {
 				continue
 			}
 
-			// for each channel in the edge between two nodes (there may be multiple channels between two nodes)
 			for _, scid := range edge {
-
-				// some optimization for concatenating strings
 				var sb strings.Builder
 				sb.WriteString(scid)
 				sb.WriteString("/")
-				sb.WriteString(util.GetDirection(v, u))
-				channelId := sb.String()
+				sb.WriteString(util.GetDirection(w, u))
+				edgeW := sb.String()
 
-				//channelId := scid + "/" + util.GetDirection(v, u)
-				if _, ok := g.Channels[channelId]; !ok {
-					log.Println("channel not found:", channelId)
+				if _, ok := g.Channels[edgeW]; !ok {
+					log.Println("channel not found:", edgeW)
 					continue
 				}
-				channel := g.Channels[channelId]
+				channelW := g.Channels[edgeW]
 
-				// check if the channel is usable
-				if !channel.CanForward(amount) {
+				if !channelW.CanForward(currentAmount) {
 					continue
 				}
 
-				// compute fees and update the priority queue if we found a better way to reach v
-				channelFee := channel.ComputeFee(amount)
-				inboundFee := g.GetInboundFee(channel, amount)
-				hopFee := int64(channelFee) + inboundFee
-				if hopFee < 0 {
-					hopFee = 0
+				inboundFeeU := g.GetInboundFee(channelW, currentAmount)
+				netFeeU := int64(outboundFeeU) + inboundFeeU
+				if netFeeU < 0 {
+					netFeeU = 0
 				}
-				newDistance := distance[u] + int(hopFee)
-				if newDistance < distance[v] {
 
-					// now v is reachable from u with a lower distance
-					distance[v] = newDistance
+				newDistance := priority + int(netFeeU)
+				if newDistance < getDistance(edgeW) {
+					distance[edgeW] = newDistance
 
-					// add v to the priority queue while computing fees, delay and hops
-					hop[v] = RouteHop{
-						channel,
-						amount + uint64(hopFee),
-						delay + channel.Delay,
+					newAmount := currentAmount + uint64(netFeeU)
+					newDelay := delay + channelW.Delay
+
+					hop[edgeW] = RouteHop{
+						Channel:      channelW,
+						MilliSatoshi: newAmount,
+						Delay:        newDelay,
 					}
+					nextEdge[edgeW] = edgeU
+
 					heap.Push(&pq, &Item{value: &PqItem{
-						Node:   v,
-						Amount: amount + uint64(hopFee),
-						Delay:  delay + channel.Delay,
+						Node:   w,
+						Edge:   edgeW,
+						Amount: newAmount,
+						Delay:  newDelay,
 						Hops:   hops + 1,
 					}, priority: newDistance})
 				}
 			}
 		}
 	}
-	// if we did not reach the source, we did not find a route
-	if distance[src] == maxDistance {
+
+	if bestDistance == maxDistance {
 		return nil, util.ErrNoRoute
 	}
 
-	// now we have the hop map, we can build the hops
-	hops := make([]RouteHop, 0, 10)
-	for u := src; u != dst; u = hop[u].Destination {
-		hops = append(hops, hop[u])
+	finalHops := make([]RouteHop, 0, 10)
+	currEdge := bestSrcEdge
+	for currEdge != "" {
+		finalHops = append(finalHops, hop[currEdge])
+		currEdge = nextEdge[currEdge]
 	}
-	return hops, nil
+	return finalHops, nil
 }

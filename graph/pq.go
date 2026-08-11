@@ -6,6 +6,7 @@ import (
 
 type PqItem struct {
 	Node   string
+	Edge   string
 	Amount uint64
 	Delay  uint
 	Hops   int
