@@ -140,6 +140,40 @@ func (g *Graph) PruneChannels() {
 			g.DeleteChannel(c)
 		}
 	}
+
+	// prune inbound fees for SCIDs no longer in the channel map
+	g.pruneInboundFees()
+}
+
+// pruneInboundFees removes inbound fee entries whose SCID is no longer present
+// in g.Channels. Must be called with channelsLock and inboundFeesLock both held.
+func (g *Graph) pruneInboundFees() {
+	g.inboundFeesLock.Lock()
+	defer g.inboundFeesLock.Unlock()
+
+	// build a set of SCIDs that still exist in the graph
+	existing := make(map[string]bool, len(g.Channels))
+	for channelId := range g.Channels {
+		// channelId is "scid/direction"; extract scid
+		for i := len(channelId) - 1; i >= 0; i-- {
+			if channelId[i] == '/' {
+				existing[channelId[:i]] = true
+				break
+			}
+		}
+	}
+
+	for key := range g.InboundFees {
+		// key is "scid/direction"; extract scid
+		for i := len(key) - 1; i >= 0; i-- {
+			if key[i] == '/' {
+				if !existing[key[:i]] {
+					delete(g.InboundFees, key)
+				}
+				break
+			}
+		}
+	}
 }
 
 func (g *Graph) DeleteChannel(c *Channel) {
