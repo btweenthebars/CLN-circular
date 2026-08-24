@@ -27,8 +27,22 @@ func (r *RebalanceByNode) New() interface{} {
 }
 
 func (r *RebalanceByNode) getBestOutgoingChannel() (*graph.Channel, error) {
+	// Score each candidate by ToUsMsat adjusted for outbound fee:
+	// prefer channels with high local balance and low fees.
+	// We approximate score = ToUsMsat / (1 + fee_rate_ppm/1_000_000).
+	// Since we're comparing ratios, multiply through: score = ToUsMsat * 1_000_000 / (1_000_000 + fee_rate_ppm).
 	best := r.Node.GetBestPeerChannel(r.OutNode, func(channel *glightning.PeerChannel) uint64 {
-		return channel.ToUsMsat.MSat()
+		local := channel.ToUsMsat.MSat()
+		if local == 0 {
+			return 0
+		}
+		// Look up graph channel to get fee rate
+		gc, err := r.Node.GetOutgoingChannelFromScid(channel.ShortChannelId)
+		if err != nil {
+			return local // fallback: use raw balance
+		}
+		denom := uint64(1000000) + gc.FeePerMillionth
+		return local * 1000000 / denom
 	})
 	if best == nil {
 		return nil, util.ErrNoPeerChannel
