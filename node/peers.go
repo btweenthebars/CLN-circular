@@ -50,12 +50,8 @@ func (n *Node) GetChannelPeerFromScid(scid string) (*glightning.Peer, error) {
 	n.PeersLock.RLock()
 	defer n.PeersLock.RUnlock()
 
-	for _, peer := range n.Peers {
-		for _, channel := range peer.Channels {
-			if channel.ShortChannelId == scid {
-				return peer, nil
-			}
-		}
+	if peer, ok := n.scidToPeer[scid]; ok && peer != nil {
+		return peer, nil
 	}
 	return nil, util.ErrNoPeerChannel
 }

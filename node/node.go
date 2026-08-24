@@ -32,6 +32,7 @@ type Node struct {
 	PeersLock           *sync.RWMutex
 	Id                  string
 	Peers               map[string]*glightning.Peer
+	scidToPeer          map[string]*glightning.Peer // reverse index: scid → peer, guarded by PeersLock
 	Graph               *graph.Graph
 	DB                  *Store
 	LiquidityUpdateChan chan *LiquidityUpdate
@@ -46,6 +47,7 @@ func GetNode() *Node {
 			initLock:            &sync.Mutex{},
 			PeersLock:           &sync.RWMutex{},
 			Peers:               make(map[string]*glightning.Peer),
+			scidToPeer:          make(map[string]*glightning.Peer),
 			LiquidityUpdateChan: make(chan *LiquidityUpdate, 16),
 			ActivePayments:      make(map[string]*ActivePayment),
 			activePaymentsLock:  &sync.RWMutex{},
