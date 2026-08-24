@@ -106,16 +106,20 @@ func (n *Node) UpdateChannelBalance(outPeer, inPeer, outScid, inScid string, amo
 	n.PeersLock.Lock()
 	defer n.PeersLock.Unlock()
 
-	for _, channel := range n.Peers[outPeer].Channels {
-		if channel.ShortChannelId == outScid {
-			channel.ToUsMsat = glightning.AmountFromMSat(channel.ToUsMsat.MSat() - amount*1000)
-			break
+	if peer, ok := n.Peers[outPeer]; ok && peer != nil {
+		for _, channel := range peer.Channels {
+			if channel.ShortChannelId == outScid {
+				channel.ToUsMsat = glightning.AmountFromMSat(channel.ToUsMsat.MSat() - amount*1000)
+				break
+			}
 		}
 	}
-	for _, channel := range n.Peers[inPeer].Channels {
-		if channel.ShortChannelId == inScid {
-			channel.ToUsMsat = glightning.AmountFromMSat(channel.ToUsMsat.MSat() + amount*1000)
-			break
+	if peer, ok := n.Peers[inPeer]; ok && peer != nil {
+		for _, channel := range peer.Channels {
+			if channel.ShortChannelId == inScid {
+				channel.ToUsMsat = glightning.AmountFromMSat(channel.ToUsMsat.MSat() + amount*1000)
+				break
+			}
 		}
 	}
 }
