@@ -63,13 +63,16 @@ func (r *Rebalance) Run() *Result {
 			result.Attempts = uint64(i)
 			r.Node.Logln(glightning.Info, result.Message)
 			if result.Route != nil {
-				r.Node.Logln(glightning.Debug, "\n" + result.Route.String())
+				r.Node.Logln(glightning.Debug, "\n"+result.Route.String())
 			}
 			r.Node.Logln(glightning.Debug, result)
 			return result
 		}
 
-		// no route found with at most maxHops
+		// always count the attempt
+		i++
+
+		// no route found with at most maxHops — expand and retry without consuming an attempt slot
 		if err == util.ErrNoRoute {
 			r.Node.Logln(glightning.Debug, "no route found with at most ", maxHops, " hops, increasing max hops to ", maxHops+1)
 			lastError = err.Error()
@@ -77,7 +80,7 @@ func (r *Rebalance) Run() *Result {
 			continue
 		}
 
-		// no route found with at most maxHops cheaper than maxPPM
+		// no route found with at most maxHops cheaper than maxPPM — expand and retry
 		if errors.As(err, &util.ErrRouteTooExpensive{}) {
 			r.Node.Logln(glightning.Debug, err, ", increasing max hops to ", maxHops+1)
 			lastError = err.Error()
@@ -103,7 +106,6 @@ func (r *Rebalance) Run() *Result {
 			lastError = err.Error()
 			break
 		}
-		i++
 	}
 
 	failure := NewResult("failure", r.Amount/1000, r.OutChannel.Destination, r.InChannel.Source)
