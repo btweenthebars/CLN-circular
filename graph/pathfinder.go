@@ -126,21 +126,23 @@ func (g *Graph) dijkstra(src, dst string, amount uint64, exclude map[string]bool
 				}
 				channelW := g.Channels[edgeW]
 
-				if !channelW.CanForward(currentAmount) {
-					continue
-				}
-
+				// compute the net fee first, then check if channelW can carry
+				// the fee-inclusive amount (currentAmount + netFee)
 				inboundFeeU := g.GetInboundFee(channelW, currentAmount)
 				netFeeU := int64(outboundFeeU) + inboundFeeU
 				if netFeeU < 0 {
 					netFeeU = 0
+				}
+				newAmount := currentAmount + uint64(netFeeU)
+
+				if !channelW.CanForward(newAmount) {
+					continue
 				}
 
 				newDistance := priority + int(netFeeU)
 				if newDistance < getDistance(edgeW) {
 					distance[edgeW] = newDistance
 
-					newAmount := currentAmount + uint64(netFeeU)
 					newDelay := delay + channelW.Delay
 
 					hop[edgeW] = RouteHop{

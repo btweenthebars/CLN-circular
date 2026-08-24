@@ -73,9 +73,9 @@ func TestGossipParser(t *testing.T) {
 
 	// 3. Initialize Node
 	n := &Node{
-		Graph:   graph.NewGraph(),
-		Stopped: false,
+		Graph: graph.NewGraph(),
 	}
+	n.Stopped.Store(false)
 
 	// 4. Start parser in background
 	go n.StartGossipParser(tmpDir, "")
@@ -104,5 +104,5 @@ func TestGossipParser(t *testing.T) {
 	}
 
 	// 6. Stop the parser
-	n.Stopped = true
+	n.Stopped.Store(true)
 }
