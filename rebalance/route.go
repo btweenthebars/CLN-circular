@@ -4,14 +4,14 @@ import (
 	"circular/graph"
 	"circular/node"
 	"circular/util"
+	"errors"
+	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"time"
 )
 
-func (r *Rebalance) getRoute(maxHops int) (*graph.Route, error) {
+func (r *Rebalance) getRoute(maxHops int, exclude map[string]bool) (*graph.Route, error) {
 	defer util.TimeTrack(time.Now(), "rebalance.getRoute", r.Node.Logf)
-	exclude := make(map[string]bool)
-	exclude[r.Node.Id] = true
 
 	src := r.OutChannel.Destination
 	dst := r.InChannel.Source
@@ -32,14 +32,14 @@ func (r *Rebalance) getRoute(maxHops int) (*graph.Route, error) {
 	return route, nil
 }
 
-func (r *Rebalance) tryRoute(maxHops int) (*graph.PrettyRoute, error) {
+func (r *Rebalance) tryRoute(maxHops int, exclude map[string]bool) (*graph.PrettyRoute, error) {
 	paymentSecretHash, err := r.Node.GeneratePreimageHashPair()
 	if err != nil {
 		return nil, err
 	}
 
 	r.Node.Logln(glightning.Debug, "generating route")
-	route, err := r.getRoute(maxHops)
+	route, err := r.getRoute(maxHops, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +55,15 @@ func (r *Rebalance) tryRoute(maxHops int) (*graph.PrettyRoute, error) {
 
 	_, err = r.Node.SendPay(route, paymentSecretHash)
 	if err != nil {
+		// Extract erring channel from payment error and add it to exclude for
+		// future attempts so the pathfinder skips the known-bad channel.
+		var paymentError *glightning.PaymentError
+		if errors.As(err, &paymentError) && paymentError.Data.ErringChannel != "" {
+			key := fmt.Sprintf("%s/%d", paymentError.Data.ErringChannel, paymentError.Data.ErringDirection)
+			exclude[key] = true
+			r.Node.Logln(glightning.Debug, "excluded failing channel for next attempt: ", key)
+		}
+
 		if err == util.ErrSendPayTimeout {
 			return nil, err
 		}

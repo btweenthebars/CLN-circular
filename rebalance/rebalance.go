@@ -47,6 +47,9 @@ func (r *Rebalance) Run() *Result {
 		maxHops   = 3
 		i         = 1
 		lastError = ""
+		// exclude accumulates failing channels across attempts so the pathfinder
+		// skips them on subsequent tries within the same Run() call.
+		exclude = map[string]bool{r.Node.Id: true}
 	)
 	for i <= r.Attempts {
 		if maxHops > r.MaxHops {
@@ -56,7 +59,7 @@ func (r *Rebalance) Run() *Result {
 		}
 		r.Node.Logln(glightning.Debug, "===================== ATTEMPT ", i, " =====================")
 
-		result, err := r.runAttempt(maxHops)
+		result, err := r.runAttempt(maxHops, exclude)
 
 		// success
 		if err == nil {
@@ -116,16 +119,16 @@ func (r *Rebalance) Run() *Result {
 	return failure
 }
 
-func (r *Rebalance) runAttempt(maxHops int) (*Result, error) {
+func (r *Rebalance) runAttempt(maxHops int, exclude map[string]bool) (*Result, error) {
 	if r.Node.Stopped.Load() {
 		return nil, util.ErrCircularStopped
 	}
-	
+
 	if err := r.validateLiquidityParameters(r.OutChannel, r.InChannel); err != nil {
 		return nil, err
 	}
 
-	route, err := r.tryRoute(maxHops)
+	route, err := r.tryRoute(maxHops, exclude)
 	if err != nil {
 		return nil, err
 	}
