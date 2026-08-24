@@ -25,11 +25,12 @@ func NewChannel(channel *glightning.Channel, liquidity uint64, timestamp int64) 
 
 func (c *Channel) ComputeFee(amount uint64) uint64 {
 	result := c.BaseFeeMillisatoshi
-	// get the ceiling of the integer division
-	numerator := (amount / 1000) * c.FeePerMillionth
+	// Multiply first, then divide once to avoid precision loss from two truncations.
+	// ceiling division: (a * b + divisor - 1) / divisor
+	numerator := amount * c.FeePerMillionth
 	var proportionalFee uint64 = 0
 	if numerator > 0 {
-		proportionalFee = ((numerator - 1) / 1000) + 1
+		proportionalFee = (numerator + 999999) / 1000000
 	}
 	result += proportionalFee
 	return result
