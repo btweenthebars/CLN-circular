@@ -106,7 +106,7 @@ func (g *Graph) RefreshChannels(channelList []*glightning.Channel) {
 		channelId := c.ShortChannelId + "/" + util.GetDirection(c.Source, c.Destination)
 		// if the channel did not exist prior to this refresh estimate its initial liquidity to be 50/50
 		if _, ok := g.Channels[channelId]; !ok {
-			channel = NewChannel(c, uint64(0.5*float64(c.AmountMsat.MSat())), 0)
+			channel = NewChannel(c, c.AmountMsat.MSat()/2, 0)
 			g.AddChannel(channel)
 		} else {
 			channel = NewChannel(c, g.Channels[channelId].Liquidity, g.Channels[channelId].Timestamp)

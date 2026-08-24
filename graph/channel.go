@@ -37,6 +37,9 @@ func (c *Channel) ComputeFee(amount uint64) uint64 {
 }
 
 func (c *Channel) ComputeFeePPM(amount uint64) uint64 {
+	if amount == 0 {
+		return 0
+	}
 	return c.ComputeFee(amount) * 1000000 / amount
 }
 
@@ -65,6 +68,6 @@ func (c *Channel) CanForward(amount uint64) bool {
 }
 
 func (c *Channel) ResetLiquidity() {
-	c.Liquidity = uint64(0.5 * float64(c.AmountMsat.MSat()))
+	c.Liquidity = c.AmountMsat.MSat() / 2
 	c.Timestamp = time.Now().Unix()
 }
