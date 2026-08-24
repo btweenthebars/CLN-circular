@@ -139,11 +139,15 @@ func (n *Node) OnPaymentFailure(sf *glightning.SendPayFailure) {
 
 	n.Logf(glightning.Debug, "code: %d, failcode: %d, failcodename: %s", sf.Code, sf.Data.FailCode, sf.Data.FailCodeName)
 
-	// TODO: handle failure codes separately: right now we treat every failure as a liquidity failure, but it might not be the case
-	n.LiquidityUpdateChan <- &LiquidityUpdate{
+	// Non-blocking send: if the buffer is full during a rebalance storm, drop the
+	// update rather than blocking the glightning notification dispatch goroutine.
+	select {
+	case n.LiquidityUpdateChan <- &LiquidityUpdate{
 		Amount:         sf.Data.MilliSatoshi - util.Min(sf.Data.MilliSatoshi, 1000000),
 		ShortChannelID: sf.Data.ErringChannel,
 		Direction:      sf.Data.ErringDirection,
+	}:
+	default:
 	}
 }
 
