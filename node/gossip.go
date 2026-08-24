@@ -46,6 +46,13 @@ func parseBigSize(data []byte, offset *int) (uint64, bool) {
 }
 
 func (n *Node) StartGossipParser(lightningDir string, network string) {
+	defer func() {
+		if r := recover(); r != nil {
+			n.Logf(glightning.Unusual, "gossip parser panic, restarting: %v", r)
+			go n.StartGossipParser(lightningDir, network)
+		}
+	}()
+
 	path := filepath.Join(lightningDir, network, "gossip_store")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		path = filepath.Join(lightningDir, "gossip_store")
