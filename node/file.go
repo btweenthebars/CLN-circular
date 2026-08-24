@@ -57,12 +57,12 @@ func (n *Node) SaveGraphToFile(dir, filename string) error {
 		return err
 	}
 
-	// save old file
-	// check if filename exists
+	// Atomically rotate: current → .old, then .tmp → current
 	if _, err := os.Stat(filename); err == nil {
-		err = os.Rename(filename, filename+".old")
+		if err := os.Rename(filename, filename+".old"); err != nil {
+			return err
+		}
 	}
-	// rename tmp to filename
 	if err := os.Rename(filename+".tmp", filename); err != nil {
 		return err
 	}
