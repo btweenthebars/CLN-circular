@@ -80,7 +80,16 @@ func (r *RebalancePull) IsGoodCandidate(peerChannel *glightning.PeerChannel) boo
 		return false
 	}
 
-	return outgoingChannel.ComputeFeePPM(r.splitAmount) < r.MaxOutPPM
+	outboundFee := outgoingChannel.ComputeFee(r.splitAmount)
+	// Include any inbound surcharge from the next hop (our target channel's inbound fee applies
+	// to the incoming direction on this outgoing channel). Net negative fees are floored at 0.
+	inboundFee := r.Node.Graph.GetInboundFee(outgoingChannel, r.splitAmount)
+	netFee := int64(outboundFee) + inboundFee
+	if netFee < 0 {
+		netFee = 0
+	}
+	effectivePPM := uint64(netFee) * 1000000 / r.splitAmount
+	return effectivePPM < r.MaxOutPPM
 }
 
 // Check that the channel is not under the deplete threshold and connection is active
