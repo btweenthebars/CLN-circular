@@ -33,6 +33,12 @@ func NewRoute(src, dst string, amount uint64, hops []RouteHop, graph *Graph) *Ro
 }
 
 func (r *Route) Fee() uint64 {
+	if len(r.Hops) == 0 {
+		return 0
+	}
+	if r.Hops[0].MilliSatoshi < r.Amount {
+		return 0
+	}
 	return r.Hops[0].MilliSatoshi - r.Amount
 }
 

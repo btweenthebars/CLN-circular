@@ -32,6 +32,9 @@ type PrettyRoute struct {
 }
 
 func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
+	if len(route.Hops) == 0 {
+		return &PrettyRoute{}
+	}
 	hops := make([]PrettyRouteHop, len(route.Hops))
 
 	// now hops
