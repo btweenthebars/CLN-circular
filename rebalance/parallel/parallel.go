@@ -44,7 +44,7 @@ func (r *AbstractRebalance) Init(amount, maxppm, splitamount uint64, splits, att
 	r.AmountLock = &sync.Mutex{}
 	r.QueueLock = &sync.Mutex{}
 	r.TotalAttempts = 0
-	r.RebalanceResultChan = make(chan *rebalance2.Result)
+	r.RebalanceResultChan = make(chan *rebalance2.Result, splits)
 	r.Node.Logf(glightning.Debug, "%+v", r)
 	r.amount = amount
 	r.maxPPM = maxppm

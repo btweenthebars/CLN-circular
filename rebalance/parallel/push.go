@@ -117,6 +117,12 @@ func (r *RebalancePush) Fire(candidate *graph.Channel) {
 	rebalance := rebalance2.NewRebalance(r.TargetChannel, candidate, r.splitAmount, r.maxPPM, r.attempts, r.maxHops)
 
 	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				r.Node.Logf(glightning.Unusual, "panic in rebalance goroutine: %v", rec)
+				r.RebalanceResultChan <- rebalance2.NewResult("failure", r.splitAmount/1000, r.TargetChannel.Destination, candidate.Source)
+			}
+		}()
 		r.RebalanceResultChan <- rebalance.Run()
 	}()
 }
