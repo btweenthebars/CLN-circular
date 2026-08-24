@@ -127,6 +127,8 @@ func (g *Graph) RefreshAliases(nodes []*glightning.Node) {
 func (g *Graph) PruneChannels() {
 	g.channelsLock.Lock()
 	defer g.channelsLock.Unlock()
+	g.adjacencyListLock.Lock()
+	defer g.adjacencyListLock.Unlock()
 
 	// get current time in seconds
 	now := uint(time.Now().Unix())
