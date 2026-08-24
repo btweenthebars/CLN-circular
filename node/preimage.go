@@ -1,9 +1,9 @@
 package node
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"math/rand"
 )
 
 type PreimageHashPair struct {
@@ -11,21 +11,25 @@ type PreimageHashPair struct {
 	Hash     string `json:"hash"`
 }
 
-func NewPreimageHashPair() PreimageHashPair {
+func NewPreimageHashPair() (PreimageHashPair, error) {
 	preimage := make([]byte, 32)
-	//fill the slice with random bytes
-	rand.Read(preimage)
+	if _, err := rand.Read(preimage); err != nil {
+		return PreimageHashPair{}, err
+	}
 	hash := sha256.Sum256(preimage)
 
 	return PreimageHashPair{
 		Preimage: hex.EncodeToString(preimage),
 		Hash:     hex.EncodeToString(hash[:]),
-	}
+	}, nil
 }
 
 func (n *Node) GeneratePreimageHashPair() (string, error) {
-	pair := NewPreimageHashPair()
-	err := n.DB.Set(pair.Hash, []byte(pair.Preimage))
+	pair, err := NewPreimageHashPair()
+	if err != nil {
+		return "", err
+	}
+	err = n.DB.Set(pair.Hash, []byte(pair.Preimage))
 	if err != nil {
 		return "", err
 	}

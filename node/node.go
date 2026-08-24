@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"log"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -42,7 +41,6 @@ type Node struct {
 
 func GetNode() *Node {
 	once.Do(func() {
-		rand.Seed(time.Now().UnixNano())
 		singleton = &Node{
 			initLock:            &sync.Mutex{},
 			PeersLock:           &sync.RWMutex{},
