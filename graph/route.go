@@ -58,10 +58,13 @@ func (r *Route) GetFeeWithoutInboundFee() uint64 {
 
 func (r *Route) Prepend(channel *Channel) {
 	firstHop := r.Hops[0]
+	// The prepended channel must carry firstHop.MilliSatoshi plus its own outbound fee.
+	// The delay must include the downstream delay plus this channel's CLTV delta.
+	prepFee := channel.ComputeFee(firstHop.MilliSatoshi)
 	newFirstHop := RouteHop{
 		Channel:      channel,
-		MilliSatoshi: firstHop.MilliSatoshi,
-		Delay:        firstHop.Delay,
+		MilliSatoshi: firstHop.MilliSatoshi + prepFee,
+		Delay:        firstHop.Delay + channel.Delay,
 	}
 	r.Hops = append([]RouteHop{newFirstHop}, r.Hops...)
 }
