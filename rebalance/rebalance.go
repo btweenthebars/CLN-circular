@@ -115,7 +115,7 @@ func (r *Rebalance) Run() *Result {
 }
 
 func (r *Rebalance) runAttempt(maxHops int) (*Result, error) {
-	if r.Node.Stopped {
+	if r.Node.Stopped.Load() {
 		return nil, util.ErrCircularStopped
 	}
 	

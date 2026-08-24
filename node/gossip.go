@@ -58,7 +58,7 @@ func (n *Node) StartGossipParser(lightningDir string, network string) {
 	count := 0
 
 	for {
-		if n.Stopped {
+		if n.Stopped.Load() {
 			if file != nil {
 				file.Close()
 			}

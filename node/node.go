@@ -7,6 +7,7 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,7 +35,7 @@ type Node struct {
 	Graph               *graph.Graph
 	DB                  *Store
 	LiquidityUpdateChan chan *LiquidityUpdate
-	Stopped             bool
+	Stopped             atomic.Bool
 	ActivePayments      map[string]*ActivePayment
 	activePaymentsLock  *sync.RWMutex
 }
