@@ -27,17 +27,23 @@ func (r *RebalanceByNode) New() interface{} {
 }
 
 func (r *RebalanceByNode) getBestOutgoingChannel() (*graph.Channel, error) {
-	bestScid := r.Node.GetBestPeerChannel(r.OutNode, func(channel *glightning.PeerChannel) uint64 {
+	best := r.Node.GetBestPeerChannel(r.OutNode, func(channel *glightning.PeerChannel) uint64 {
 		return channel.ToUsMsat.MSat()
-	}).ShortChannelId
-	return r.Node.GetOutgoingChannelFromScid(bestScid)
+	})
+	if best == nil {
+		return nil, util.ErrNoPeerChannel
+	}
+	return r.Node.GetOutgoingChannelFromScid(best.ShortChannelId)
 }
 
 func (r *RebalanceByNode) getBestIncomingChannel() (*graph.Channel, error) {
-	bestScid := r.Node.GetBestPeerChannel(r.InNode, func(channel *glightning.PeerChannel) uint64 {
+	best := r.Node.GetBestPeerChannel(r.InNode, func(channel *glightning.PeerChannel) uint64 {
 		return channel.TotalMsat.MSat() - channel.ToUsMsat.MSat()
-	}).ShortChannelId
-	return r.Node.GetIncomingChannelFromScid(bestScid)
+	})
+	if best == nil {
+		return nil, util.ErrNoPeerChannel
+	}
+	return r.Node.GetIncomingChannelFromScid(best.ShortChannelId)
 }
 
 func (r *RebalanceByNode) Call() (jrpc2.Result, error) {

@@ -10,7 +10,11 @@ func (n *Node) GetBestPeerChannel(id string, metric func(*glightning.PeerChannel
 	n.PeersLock.RLock()
 	defer n.PeersLock.RUnlock()
 
-	channels := n.Peers[id].Channels
+	peer, ok := n.Peers[id]
+	if !ok || peer == nil || len(peer.Channels) == 0 {
+		return nil
+	}
+	channels := peer.Channels
 	best := channels[0]
 	for _, channel := range channels {
 		if metric(channel) > metric(best) {
