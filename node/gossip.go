@@ -110,13 +110,17 @@ func (n *Node) StartGossipParser(lightningDir string, network string) {
 
 		// Try to read header (12 bytes)
 		var header [12]byte
-		_, err = io.ReadFull(file, header[:])
+		bytesRead, err := io.ReadFull(file, header[:])
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			// Reached end of file, wait for new updates
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 		if err != nil {
+			// Seek back any bytes already consumed so the next read starts clean
+			if bytesRead > 0 {
+				_, _ = file.Seek(-int64(bytesRead), io.SeekCurrent)
+			}
 			n.Logf(glightning.Unusual, "Error reading gossip_store header: %v", err)
 			time.Sleep(1 * time.Second)
 			continue
