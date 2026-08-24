@@ -183,8 +183,12 @@ func (g *Graph) UpdateChannel(channelId, oppositeChannelId string, amount uint64
 	}
 
 	if _, ok := g.Channels[oppositeChannelId]; ok {
-		g.Channels[oppositeChannelId].Liquidity =
-			g.Channels[oppositeChannelId].AmountMsat.MSat() - amount
+		cap := g.Channels[oppositeChannelId].AmountMsat.MSat()
+		if amount >= cap {
+			g.Channels[oppositeChannelId].Liquidity = 0
+		} else {
+			g.Channels[oppositeChannelId].Liquidity = cap - amount
+		}
 		g.Channels[oppositeChannelId].Timestamp = now
 	}
 }
