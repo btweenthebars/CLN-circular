@@ -1,40 +1,38 @@
-# circular [![Tests](https://github.com/giovannizotta/circular/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/giovannizotta/circular/actions/workflows/tests.yml) ![GitHub](https://img.shields.io/github/license/giovannizotta/circular)
+# circular [![Go](https://img.shields.io/badge/go-1.18%2B-blue.svg)](https://golang.org) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
+`circular` is a high-performance Core Lightning plugin designed for routing nodes to rebalance channels efficiently and cost-effectively.
 
-`circular` is a Core Lightning plugin that helps routing nodes rebalance their channels in the most efficient way possible. 
-
-It features a custom pathfinding algorithm that takes into account liquidity information and failed payments in order to optimize channel rebalancing. Circular is designed to be used by routing nodes who do not need reliability in their payments, and makes it easy to rebalance large amounts between channels.
-
-> :warning: `circular` needs `allow-deprecated-apis=true` in order to run, at least until `glightning` gets brought under the CLN repo. Also, it might not be feasible to run `circular` if your device is too weak. A good test is to see how long `time lightning-cli listchannels > /dev/null` takes to run: if it takes more than 60s `circular` won't be able to start.
+It features a custom edge-based backwards Dijkstra pathfinding algorithm that accounts for channel liquidity, bLIP-18 inbound fee policies (discounts and surcharges), and feedback from failed payment attempts.
 
 ## Features
-* Lightweight
-* No invoices
-* Liquidity information is stored in `graph.json`
-* Usage data is stored in the database
+* **bLIP-18 Inbound Fee Aware**: Parses gossip TLV type 55555 for inbound fees, computing exact net fees (`max(0, outbound + inbound)`) to discover routes with negative fee discounts.
+* **Failure-Informed Pathfinding**: Automatically excludes failing channels across retry attempts, bypassing bottlenecks without getting stuck on dead routes.
+* **Parallel Multi-Channel Rebalancing**: Simultaneously pull into or push out of target channels across multiple peers (`circular-pull` and `circular-push`).
+* **In-Flight Payment Tracking**: Real-time visibility into active parallel rebalancing operations via `circular-active`.
+* **Fee-Aware Selection**: Prioritizes lowest-cost outgoing routes rather than blindly picking the largest balance channel.
+* **Lightweight & No Invoices**: Uses self-payments with preimage generation (cryptographically secure), requiring no invoice generation.
 
 ## Endpoints
-* `circular-pull`: Pull liquidity into a channel using many channels as sources in parallel
-* `circular-push`: Push liquidity out of a channel using many channels as destinations in parallel
-* `circular`: Rebalance a channel by scid
-* `circular-node`: Rebalance a channel by node id
-* `circular-stats`: Get stats about the usage of the plugin
-* `circular-active`: Get currently active in-flight rebalancing payments
-* `circular-delete-stats`: Delete stats about the usage of the plugin
-* `circular-stop`: Stop `circular` from firing new htlcs. Currently running htlcs will be completed.
-* `circular-resume`: Resume normal activity after a `circular-stop`
+* `circular-pull`: Pull liquidity into a channel using multiple peer channels as sources in parallel
+* `circular-push`: Push liquidity out of a channel using multiple peer channels as destinations in parallel
+* `circular`: Rebalance between two specific channels by Short Channel ID (`inscid` / `outscid`)
+* `circular-node`: Rebalance between two specific peers by Node ID (`innode` / `outnode`)
+* `circular-active`: List currently active in-flight rebalancing payments
+* `circular-stats`: Get usage statistics and historical performance data
+* `circular-delete-stats`: Reset and delete saved rebalancing statistics
+* `circular-stop`: Stop `circular` from firing new HTLCs (active ones will complete)
+* `circular-resume`: Resume normal rebalancing activity after a `circular-stop`
 
 Detailed explanation of the endpoints follows in the Usage section.
 
 ## Building
-You can download the `circular` binary from the releases section. Alternatively, you can build the plugin on your own.
 You need Go 1.18 or higher to build this plugin.
 
 ```bash
-git clone https://github.com/giovannizotta/circular.git
-cd circular
-go build -o circular cmd/circular/*.go
-chmod +x circular
+git clone https://github.com/btweenthebars/CLN-circular.git
+cd CLN-circular
+go build -o circular_plugin ./cmd/circular
+chmod +x circular_plugin
 ```
 
 ## Running
