@@ -80,12 +80,12 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 
 	n.Logln(glightning.Debug, "refreshing graph")
 	if err = n.refreshGraph(); err != nil {
-		log.Fatalln("RefreshGraph failed in init, exiting")
+		n.Logln(glightning.Unusual, "initial refreshGraph failed: ", err)
 	}
 
 	n.Logln(glightning.Debug, "refreshing peers")
 	if err = n.refreshPeers(); err != nil {
-		log.Fatalln("RefreshPeers failed in init, exiting")
+		n.Logln(glightning.Unusual, "initial refreshPeers failed: ", err)
 	}
 
 	n.Logln(glightning.Debug, "opening database")

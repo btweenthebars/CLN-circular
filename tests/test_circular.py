@@ -8,3 +8,6 @@ def test_circular_starts(node_factory):
     l1 = node_factory.get_node(options={"plugin": plugin_path})
     plugins = l1.rpc.plugin_list()["plugins"]
     assert any("circular" in p["name"] for p in plugins)
+    stats = l1.rpc.call("circular-stats")
+    assert stats is not None
+    assert "graph_stats" in stats

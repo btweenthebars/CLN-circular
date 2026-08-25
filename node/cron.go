@@ -6,6 +6,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -47,8 +48,13 @@ func (n *Node) refreshGraph() error {
 
 	channelList, err := n.lightning.ListChannels()
 	if err != nil {
-		n.Logf(glightning.Unusual, "error listing channels: %+v", err)
-		return err
+		// glightning returns an error ("No channel found for short channel id ") when 0 channels exist in gossip
+		if strings.Contains(err.Error(), "No channel found") {
+			channelList = []*glightning.Channel{}
+		} else {
+			n.Logf(glightning.Unusual, "error listing channels: %+v", err)
+			return err
+		}
 	}
 
 	n.Logln(glightning.Debug, "refreshing channels")
@@ -61,14 +67,13 @@ func (n *Node) refreshGraph() error {
 	nodes, err := n.lightning.ListNodes()
 	if err != nil {
 		n.Logf(glightning.Unusual, "error listing nodes: %+v", err)
-		return err
+	} else {
+		n.Graph.RefreshAliases(nodes)
 	}
-	n.Graph.RefreshAliases(nodes)
 
 	n.Logln(glightning.Debug, "saving graph to file")
 	if err = n.SaveGraphToFile(CIRCULAR_DIR, "graph.json"); err != nil {
 		n.Logf(glightning.Unusual, "error saving graph to file: %+v", err)
-		return err
 	}
 
 	n.Logln(glightning.Info, "graph has been refreshed")
