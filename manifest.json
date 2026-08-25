@@ -1,0 +1,4 @@
+{
+    "short_description": "Fast, efficient parallel channel rebalancer with bLIP-18 inbound fee support",
+    "long_description": "circular is a high-performance Core Lightning plugin designed for routing nodes to rebalance channels efficiently and cost-effectively using edge-keyed Dijkstra pathfinding."
+}

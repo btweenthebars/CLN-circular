@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -e
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+BIN="$DIR/circular_bin"
+
+if [ ! -f "$BIN" ] || [ "$DIR/cmd/circular/main.go" -nt "$BIN" ]; then
+    (cd "$DIR" && go build -o "$BIN" ./cmd/circular)
+fi
+
+exec "$BIN" "$@"
