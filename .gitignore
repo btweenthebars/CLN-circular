@@ -16,5 +16,6 @@ bench/*
 # Dependency directories (remove the comment below to include it)
 # vendor/
 *.idea
+circular
 circular_bin
 circular_plugin

@@ -31,8 +31,13 @@ You need Go 1.18 or higher to build this plugin.
 ```bash
 git clone https://github.com/btweenthebars/CLN-circular.git
 cd CLN-circular
-go build -o circular_plugin ./cmd/circular
-chmod +x circular_plugin
+go build -o circular ./cmd/circular
+chmod +x circular
+```
+
+Alternatively, you can run:
+```bash
+make build
 ```
 
 ## Running

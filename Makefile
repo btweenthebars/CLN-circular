@@ -1,4 +1,4 @@
-BINARY=circular_plugin
+BINARY=circular
 MAIN=./cmd/circular
 
 .PHONY: all build test clean
