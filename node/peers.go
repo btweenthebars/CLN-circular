@@ -29,6 +29,14 @@ func (n *Node) GetPeerChannelFromGraphChannel(graphChannel *graph.Channel) (*gli
 	n.PeersLock.RLock()
 	defer n.PeersLock.RUnlock()
 
+	if peer, ok := n.scidToPeer[graphChannel.ShortChannelId]; ok && peer != nil {
+		for _, channel := range peer.Channels {
+			if channel.ShortChannelId == graphChannel.ShortChannelId {
+				return channel, nil
+			}
+		}
+	}
+
 	for _, peer := range n.Peers {
 		for _, channel := range peer.Channels {
 			if channel.ShortChannelId == graphChannel.ShortChannelId {
@@ -58,6 +66,9 @@ func (n *Node) GetChannelPeerFromScid(scid string) (*glightning.Peer, error) {
 }
 
 func (n *Node) IsPeerConnected(channel *glightning.PeerChannel) bool {
+	if channel.PeerConnected {
+		return true
+	}
 	peer, err := n.GetChannelPeerFromScid(channel.ShortChannelId)
 	if err != nil {
 		return false

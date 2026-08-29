@@ -78,14 +78,14 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 	n.Logln(glightning.Debug, "loading from file")
 	n.getGraphFromFile(err, config)
 
-	n.Logln(glightning.Debug, "refreshing graph")
-	if err = n.refreshGraph(); err != nil {
-		n.Logln(glightning.Unusual, "initial refreshGraph failed: ", err)
-	}
-
 	n.Logln(glightning.Debug, "refreshing peers")
 	if err = n.refreshPeers(); err != nil {
 		n.Logln(glightning.Unusual, "initial refreshPeers failed: ", err)
+	}
+
+	n.Logln(glightning.Debug, "refreshing graph")
+	if err = n.refreshGraph(); err != nil {
+		n.Logln(glightning.Unusual, "initial refreshGraph failed: ", err)
 	}
 
 	n.Logln(glightning.Debug, "opening database")
