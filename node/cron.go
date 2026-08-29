@@ -97,8 +97,6 @@ func (n *Node) refreshPeers() error {
 	}
 
 	n.PeersLock.Lock()
-	defer n.PeersLock.Unlock()
-
 	for _, peer := range peers {
 		peer.Channels = make([]*glightning.PeerChannel, 0)
 		n.Peers[peer.Id] = peer
@@ -113,6 +111,26 @@ func (n *Node) refreshPeers() error {
 			n.scidToPeer[channel.ShortChannelId] = peer
 		}
 	}
+	n.PeersLock.Unlock()
+
+	// Ensure our local channels are always populated in graph with exact up-to-date fees & balances
+	n.Graph.Lock()
+	for _, channel := range channelsResp.Channels {
+		if channel.State == "CHANNELD_NORMAL" && channel.ShortChannelId != "" {
+			outChan := n.ConvertPeerChannelToGraphChannel(channel, true)
+			inChan := n.ConvertPeerChannelToGraphChannel(channel, false)
+
+			n.Graph.AddChannel(outChan)
+			n.Graph.AddChannel(inChan)
+
+			outId := channel.ShortChannelId + "/" + util.GetDirection(n.Id, channel.PeerId)
+			inId := channel.ShortChannelId + "/" + util.GetDirection(channel.PeerId, n.Id)
+
+			n.Graph.Channels[outId] = outChan
+			n.Graph.Channels[inId] = inChan
+		}
+	}
+	n.Graph.Unlock()
 
 	return nil
 }

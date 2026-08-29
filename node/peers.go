@@ -4,6 +4,7 @@ import (
 	"circular/graph"
 	"circular/util"
 	"github.com/elementsproject/glightning/glightning"
+	"time"
 )
 
 func (n *Node) GetBestPeerChannel(id string, metric func(*glightning.PeerChannel) uint64) *glightning.PeerChannel {
@@ -65,9 +66,48 @@ func (n *Node) IsPeerConnected(channel *glightning.PeerChannel) bool {
 	return peer.Connected
 }
 
+func (n *Node) ConvertPeerChannelToGraphChannel(channel *glightning.PeerChannel, isOutgoing bool) *graph.Channel {
+	source := n.Id
+	destination := channel.PeerId
+	updates := channel.Updates.Local
+	liquidity := channel.ToUsMsat.MSat()
+	if !isOutgoing {
+		source = channel.PeerId
+		destination = n.Id
+		updates = channel.Updates.Remote
+		if channel.TotalMsat.MSat() >= channel.ToUsMsat.MSat() {
+			liquidity = channel.TotalMsat.MSat() - channel.ToUsMsat.MSat()
+		} else {
+			liquidity = 0
+		}
+	}
+
+	glChan := &glightning.Channel{
+		Source:                   source,
+		Destination:              destination,
+		ShortChannelId:           channel.ShortChannelId,
+		IsPublic:                 !channel.Private,
+		Satoshis:                 channel.TotalMsat.MSat() / 1000,
+		AmountMsat:               channel.TotalMsat,
+		IsActive:                 channel.State == "CHANNELD_NORMAL" && channel.PeerConnected,
+		BaseFeeMillisatoshi:      updates.FeeBaseMsat.MSat(),
+		FeePerMillionth:          updates.FeeProportionalMillionths,
+		Delay:                    updates.CltvExpiryDelta,
+		HtlcMinimumMilliSatoshis: updates.HtlcMinimumMsat,
+		HtlcMaximumMilliSatoshis: updates.HtlcMaximumMsat,
+	}
+
+	return graph.NewChannel(glChan, liquidity, time.Now().Unix())
+}
+
 func (n *Node) GetGraphChannelFromPeerChannel(channel *glightning.PeerChannel, direction string) (*graph.Channel, error) {
 	channelId := channel.ShortChannelId + "/" + direction
-	return n.Graph.GetChannel(channelId)
+	c, err := n.Graph.GetChannel(channelId)
+	if err == nil {
+		return c, nil
+	}
+	isOutgoing := direction == util.GetDirection(n.Id, channel.PeerId)
+	return n.ConvertPeerChannelToGraphChannel(channel, isOutgoing), nil
 }
 
 func (n *Node) GetOutgoingChannelFromScid(scid string) (*graph.Channel, error) {
@@ -78,10 +118,17 @@ func (n *Node) GetOutgoingChannelFromScid(scid string) (*graph.Channel, error) {
 
 	channelId := scid + "/" + util.GetDirection(n.Id, peer.Id)
 	channel, err := n.Graph.GetChannel(channelId)
-	if err == util.ErrNoChannel {
-		return nil, util.ErrNoOutgoingChannel
+	if err == nil {
+		return channel, nil
 	}
-	return channel, err
+
+	for _, peerChannel := range peer.Channels {
+		if peerChannel.ShortChannelId == scid {
+			return n.ConvertPeerChannelToGraphChannel(peerChannel, true), nil
+		}
+	}
+
+	return nil, util.ErrNoOutgoingChannel
 }
 
 func (n *Node) GetIncomingChannelFromScid(scid string) (*graph.Channel, error) {
@@ -92,10 +139,17 @@ func (n *Node) GetIncomingChannelFromScid(scid string) (*graph.Channel, error) {
 
 	channelId := scid + "/" + util.GetDirection(peer.Id, n.Id)
 	channel, err := n.Graph.GetChannel(channelId)
-	if err == util.ErrNoChannel {
-		return nil, util.ErrNoIncomingChannel
+	if err == nil {
+		return channel, nil
 	}
-	return channel, err
+
+	for _, peerChannel := range peer.Channels {
+		if peerChannel.ShortChannelId == scid {
+			return n.ConvertPeerChannelToGraphChannel(peerChannel, false), nil
+		}
+	}
+
+	return nil, util.ErrNoIncomingChannel
 }
 
 func (n *Node) UpdateChannelBalance(outPeer, inPeer, outScid, inScid string, amount uint64) {
