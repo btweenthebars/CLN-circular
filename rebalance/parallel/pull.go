@@ -77,6 +77,10 @@ func (r *RebalancePull) Call() (jrpc2.Result, error) {
 }
 
 func (r *RebalancePull) IsGoodCandidate(peerChannel *glightning.PeerChannel) bool {
+	if peerChannel.State != rebalance2.NORMAL || !r.Node.IsPeerConnected(peerChannel) {
+		return false
+	}
+
 	// we need to get the outgoing channel from the peer to compute outgoing PPM and check it's below the maxoutppm
 	outgoingChannel, err := r.Node.GetOutgoingChannelFromScid(peerChannel.ShortChannelId)
 	if err != nil {
@@ -84,20 +88,12 @@ func (r *RebalancePull) IsGoodCandidate(peerChannel *glightning.PeerChannel) boo
 		return false
 	}
 
-	outboundFee := outgoingChannel.ComputeFee(r.splitAmount)
-	// Include any inbound surcharge from the next hop (our target channel's inbound fee applies
-	// to the incoming direction on this outgoing channel). Net negative fees are floored at 0.
-	inboundFee := r.Node.Graph.GetInboundFee(outgoingChannel, r.splitAmount)
-	netFee := int64(outboundFee) + inboundFee
-	if netFee < 0 {
-		netFee = 0
-	}
-	effectivePPM := uint64(netFee) * 1000000 / r.splitAmount
-	isGood := effectivePPM < r.MaxOutPPM
+	effectivePPM := outgoingChannel.ComputeFeePPM(r.splitAmount)
+	isGood := effectivePPM <= r.MaxOutPPM
 	if !isGood {
-		r.Node.Logf(glightning.Info, "IsGoodCandidate[%s]: effectivePPM=%d >= maxoutppm=%d (rejected)", peerChannel.ShortChannelId, effectivePPM, r.MaxOutPPM)
+		r.Node.Logf(glightning.Info, "IsGoodCandidate[%s]: outgoing PPM=%d > maxoutppm=%d (rejected)", peerChannel.ShortChannelId, effectivePPM, r.MaxOutPPM)
 	} else {
-		r.Node.Logf(glightning.Info, "IsGoodCandidate[%s]: effectivePPM=%d < maxoutppm=%d (accepted)", peerChannel.ShortChannelId, effectivePPM, r.MaxOutPPM)
+		r.Node.Logf(glightning.Info, "IsGoodCandidate[%s]: outgoing PPM=%d <= maxoutppm=%d (accepted)", peerChannel.ShortChannelId, effectivePPM, r.MaxOutPPM)
 	}
 	return isGood
 }

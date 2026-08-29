@@ -102,9 +102,12 @@ func (n *Node) refreshPeers() error {
 		n.Peers[peer.Id] = peer
 	}
 
-	// rebuild the SCID reverse index and ensure all channel peers exist in n.Peers
+	// rebuild the SCID reverse index and ensure all channel peers with active channels exist in n.Peers
 	n.scidToPeer = make(map[string]*glightning.Peer, len(channelsResp.Channels))
 	for _, channel := range channelsResp.Channels {
+		if channel.State != "CHANNELD_NORMAL" {
+			continue
+		}
 		peer, ok := n.Peers[channel.PeerId]
 		if !ok {
 			peer = &glightning.Peer{
@@ -115,7 +118,9 @@ func (n *Node) refreshPeers() error {
 			n.Peers[channel.PeerId] = peer
 		}
 		peer.Channels = append(peer.Channels, channel)
-		n.scidToPeer[channel.ShortChannelId] = peer
+		if channel.ShortChannelId != "" {
+			n.scidToPeer[channel.ShortChannelId] = peer
+		}
 	}
 	n.PeersLock.Unlock()
 
