@@ -17,21 +17,17 @@ const (
 func (r *Rebalance) checkConnections(inChannel, outChannel *glightning.PeerChannel) error {
 	//validate that the channels are in normal state
 	if inChannel.State != NORMAL {
-		r.Node.Logf(glightning.Info, "checkConnections: inChannel %s not in normal state (state=%s, expected %s)", inChannel.ShortChannelId, inChannel.State, NORMAL)
 		return util.ErrIncomingChannelNotInNormalState
 	}
 	if outChannel.State != NORMAL {
-		r.Node.Logf(glightning.Info, "checkConnections: outChannel %s not in normal state (state=%s, expected %s)", outChannel.ShortChannelId, outChannel.State, NORMAL)
 		return util.ErrOutgoingChannelNotInNormalState
 	}
 
 	// validate that the peers are connected
 	if !r.Node.IsPeerConnected(inChannel) {
-		r.Node.Logf(glightning.Info, "checkConnections: inChannel %s peer disconnected (peer_connected=%v)", inChannel.ShortChannelId, inChannel.PeerConnected)
 		return util.ErrIncomingPeerDisconnected
 	}
 	if !r.Node.IsPeerConnected(outChannel) {
-		r.Node.Logf(glightning.Info, "checkConnections: outChannel %s peer disconnected (peer_connected=%v)", outChannel.ShortChannelId, outChannel.PeerConnected)
 		return util.ErrOutgoingPeerDisconnected
 	}
 	return nil
@@ -41,25 +37,25 @@ func (r *Rebalance) checkLiquidity(inChannel, outChannel *glightning.PeerChannel
 	//validate that the amount is less than the liquidity of the channels
 	inAvailable := inChannel.TotalMsat.MSat() - inChannel.ToUsMsat.MSat()
 	if inAvailable < r.Amount {
-		r.Node.Logf(glightning.Info, "checkLiquidity: inChannel %s depleted (inAvailable=%d msat < required=%d msat)", inChannel.ShortChannelId, inAvailable, r.Amount)
 		return util.ErrIncomingChannelDepleted
 	}
 	if outChannel.ToUsMsat.MSat() < r.Amount {
-		r.Node.Logf(glightning.Info, "checkLiquidity: outChannel %s depleted (to_us=%d msat < required=%d msat)", outChannel.ShortChannelId, outChannel.ToUsMsat.MSat(), r.Amount)
 		return util.ErrOutgoingChannelDepleted
 	}
 	return nil
 }
 
 func (r *Rebalance) validateLiquidityParameters(out, in *graph.Channel) error {
+	r.Node.Logln(glightning.Debug, "validating liquidity parameters")
+
 	inChannel, err := r.Node.GetPeerChannelFromGraphChannel(in)
 	if err != nil {
-		r.Node.Logf(glightning.Unusual, "validateLiquidityParameters: GetPeerChannelFromGraphChannel(in=%s) failed: %v", in.ShortChannelId, err)
+		r.Node.Logln(glightning.Unusual, err)
 		return err
 	}
 	outChannel, err := r.Node.GetPeerChannelFromGraphChannel(out)
 	if err != nil {
-		r.Node.Logf(glightning.Unusual, "validateLiquidityParameters: GetPeerChannelFromGraphChannel(out=%s) failed: %v", out.ShortChannelId, err)
+		r.Node.Logln(glightning.Unusual, err)
 		return err
 	}
 
@@ -71,6 +67,7 @@ func (r *Rebalance) validateLiquidityParameters(out, in *graph.Channel) error {
 		return err
 	}
 
+	r.Node.Logln(glightning.Debug, "liquidity parameters validated")
 	return nil
 }
 
