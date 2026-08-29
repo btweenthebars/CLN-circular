@@ -72,12 +72,15 @@ func (r *Rebalance) Run() *Result {
 			return result
 		}
 
+		r.Node.Logf(glightning.Info, "runAttempt[%s -> %s] (attempt %d, maxHops %d) failed: %v",
+			r.OutChannel.ShortChannelId, r.InChannel.ShortChannelId, i, maxHops, err)
+
 		// always count the attempt
 		i++
 
 		// no route found with at most maxHops — expand and retry without consuming an attempt slot
 		if err == util.ErrNoRoute {
-			r.Node.Logln(glightning.Debug, "no route found with at most ", maxHops, " hops, increasing max hops to ", maxHops+1)
+			r.Node.Logf(glightning.Info, "no route found with at most %d hops, increasing max hops to %d", maxHops, maxHops+1)
 			lastError = err.Error()
 			maxHops += 1
 			continue
@@ -85,7 +88,7 @@ func (r *Rebalance) Run() *Result {
 
 		// no route found with at most maxHops cheaper than maxPPM — expand and retry
 		if errors.As(err, &util.ErrRouteTooExpensive{}) {
-			r.Node.Logln(glightning.Debug, err, ", increasing max hops to ", maxHops+1)
+			r.Node.Logf(glightning.Info, "%v, increasing max hops to %d", err, maxHops+1)
 			lastError = err.Error()
 			maxHops += 1
 			continue
@@ -107,6 +110,7 @@ func (r *Rebalance) Run() *Result {
 
 		if err != util.ErrTemporaryFailure {
 			lastError = err.Error()
+			r.Node.Logf(glightning.Info, "non-temporary error encountered (%v), stopping attempts for candidate %s", err, r.OutChannel.ShortChannelId)
 			break
 		}
 	}
@@ -115,6 +119,7 @@ func (r *Rebalance) Run() *Result {
 	failure.Attempts = uint64(i - 1)
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " attempts."
 	failure.Message += lastError
+	r.Node.Logf(glightning.Info, "rebalance candidate [%s -> %s] finished: %s", r.OutChannel.ShortChannelId, r.InChannel.ShortChannelId, failure.Message)
 
 	return failure
 }
@@ -125,6 +130,7 @@ func (r *Rebalance) runAttempt(maxHops int, exclude map[string]bool) (*Result, e
 	}
 
 	if err := r.validateLiquidityParameters(r.OutChannel, r.InChannel); err != nil {
+		r.Node.Logf(glightning.Info, "runAttempt: validateLiquidityParameters failed: %v", err)
 		return nil, err
 	}
 

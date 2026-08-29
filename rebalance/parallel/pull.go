@@ -46,7 +46,7 @@ func (r *RebalancePull) Call() (jrpc2.Result, error) {
 
 	r.CandidatesList = r.OutList
 	if r.CandidatesList != nil {
-		r.Node.Logln(glightning.Debug, "Using outlist:", r.CandidatesList)
+		r.Node.Logln(glightning.Info, "Using outlist:", r.CandidatesList)
 		// if an outlist was supplied, ignore maxoutppm. To do this we put it to "infinity"
 		r.MaxOutPPM = 1 << 63
 	}
@@ -54,17 +54,21 @@ func (r *RebalancePull) Call() (jrpc2.Result, error) {
 	r.setDefaults()
 
 	if err := r.validateParameters(); err != nil {
+		r.Node.Logf(glightning.Unusual, "RebalancePull validateParameters failed: %v", err)
 		return nil, err
 	}
-	r.Node.Logf(glightning.Debug, "RebalancePull parameters validated: %+v", r)
+	r.Node.Logf(glightning.Info, "RebalancePull started: inscid=%s, amount=%d sat, splitamount=%d sat, maxoutppm=%d, maxppm=%d, maxhops=%d, attempts=%d",
+		r.InScid, r.amount/1000, r.splitAmount/1000, r.MaxOutPPM, r.maxPPM, r.maxHops, r.attempts)
 
 	incomingChannel, err := r.Node.GetIncomingChannelFromScid(r.InScid)
 	if err != nil {
+		r.Node.Logf(glightning.Unusual, "GetIncomingChannelFromScid(%s) failed: %v", r.InScid, err)
 		return nil, err
 	}
 	r.TargetChannel = incomingChannel
 
 	if err = r.FindCandidates(r.TargetChannel.Source); err != nil {
+		r.Node.Logf(glightning.Unusual, "FindCandidates failed: %v", err)
 		return nil, err
 	}
 
@@ -76,7 +80,7 @@ func (r *RebalancePull) IsGoodCandidate(peerChannel *glightning.PeerChannel) boo
 	// we need to get the outgoing channel from the peer to compute outgoing PPM and check it's below the maxoutppm
 	outgoingChannel, err := r.Node.GetOutgoingChannelFromScid(peerChannel.ShortChannelId)
 	if err != nil {
-		r.Node.Logln(glightning.Unusual, err)
+		r.Node.Logf(glightning.Unusual, "IsGoodCandidate[%s]: GetOutgoingChannel failed: %v", peerChannel.ShortChannelId, err)
 		return false
 	}
 
@@ -89,23 +93,34 @@ func (r *RebalancePull) IsGoodCandidate(peerChannel *glightning.PeerChannel) boo
 		netFee = 0
 	}
 	effectivePPM := uint64(netFee) * 1000000 / r.splitAmount
-	return effectivePPM < r.MaxOutPPM
+	isGood := effectivePPM < r.MaxOutPPM
+	if !isGood {
+		r.Node.Logf(glightning.Info, "IsGoodCandidate[%s]: effectivePPM=%d >= maxoutppm=%d (rejected)", peerChannel.ShortChannelId, effectivePPM, r.MaxOutPPM)
+	} else {
+		r.Node.Logf(glightning.Info, "IsGoodCandidate[%s]: effectivePPM=%d < maxoutppm=%d (accepted)", peerChannel.ShortChannelId, effectivePPM, r.MaxOutPPM)
+	}
+	return isGood
 }
 
 // Check that the channel is not under the deplete threshold and connection is active
 func (r *RebalancePull) CanUseChannel(channel *glightning.PeerChannel) error {
 	depleteAmount := util.Min(r.DepleteUpToAmount,
 		uint64(float64(channel.TotalMsat.MSat())*r.DepleteUpToPercent))
-	r.Node.Logln(glightning.Debug, "depleteAmount:", depleteAmount)
+	r.Node.Logf(glightning.Info, "CanUseChannel[%s]: to_us=%d msat, total=%d msat, deplete_threshold=%d msat, state=%s, connected=%v",
+		channel.ShortChannelId, channel.ToUsMsat.MSat(), channel.TotalMsat.MSat(), depleteAmount, channel.State, r.Node.IsPeerConnected(channel))
+
 	if channel.ToUsMsat.MSat() < depleteAmount {
+		r.Node.Logf(glightning.Info, "CanUseChannel[%s]: rejected - channel depleted (to_us < deplete_threshold)", channel.ShortChannelId)
 		return util.ErrChannelDepleted
 	}
 
 	if channel.State != rebalance2.NORMAL {
+		r.Node.Logf(glightning.Info, "CanUseChannel[%s]: rejected - channel state '%s' != '%s'", channel.ShortChannelId, channel.State, rebalance2.NORMAL)
 		return util.ErrChannelNotInNormalState
 	}
 
-	if r.Node.IsPeerConnected(channel) == false {
+	if !r.Node.IsPeerConnected(channel) {
+		r.Node.Logf(glightning.Info, "CanUseChannel[%s]: rejected - peer disconnected", channel.ShortChannelId)
 		return util.ErrOutgoingPeerDisconnected
 	}
 
