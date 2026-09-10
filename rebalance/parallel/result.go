@@ -18,6 +18,7 @@ type Result struct {
 	Attempts         uint64             `json:"attempts"`
 	Time             string             `json:"time"`
 	Successes        map[string]Success `json:"successes"`
+	LastError        string             `json:"last_error,omitempty"`
 }
 
 func NewResult(target uint64) *Result {
@@ -59,6 +60,9 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 			r.EnqueueCandidate(rebalanceResult)
 		} else {
 			r.Node.Logf(glightning.Debug, "Failed rebalance attempt: %s", rebalanceResult.Message)
+			if rebalanceResult.Message != "" {
+				r.Result.LastError = rebalanceResult.Message
+			}
 		}
 
 		// update inflight and rebalanced amount
