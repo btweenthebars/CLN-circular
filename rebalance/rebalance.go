@@ -44,7 +44,6 @@ func (r *Rebalance) Setup() error {
 
 func (r *Rebalance) Run() *Result {
 	var (
-		maxHops   = 3
 		i         = 1
 		lastError = ""
 		// exclude accumulates failing channels across attempts so the pathfinder
@@ -52,17 +51,36 @@ func (r *Rebalance) Run() *Result {
 		exclude = map[string]bool{r.Node.Id: true}
 	)
 	for i <= r.Attempts {
-		if maxHops > r.MaxHops {
-			lastError = " Unable to find a route with less than " +
-				strconv.Itoa(r.MaxHops) + " hops. " + lastError
-			break
-		}
 		r.Node.Logln(glightning.Debug, "===================== ATTEMPT ", i, " =====================")
 
-		result, err := r.runAttempt(maxHops, exclude)
+		var (
+			result *Result
+			err    error
+		)
 
-		// success
-		if err == nil {
+		// Expand hops starting from 3 up to r.MaxHops until a route is found
+		for maxHops := 3; maxHops <= r.MaxHops; maxHops++ {
+			result, err = r.runAttempt(maxHops, exclude)
+			if err == nil {
+				// Succeeded!
+				break
+			}
+			if err == util.ErrNoRoute {
+				r.Node.Logln(glightning.Debug, "no route found with at most ", maxHops, " hops, increasing max hops to ", maxHops+1)
+				lastError = err.Error()
+				continue
+			}
+			if errors.As(err, &util.ErrRouteTooExpensive{}) {
+				r.Node.Logln(glightning.Debug, err, ", increasing max hops to ", maxHops+1)
+				lastError = err.Error()
+				continue
+			}
+			// If it's a payment or node error (HTLC was attempted or node stopped), stop searching hops
+			break
+		}
+
+		// Success
+		if err == nil && result != nil {
 			result.Attempts = uint64(i)
 			r.Node.Logln(glightning.Info, result.Message)
 			if result.Route != nil {
@@ -72,23 +90,13 @@ func (r *Rebalance) Run() *Result {
 			return result
 		}
 
-		// always count the attempt
+		// Payment attempt was consumed
 		i++
 
-		// no route found with at most maxHops — expand and retry without consuming an attempt slot
-		if err == util.ErrNoRoute {
-			r.Node.Logln(glightning.Debug, "no route found with at most ", maxHops, " hops, increasing max hops to ", maxHops+1)
-			lastError = err.Error()
-			maxHops += 1
-			continue
-		}
-
-		// no route found with at most maxHops cheaper than maxPPM — expand and retry
-		if errors.As(err, &util.ErrRouteTooExpensive{}) {
-			r.Node.Logln(glightning.Debug, err, ", increasing max hops to ", maxHops+1)
-			lastError = err.Error()
-			maxHops += 1
-			continue
+		if err == util.ErrNoRoute || errors.As(err, &util.ErrRouteTooExpensive{}) {
+			lastError = " Unable to find a route with at most " +
+				strconv.Itoa(r.MaxHops) + " hops. " + lastError
+			break
 		}
 
 		// sendpay timeout
