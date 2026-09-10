@@ -53,6 +53,9 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 
 		if rebalanceResult.Status == "success" {
 			r.Node.Logln(glightning.Info, rebalanceResult.Message)
+			if rebalanceResult.Route != nil {
+				r.Node.Logln(glightning.Info, "\n"+rebalanceResult.Route.String())
+			}
 			// update results data
 			r.AddSuccess(rebalanceResult)
 
