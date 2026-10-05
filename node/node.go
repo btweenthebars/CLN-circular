@@ -100,14 +100,11 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 
 func (n *Node) getGraphFromFile(err error, config *glightning.Config) {
 	err = n.LoadGraphFromFile(config.LightningDir+"/"+CIRCULAR_DIR, graph.FILE)
-	if err == util.ErrNoGraphToLoad {
-		// If we don't have a graph, we need to create one
+	if err != nil {
+		// No saved graph could be read: start from an empty one, which the
+		// graph refresh fills from gossip.
 		n.Logln(glightning.Unusual, err)
 		n.Graph = graph.NewGraph()
-	} else if err != nil {
-		// If we have an error, we're in trouble
-		n.Logln(glightning.Unusual, err)
-		log.Fatalln(err)
 	}
 }
 

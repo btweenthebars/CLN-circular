@@ -4,42 +4,55 @@ import (
 	"circular/graph"
 	"circular/util"
 	"encoding/json"
+	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"os"
 	"time"
 )
 
+// LoadGraphFromFile loads the graph saved by SaveGraphToFile. If that copy is
+// missing or cannot be decoded, for example because a crash truncated it, it
+// falls back to the previous copy. If neither loads, it returns
+// util.ErrNoGraphToLoad and the graph is rebuilt from gossip.
 func (n *Node) LoadGraphFromFile(dir, filename string) error {
 	defer util.TimeTrack(time.Now(), "graph.LoadGraphFromFile", n.Logf)
-	file, err := os.Open(dir + "/" + filename)
-	if err != nil {
-		n.Logln(glightning.Debug, "unable to load graph data:", err, ", looking for an old file")
-		n.Logln(glightning.Debug, "trying to load an old version of the graph")
-		filename += ".old"
-		file, err = os.Open(dir + "/" + filename)
+
+	path := dir + "/" + filename
+	for _, candidate := range []string{path, path + ".old"} {
+		g, err := loadGraph(candidate)
 		if err != nil {
-			n.Logln(glightning.Debug, "unable to load any old version of the graph: ", err, ", continuing with a new graph")
-			return util.ErrNoGraphToLoad
+			level := glightning.Unusual
+			if os.IsNotExist(err) {
+				level = glightning.Debug
+			}
+			n.Logln(level, "unable to load graph data from ", candidate, ": ", err)
+			continue
 		}
+		n.Graph = g
+		n.Logln(glightning.Info, "graph loaded successfully from ", candidate)
+		return nil
+	}
+	return util.ErrNoGraphToLoad
+}
+
+func loadGraph(path string) (*graph.Graph, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
 	defer file.Close()
-	n.Logln(glightning.Debug, "loading graph data from file:", dir+"/"+filename)
 
 	g := graph.NewGraph()
-
-	err = json.NewDecoder(file).Decode(g)
-	if err != nil {
-		return err
+	if err := json.NewDecoder(file).Decode(g); err != nil {
+		return nil, err
 	}
-
-	for _, c := range g.Channels {
+	for id, c := range g.Channels {
+		if c == nil || c.Channel == nil {
+			return nil, fmt.Errorf("channel %s has no data", id)
+		}
 		g.AddChannel(c)
 	}
-
-	n.Graph = g
-
-	n.Logln(glightning.Info, "graph loaded successfully")
-	return nil
+	return g, nil
 }
 
 func (n *Node) SaveGraphToFile(dir, filename string) error {
@@ -57,7 +70,8 @@ func (n *Node) SaveGraphToFile(dir, filename string) error {
 		return err
 	}
 
-	// Atomically rotate: current → .old, then .tmp → current
+	// Rotate: current → .old, then .tmp → current. A crash in between leaves
+	// .old, which LoadGraphFromFile falls back to.
 	if _, err := os.Stat(filename); err == nil {
 		if err := os.Rename(filename, filename+".old"); err != nil {
 			return err
@@ -66,23 +80,42 @@ func (n *Node) SaveGraphToFile(dir, filename string) error {
 	if err := os.Rename(filename+".tmp", filename); err != nil {
 		return err
 	}
+	syncDir(dir)
 
 	return nil
 }
 
+// serializeToFile writes the graph to filename.tmp and flushes it to disk, so
+// that a crash cannot leave a truncated file in place of the current copy.
 func (n *Node) serializeToFile(filename string) error {
-	// open temporary file
-	file, err := os.Create(filename + ".tmp")
+	tmp := filename + ".tmp"
+	file, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
-	// write json
 	n.Graph.Lock()
-	defer n.Graph.Unlock()
-	if err := json.NewEncoder(file).Encode(n.Graph); err != nil {
+	err = json.NewEncoder(file).Encode(n.Graph)
+	n.Graph.Unlock()
+
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return nil
+}
+
+// syncDir flushes a directory's entries, making renames in it durable. Not
+// every platform supports it, so failures are ignored.
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
 }
