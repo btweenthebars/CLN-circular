@@ -33,27 +33,31 @@ func (r *Rebalance) getRoute(maxHops int, exclude map[string]bool) (*graph.Route
 }
 
 func (r *Rebalance) tryRoute(maxHops int, exclude map[string]bool) (*graph.PrettyRoute, error) {
-	paymentSecretHash, err := r.Node.GeneratePreimageHashPair()
-	if err != nil {
-		return nil, err
-	}
-
 	r.Node.Logln(glightning.Debug, "generating route")
 	route, err := r.getRoute(maxHops, exclude)
 	if err != nil {
 		return nil, err
 	}
 
-	prettyRoute := graph.NewPrettyRoute(route, paymentSecretHash)
+	// Pay ourselves through a short-lived invoice, so that lightningd checks the
+	// incoming HTLC (payment secret, amount, CLTV) before releasing the preimage.
+	invoice, err := r.Node.CreateRebalanceInvoice(route.Amount)
+	if err != nil {
+		r.Node.Logln(glightning.Unusual, "unable to create rebalance invoice: ", err)
+		return nil, err
+	}
+	paymentHash := invoice.PaymentHash
+
+	prettyRoute := graph.NewPrettyRoute(route, paymentHash)
 
 	// save route to DB
-	if err := r.Node.SaveToDb(node.ROUTE_PREFIX+paymentSecretHash, prettyRoute); err != nil {
+	if err := r.Node.SaveToDb(node.ROUTE_PREFIX+paymentHash, prettyRoute); err != nil {
 		r.Node.Logln(glightning.Unusual, "unable to save route to db: ", err)
 	}
 	r.Node.Logln(glightning.Debug, prettyRoute)
 	r.Node.Logln(glightning.Debug, prettyRoute.Simple())
 
-	_, err = r.Node.SendPay(route, paymentSecretHash)
+	_, err = r.Node.SendPay(route, invoice)
 	if err != nil {
 		// Extract erring channel from payment error and add it to exclude for
 		// future attempts so the pathfinder skips the known-bad channel.

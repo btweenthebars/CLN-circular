@@ -44,7 +44,8 @@ func main() {
 	registerOptions(plugin)
 	registerMethods(plugin)
 	registerSubscriptions(plugin)
-	registerHooks(plugin)
+	// No htlc_accepted hook: rebalances pay a real invoice, so lightningd settles
+	// the incoming HTLC itself after checking its payment secret and amount.
 
 	err := plugin.Start(os.Stdin, os.Stdout)
 	if err != nil {

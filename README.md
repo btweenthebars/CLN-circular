@@ -10,7 +10,10 @@ It features a custom edge-based backwards Dijkstra pathfinding algorithm that ac
 * **Parallel Multi-Channel Rebalancing**: Simultaneously pull into or push out of target channels across multiple peers (`circular-pull` and `circular-push`).
 * **In-Flight Payment Tracking**: Real-time visibility into active parallel rebalancing operations via `circular-active`.
 * **Fee-Aware Selection**: Prioritizes lowest-cost outgoing routes rather than blindly picking the largest balance channel.
-* **Lightweight & No Invoices**: Uses self-payments with preimage generation (cryptographically secure), requiring no invoice generation.
+* **Safe Self-Payments**: Each attempt pays a short-lived invoice (label `circular-…`) that circular deletes once the attempt ends. lightningd checks the incoming HTLC's payment secret, amount and CLTV before it settles, so circular needs no `htlc_accepted` hook.
+
+## Security
+Earlier versions settled rebalances from an `htlc_accepted` hook that released the preimage for any HTLC carrying a known payment hash, including forwarded HTLCs and HTLCs paying less than the rebalance amount. A node on a rebalance route could use that to obtain the preimage and keep the payment. If you run an older build, update before rebalancing again.
 
 ## Endpoints
 * `circular-pull`: Pull liquidity into a channel using multiple peer channels as sources in parallel
