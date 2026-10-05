@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// Channel is one direction of a channel in the graph. Its policy (the
+// embedded glightning.Channel) never changes once the channel is in the
+// graph: an update replaces the whole Channel, so routes keep the policy they
+// were priced with and can read it without a lock. Liquidity and Timestamp
+// change in place, only with the graph's channel lock held.
 type Channel struct {
 	*glightning.Channel `json:"channel"`
 	Liquidity           uint64 `json:"liquidity"`
