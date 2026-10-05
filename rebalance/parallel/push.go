@@ -92,12 +92,16 @@ func (r *RebalancePush) IsGoodCandidate(peerChannel *glightning.PeerChannel) boo
 	return outgoingChannel.ComputeFeePPM(r.splitAmount) > r.MinOutPPM
 }
 
+// CanUseChannel checks that the channel keeps at least the fill threshold as
+// remote balance after receiving a split, and that its peer is connected.
 func (r *RebalancePush) CanUseChannel(channel *glightning.PeerChannel) error {
-	// check that the channel is not over the fill threshold
 	fillAmount := util.Min(r.FillUpToAmount,
 		uint64(float64(channel.TotalMsat.MSat())*r.FillUpToPercent))
 	r.Node.Logln(glightning.Debug, "fillAmount:", fillAmount)
-	if (channel.TotalMsat.MSat() - channel.ToUsMsat.MSat()) < fillAmount {
+
+	// Receivable, unlike the remote balance, already leaves out the peer's
+	// reserve and the HTLCs in flight.
+	if channel.ReceivableMsat.MSat() < fillAmount+r.splitAmount {
 		return util.ErrChannelFilled
 	}
 

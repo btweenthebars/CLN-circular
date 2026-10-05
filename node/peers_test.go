@@ -84,3 +84,40 @@ func TestLocalChannelsSurviveGraphRefresh(t *testing.T) {
 	assert.Equal(t, 2, n.Graph.SyncChannels(gossip, n.localChannelIds()))
 	assert.Len(t, n.Graph.Channels, 1)
 }
+
+// After a split, the rebalanced channels are read again rather than adjusted
+// in the cache: an adjustment counted the payment twice when refreshPeers had
+// already seen it, and could wrap the balance around to about 1.8e19 msat.
+func TestSetPeerChannelsReplacesThePeer(t *testing.T) {
+	before := &glightning.PeerChannel{PeerId: "02peer", ShortChannelId: "7x7x7", State: "CHANNELD_NORMAL",
+		TotalMsat: glightning.AmountFromMSat(1000000), ToUsMsat: glightning.AmountFromMSat(1000000)}
+	old := &glightning.Peer{Id: "02peer", Connected: true, Channels: []*glightning.PeerChannel{before}}
+	n := &Node{
+		Id:         "02self",
+		Graph:      graph.NewGraph(),
+		PeersLock:  &sync.RWMutex{},
+		Peers:      map[string]*glightning.Peer{"02peer": old},
+		scidToPeer: map[string]*glightning.Peer{"7x7x7": old},
+	}
+
+	after := *before
+	after.ToUsMsat = glightning.AmountFromMSat(400000)
+	closing := &glightning.PeerChannel{PeerId: "02peer", ShortChannelId: "8x8x8", State: "CHANNELD_SHUTTING_DOWN"}
+	n.setPeerChannels("02peer", []*glightning.PeerChannel{&after, closing})
+
+	peer := n.Peers["02peer"]
+	assert.NotSame(t, old, peer)
+	assert.Equal(t, []*glightning.PeerChannel{&after}, peer.Channels)
+	assert.True(t, peer.Connected)
+	assert.Equal(t, []*glightning.PeerChannel{before}, old.Channels, "the peer read earlier is unchanged")
+	assert.Same(t, peer, n.scidToPeer["7x7x7"])
+	_, ok := n.scidToPeer["8x8x8"]
+	assert.False(t, ok)
+
+	c, err := n.Graph.GetChannel("7x7x7/" + util.GetDirection("02self", "02peer"))
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(400000), c.Liquidity)
+
+	n.setPeerChannels("02unknown", []*glightning.PeerChannel{&after})
+	assert.Len(t, n.Peers, 1)
+}

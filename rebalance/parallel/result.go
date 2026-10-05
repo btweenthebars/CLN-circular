@@ -84,18 +84,21 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 }
 
 func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {
+	if result.Status == "success" {
+		// Read both channels again, so that the deplete and fill checks of the
+		// next splits see the new balances rather than those of the last peer
+		// refresh. Adjusting the cached balances instead counted a payment
+		// twice when a peer refresh had already seen it.
+		if err := r.Node.RefreshPeerChannels(result.Out, result.In); err != nil {
+			r.Node.Logln(glightning.Unusual, "unable to refresh the rebalanced channels: ", err)
+		}
+	}
+
 	r.AmountLock.Lock()
 	defer r.AmountLock.Unlock()
 
 	r.InFlightAmount -= r.splitAmount
 	if result.Status == "success" {
 		r.AmountRebalanced += r.splitAmount
-
-		// not really a good way to do it, but we need to do this to make sure we don't
-		// overshoot the Deplete/Fill amount. This is necessary because otherwise the
-		// spendable balance would only be updated on refreshPeers.
-		outScid := result.Route.Hops[0].ShortChannelId
-		inScid := result.Route.Hops[len(result.Route.Hops)-1].ShortChannelId
-		r.Node.UpdateChannelBalance(result.Out, result.In, outScid, inScid, result.Amount)
 	}
 }

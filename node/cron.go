@@ -146,26 +146,72 @@ func (n *Node) refreshPeers() error {
 	}
 	n.PeersLock.Unlock()
 
-	// Ensure our local channels are always populated in graph with exact up-to-date fees & balances
+	n.addLocalChannelsToGraph(channelsResp.Channels)
+	return nil
+}
+
+// addLocalChannelsToGraph puts both directions of our open channels in the
+// graph, with the exact fees and balances lightningd reports.
+func (n *Node) addLocalChannelsToGraph(channels []*glightning.PeerChannel) {
 	n.Graph.Lock()
-	for _, channel := range channelsResp.Channels {
-		if channel.State == "CHANNELD_NORMAL" && channel.ShortChannelId != "" {
-			outChan := n.ConvertPeerChannelToGraphChannel(channel, true)
-			inChan := n.ConvertPeerChannelToGraphChannel(channel, false)
+	defer n.Graph.Unlock()
 
-			n.Graph.AddChannel(outChan)
-			n.Graph.AddChannel(inChan)
-
-			outId := channel.ShortChannelId + "/" + util.GetDirection(n.Id, channel.PeerId)
-			inId := channel.ShortChannelId + "/" + util.GetDirection(channel.PeerId, n.Id)
-
-			n.Graph.Channels[outId] = outChan
-			n.Graph.Channels[inId] = inChan
+	for _, channel := range channels {
+		if channel.State != "CHANNELD_NORMAL" || channel.ShortChannelId == "" {
+			continue
+		}
+		for _, outgoing := range []bool{true, false} {
+			c := n.ConvertPeerChannelToGraphChannel(channel, outgoing)
+			n.Graph.AddChannel(c)
+			n.Graph.Channels[c.ShortChannelId+"/"+util.GetDirection(c.Source, c.Destination)] = c
 		}
 	}
-	n.Graph.Unlock()
+}
 
+// RefreshPeerChannels reads our channels with the given peers again, so that
+// the rebalances that follow one that just moved liquidity see the new
+// balances without waiting for the next peer refresh.
+func (n *Node) RefreshPeerChannels(peerIds ...string) error {
+	for _, id := range peerIds {
+		resp, err := n.lightning.ListPeerChannels(id)
+		if err != nil {
+			return err
+		}
+		n.setPeerChannels(id, resp.Channels)
+	}
 	return nil
+}
+
+// setPeerChannels gives a known peer the open channels among channels. The
+// peer is replaced, not changed in place, as refreshPeers does: callers read
+// the peers they got earlier without the lock.
+func (n *Node) setPeerChannels(peerId string, channels []*glightning.PeerChannel) {
+	n.PeersLock.Lock()
+	old, ok := n.Peers[peerId]
+	if !ok || old == nil {
+		n.PeersLock.Unlock()
+		return
+	}
+	peer := *old
+	peer.Channels = make([]*glightning.PeerChannel, 0, len(channels))
+	for scid, p := range n.scidToPeer {
+		if p == old {
+			delete(n.scidToPeer, scid)
+		}
+	}
+	for _, channel := range channels {
+		if channel.State != "CHANNELD_NORMAL" {
+			continue
+		}
+		peer.Channels = append(peer.Channels, channel)
+		if channel.ShortChannelId != "" {
+			n.scidToPeer[channel.ShortChannelId] = &peer
+		}
+	}
+	n.Peers[peerId] = &peer
+	n.PeersLock.Unlock()
+
+	n.addLocalChannelsToGraph(peer.Channels)
 }
 
 func (n *Node) refreshLiquidity() {

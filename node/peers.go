@@ -170,28 +170,6 @@ func (n *Node) GetIncomingChannelFromScid(scid string) (*graph.Channel, error) {
 	return nil, util.ErrNoIncomingChannel
 }
 
-func (n *Node) UpdateChannelBalance(outPeer, inPeer, outScid, inScid string, amount uint64) {
-	n.PeersLock.Lock()
-	defer n.PeersLock.Unlock()
-
-	if peer, ok := n.Peers[outPeer]; ok && peer != nil {
-		for _, channel := range peer.Channels {
-			if channel.ShortChannelId == outScid {
-				channel.ToUsMsat = glightning.AmountFromMSat(channel.ToUsMsat.MSat() - amount*1000)
-				break
-			}
-		}
-	}
-	if peer, ok := n.Peers[inPeer]; ok && peer != nil {
-		for _, channel := range peer.Channels {
-			if channel.ShortChannelId == inScid {
-				channel.ToUsMsat = glightning.AmountFromMSat(channel.ToUsMsat.MSat() + amount*1000)
-				break
-			}
-		}
-	}
-}
-
 func (n *Node) OnConnect(c *glightning.ConnectEvent) {
 	n.PeersLock.Lock()
 	defer n.PeersLock.Unlock()

@@ -91,13 +91,17 @@ func (r *RebalancePull) IsGoodCandidate(peerChannel *glightning.PeerChannel) boo
 	return effectivePPM <= r.MaxOutPPM
 }
 
-// Check that the channel is not under the deplete threshold and connection is active
+// CanUseChannel checks that the channel stays above the deplete threshold
+// after sending a split, and that its peer is connected.
 func (r *RebalancePull) CanUseChannel(channel *glightning.PeerChannel) error {
 	depleteAmount := util.Min(r.DepleteUpToAmount,
 		uint64(float64(channel.TotalMsat.MSat())*r.DepleteUpToPercent))
 	r.Node.Logln(glightning.Debug, "depleteAmount:", depleteAmount)
 
-	if channel.ToUsMsat.MSat() < depleteAmount {
+	// The split takes the split amount and its fees. Spendable, unlike our
+	// balance, already leaves out the reserve and the HTLCs in flight.
+	split := r.splitAmount + graph.MaxFeeForPPM(r.splitAmount, r.maxPPM)
+	if channel.SpendableMsat.MSat() < depleteAmount+split {
 		return util.ErrChannelDepleted
 	}
 
