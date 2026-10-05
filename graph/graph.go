@@ -268,8 +268,13 @@ func (g *Graph) GetInboundFee(c *Channel, amount uint64) int64 {
 	g.inboundFeesLock.RLock()
 	defer g.inboundFeesLock.RUnlock()
 
-	key := c.ShortChannelId + "/" + util.GetDirection(c.Source, c.Destination)
-	fee, ok := g.InboundFees[key]
+	return g.inboundFee(c.ShortChannelId+"/"+util.GetDirection(c.Source, c.Destination), amount)
+}
+
+// inboundFee is GetInboundFee for callers that hold inboundFeesLock and know
+// the channel id.
+func (g *Graph) inboundFee(channelId string, amount uint64) int64 {
+	fee, ok := g.InboundFees[channelId]
 	if !ok {
 		return 0
 	}

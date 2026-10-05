@@ -62,46 +62,19 @@ func (r *Route) GetFeeWithoutInboundFee() uint64 {
 	return amountToForward - r.Amount
 }
 
-func (r *Route) Prepend(channel *Channel) {
-	firstHop := r.Hops[0]
-	// Hop 0 is from our own node through our outgoing channel.
-	// Our own node charges no outbound fee to itself.
-	newFirstHop := RouteHop{
-		Channel:      channel,
-		MilliSatoshi: firstHop.MilliSatoshi,
-		Delay:        firstHop.Delay + channel.Delay,
-	}
-	r.Hops = append([]RouteHop{newFirstHop}, r.Hops...)
-}
-
 func (r *Route) recomputeFeeAndDelay() {
 	for i := len(r.Hops) - 2; i >= 0; i-- {
 		hop := r.Hops[i+1]
 		amountToForward := hop.MilliSatoshi
 		
+		// the same pricing as the route search, so the route costs what was searched
 		outboundFee := hop.ComputeFee(amountToForward)
 		inboundFee := r.Graph.GetInboundFee(r.Hops[i].Channel, amountToForward)
-		
-		hopFee := int64(outboundFee) + inboundFee
-		if hopFee < 0 {
-			hopFee = 0
-		}
-		
-		r.Hops[i].MilliSatoshi = amountToForward + uint64(hopFee)
+		r.Hops[i].MilliSatoshi = amountToForward + nodeFee(outboundFee, inboundFee)
 
 		delay := hop.Delay
 		r.Hops[i].Delay = delay + hop.Channel.Delay
 	}
-}
-
-func (r *Route) Append(channel *Channel) {
-	newLastHop := RouteHop{
-		Channel:      channel,
-		MilliSatoshi: r.Amount,
-		Delay:        INITIAL_DELAY,
-	}
-	r.Hops = append(r.Hops, newLastHop)
-	r.recomputeFeeAndDelay()
 }
 
 func (r *Route) ToLightningRoute() []glightning.RouteHop {

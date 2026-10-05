@@ -53,30 +53,12 @@ func (r *Rebalance) Run() *Result {
 	for i <= r.Attempts {
 		r.Node.Logln(glightning.Debug, "===================== ATTEMPT ", i, " =====================")
 
-		var (
-			result *Result
-			err    error
-		)
-
-		// Expand hops starting from 3 up to r.MaxHops until a route is found
-		for maxHops := 3; maxHops <= r.MaxHops; maxHops++ {
-			result, err = r.runAttempt(maxHops, exclude)
-			if err == nil {
-				// Succeeded!
-				break
-			}
-			if err == util.ErrNoRoute {
-				r.Node.Logln(glightning.Debug, "no route found with at most ", maxHops, " hops, increasing max hops to ", maxHops+1)
-				lastError = err.Error()
-				continue
-			}
-			if errors.As(err, &util.ErrRouteTooExpensive{}) {
-				r.Node.Logln(glightning.Debug, err, ", increasing max hops to ", maxHops+1)
-				lastError = err.Error()
-				continue
-			}
-			// If it's a payment or node error (HTLC was attempted or node stopped), stop searching hops
-			break
+		// One search returns the route with the fewest hops within maxppm,
+		// and the cheapest of those.
+		result, err := r.runAttempt(exclude)
+		if err == util.ErrNoRoute || errors.As(err, &util.ErrRouteTooExpensive{}) {
+			r.Node.Logln(glightning.Debug, err)
+			lastError = err.Error()
 		}
 
 		// Success
@@ -127,7 +109,7 @@ func (r *Rebalance) Run() *Result {
 	return failure
 }
 
-func (r *Rebalance) runAttempt(maxHops int, exclude map[string]bool) (*Result, error) {
+func (r *Rebalance) runAttempt(exclude map[string]bool) (*Result, error) {
 	if r.Node.Stopped.Load() {
 		return nil, util.ErrCircularStopped
 	}
@@ -136,7 +118,7 @@ func (r *Rebalance) runAttempt(maxHops int, exclude map[string]bool) (*Result, e
 		return nil, err
 	}
 
-	route, err := r.tryRoute(maxHops, exclude)
+	route, err := r.tryRoute(exclude)
 	if err != nil {
 		return nil, err
 	}

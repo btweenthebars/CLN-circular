@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
+	"math"
 	"math/rand"
 	"os"
 	"testing"
@@ -48,10 +49,11 @@ func TestPathfinderBasic(t *testing.T) {
 	}
 	maxHops := 10
 
-	hops, err := graph.dijkstra(src, dst, uint64(amount), exclude, maxHops)
+	route, err := graph.GetRoute(src, dst, uint64(amount), exclude, maxHops)
 	if err != nil {
 		t.Fatal(err)
 	}
+	hops := route.Hops
 	assert.LessOrEqual(t, len(hops), maxHops)
 	for i := 0; i < len(hops)-1; i++ {
 		assert.Equal(t, hops[i].Destination, hops[i+1].Source)
@@ -166,26 +168,22 @@ func TestPathfinderInboundFee(t *testing.T) {
 	g.AddChannel(chB2C)
 	g.Channels["4x1x1/"+util.GetDirection(b2, cNode)] = chB2C
 
-	hops, err := g.dijkstra(a, cNode, 1000000, nil, 10)
+	route, err := g.GetRoute(a, cNode, 1000000, nil, 10)
 	assert.NoError(t, err)
-	assert.Equal(t, 2, len(hops))
-	// Both paths cost 500. Since we don't know which it will pick, let's change a fee to make one path explicitly cheaper.
-	// Actually, wait, let's just make B2's inbound fee -200 so it's definitively cheaper in the true bLIP-18 world.
+	assert.Equal(t, 2, len(route.Hops))
+	// Both paths cost 500. B2's inbound discount of -200 makes its path the cheaper one.
 
 	g.SetInboundFee("3x1x1/"+util.GetDirection(a, b2), -200, 0)
-	hops, err = g.dijkstra(a, cNode, 1000000, nil, 10)
+	route, err = g.GetRoute(a, cNode, 1000000, nil, 10)
 	assert.NoError(t, err)
-	assert.Equal(t, 2, len(hops))
-	assert.Equal(t, "3x1x1", hops[0].ShortChannelId)
-	assert.Equal(t, "4x1x1", hops[1].ShortChannelId)
-
-	route := NewRoute(a, cNode, 1000000, hops, g)
+	assert.Equal(t, 2, len(route.Hops))
+	assert.Equal(t, "3x1x1", route.Hops[0].ShortChannelId)
+	assert.Equal(t, "4x1x1", route.Hops[1].ShortChannelId)
 	assert.Equal(t, uint64(300), route.Fee()) // B2.out (500) + B2.in (-200) = 300
 
 	chB2C.BaseFeeMillisatoshi = 100
-	hops, err = g.dijkstra(a, cNode, 1000000, nil, 10)
+	route, err = g.GetRoute(a, cNode, 1000000, nil, 10)
 	assert.NoError(t, err)
-	route = NewRoute(a, cNode, 1000000, hops, g)
 	assert.Equal(t, uint64(0), route.Fee()) // B2.out (100) + B2.in (-200) = 0
 }
 
@@ -259,31 +257,188 @@ func TestPrettyRouteSavings(t *testing.T) {
 	g.Channels["8x8x8/"+util.GetDirection(c, self)] = chIn
 
 	// Test 1: Inbound fee is 0. No savings.
-	hops, err := g.dijkstra(a, c, 1000000, nil, 10)
+	route, err := g.GetCircularRoute(chOut, chIn, 1000000, nil, 10, math.MaxUint64)
 	assert.NoError(t, err)
-	route := NewRoute(a, c, 1000000, hops, g)
-	route.Prepend(chOut)
-	route.Append(chIn)
+	assert.Equal(t, 4, len(route.Hops))
+	assert.Equal(t, uint64(600), route.Fee()) // a (100) + b (500)
 	pr := NewPrettyRoute(route, "hash")
 	assert.Equal(t, int64(0), pr.InboundSavingsMSat)
 
 	// Test 2: Set a negative inbound fee on chAB
 	g.SetInboundFee("1x1x1/"+util.GetDirection(a, b), -200, 0)
-	hops, err = g.dijkstra(a, c, 1000000, nil, 10)
+	route, err = g.GetCircularRoute(chOut, chIn, 1000000, nil, 10, math.MaxUint64)
 	assert.NoError(t, err)
-	route = NewRoute(a, c, 1000000, hops, g)
-	route.Prepend(chOut)
-	route.Append(chIn)
 	pr = NewPrettyRoute(route, "hash")
 	assert.Equal(t, int64(200), pr.InboundSavingsMSat)
 
 	// Test 3: Positive inbound fee (surcharge)
 	g.SetInboundFee("1x1x1/"+util.GetDirection(a, b), 150, 0)
-	hops, err = g.dijkstra(a, c, 1000000, nil, 10)
+	route, err = g.GetCircularRoute(chOut, chIn, 1000000, nil, 10, math.MaxUint64)
 	assert.NoError(t, err)
-	route = NewRoute(a, c, 1000000, hops, g)
-	route.Prepend(chOut)
-	route.Append(chIn)
 	pr = NewPrettyRoute(route, "hash")
 	assert.Equal(t, int64(-150), pr.InboundSavingsMSat)
+}
+
+// testGraph builds small graphs for the route search tests.
+type testGraph struct {
+	*Graph
+}
+
+func newTestGraph() *testGraph {
+	return &testGraph{NewGraph()}
+}
+
+// channel adds the direction from -> to of channel scid, with plenty of liquidity.
+func (g *testGraph) channel(scid, from, to string, baseFee, ppm uint64) *Channel {
+	c := NewChannel(&glightning.Channel{
+		Source:                   from,
+		Destination:              to,
+		ShortChannelId:           scid,
+		IsActive:                 true,
+		AmountMsat:               glightning.AmountFromMSat(10000000000),
+		BaseFeeMillisatoshi:      baseFee,
+		FeePerMillionth:          ppm,
+		Delay:                    10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000000),
+	}, 5000000000, 0)
+	g.AddChannel(c)
+	g.Channels[scid+"/"+util.GetDirection(from, to)] = c
+	return c
+}
+
+func scids(route *Route) []string {
+	result := make([]string, len(route.Hops))
+	for i, hop := range route.Hops {
+		result[i] = hop.ShortChannelId
+	}
+	return result
+}
+
+const (
+	self = "02self"
+	outP = "02outpeer"
+	inP  = "02inpeer"
+)
+
+// The out-peer's fee on its first channel used to be left out of the search,
+// so a route through an expensive first channel looked free.
+func TestCircularRouteCountsOutPeerFee(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 0, 0)
+	g.channel("3x1x1", outP, "02a", 0, 2000) // the out-peer charges 2000 ppm here
+	g.channel("4x1x1", "02a", inP, 0, 0)
+	g.channel("5x1x1", outP, "02b", 0, 0)
+	g.channel("6x1x1", "02b", inP, 0, 10)
+
+	route, err := g.GetCheapestCircularRoute(out, in, 1000000, nil, 8)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"1x1x1", "5x1x1", "6x1x1", "2x1x1"}, scids(route))
+	assert.Equal(t, uint64(10), route.FeePPM())
+
+	route, err = g.GetCircularRoute(out, in, 1000000, nil, 8, MaxFeeForPPM(1000000, 50))
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(10), route.FeePPM())
+}
+
+// The in-peer's inbound fee depends on the channel the payment arrives on,
+// and used to be left out of the search.
+func TestCircularRouteCountsInPeerInboundFee(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 1000, 0) // the in-peer charges 1000 msat to reach us
+	g.channel("3x1x1", outP, "02a", 0, 0)
+	g.channel("4x1x1", "02a", inP, 0, 0)
+	g.channel("5x1x1", outP, "02b", 0, 0)
+	g.channel("6x1x1", "02b", inP, 1, 0)
+	// ... but waives it for payments arriving from 02b
+	g.SetInboundFee("6x1x1/"+util.GetDirection("02b", inP), -1000, 0)
+
+	route, err := g.GetCheapestCircularRoute(out, in, 1000000, nil, 8)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"1x1x1", "5x1x1", "6x1x1", "2x1x1"}, scids(route))
+	assert.Equal(t, uint64(1), route.Fee())
+}
+
+// A cheap long path to a channel used to hide a shorter, slightly more
+// expensive one, so a route within maxhops came back as "no route".
+func TestCircularRouteHopLimitKeepsShorterPaths(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 0, 0)
+	g.channel("3x1x1", outP, "02b", 0, 0)
+	g.channel("4x1x1", "02b", "02a", 0, 0)
+	g.channel("5x1x1", "02a", "02x", 0, 0)
+	g.channel("6x1x1", "02x", inP, 100, 0) // short way, 100 msat
+	g.channel("7x1x1", "02x", "02w", 0, 0) // long way, free
+	g.channel("8x1x1", "02w", inP, 0, 0)
+
+	// 6 channels in total: out, outpeer-b, b-a, a-x, x-inpeer, in
+	route, err := g.GetCheapestCircularRoute(out, in, 1000000, nil, 6)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"1x1x1", "3x1x1", "4x1x1", "5x1x1", "6x1x1", "2x1x1"}, scids(route))
+	assert.Equal(t, uint64(100), route.Fee())
+
+	route, err = g.GetCircularRoute(out, in, 1000000, nil, 6, math.MaxUint64)
+	assert.NoError(t, err)
+	assert.Equal(t, 6, len(route.Hops))
+
+	// with one more hop allowed, the free route wins
+	route, err = g.GetCheapestCircularRoute(out, in, 1000000, nil, 7)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(0), route.Fee())
+	assert.Equal(t, 7, len(route.Hops))
+}
+
+// Failed channels are excluded by "scid/direction"; they used to be ignored.
+func TestCircularRouteExcludesChannels(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 0, 0)
+	g.channel("3x1x1", outP, "02a", 0, 0)
+	g.channel("4x1x1", "02a", inP, 0, 0)
+	g.channel("5x1x1", outP, "02b", 0, 0)
+	g.channel("6x1x1", "02b", inP, 0, 100)
+
+	exclude := map[string]bool{"4x1x1/" + util.GetDirection("02a", inP): true}
+	route, err := g.GetCheapestCircularRoute(out, in, 1000000, exclude, 8)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"1x1x1", "5x1x1", "6x1x1", "2x1x1"}, scids(route))
+
+	exclude["02b"] = true
+	_, err = g.GetCheapestCircularRoute(out, in, 1000000, exclude, 8)
+	assert.Equal(t, util.ErrNoRoute, err)
+}
+
+// Within maxppm the route with the fewest hops wins, as before.
+func TestCircularRoutePrefersFewerHopsWithinBudget(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 0, 0)
+	g.channel("3x1x1", outP, inP, 0, 9) // 3 hops, 9 ppm
+	g.channel("4x1x1", outP, "02a", 0, 1)
+	g.channel("5x1x1", "02a", inP, 0, 0) // 4 hops, 1 ppm
+
+	route, err := g.GetCircularRoute(out, in, 1000000, nil, 8, MaxFeeForPPM(1000000, 10))
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"1x1x1", "3x1x1", "2x1x1"}, scids(route))
+
+	route, err = g.GetCircularRoute(out, in, 1000000, nil, 8, MaxFeeForPPM(1000000, 5))
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"1x1x1", "4x1x1", "5x1x1", "2x1x1"}, scids(route))
+
+	_, err = g.GetCircularRoute(out, in, 1000000, nil, 8, MaxFeeForPPM(1000000, 0))
+	assert.Equal(t, util.ErrNoRoute, err)
+}
+
+func TestMaxFeeForPPM(t *testing.T) {
+	assert.Equal(t, uint64(10), MaxFeeForPPM(1000000, 10))
+	assert.Equal(t, uint64(2199), MaxFeeForPPM(200000000, 10))
+	assert.Equal(t, uint64(math.MaxUint64), MaxFeeForPPM(200000000, math.MaxUint64))
+
+	route := &Route{Amount: 200000000, Hops: []RouteHop{{MilliSatoshi: 200000000 + 2199}}}
+	assert.Equal(t, uint64(10), route.FeePPM())
+	route.Hops[0].MilliSatoshi++
+	assert.Equal(t, uint64(11), route.FeePPM())
 }

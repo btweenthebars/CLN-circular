@@ -1,61 +1,29 @@
 package graph
 
-import (
-	"container/heap"
-)
-
-type PqItem struct {
-	Node   string
-	Edge   string
-	Amount uint64
-	Delay  uint
-	Hops   int
+// labelQueue is a min-heap of search labels, by fee then hop count,
+// implementing heap.Interface.
+type labelQueue struct {
+	items []*label
 }
 
-// Priority queue implementation from https://pkg.go.dev/container/heap#example__priorityQueue
-type Item struct {
-	value    *PqItem // The id of the value.
-	priority int     // The priority of the value in the queue.
-	// The index is needed by update and is maintained by the heap.Interface methods.
-	index int // The index of the item in the heap.
+func (q *labelQueue) Len() int { return len(q.items) }
+
+func (q *labelQueue) Less(i, j int) bool {
+	a, b := q.items[i], q.items[j]
+	if a.fee != b.fee {
+		return a.fee < b.fee
+	}
+	return a.hops < b.hops
 }
 
-// A PriorityQueue implements heap.Interface and holds Items.
-type PriorityQueue []*Item
+func (q *labelQueue) Swap(i, j int) { q.items[i], q.items[j] = q.items[j], q.items[i] }
 
-func (pq PriorityQueue) Len() int { return len(pq) }
+func (q *labelQueue) Push(x any) { q.items = append(q.items, x.(*label)) }
 
-func (pq PriorityQueue) Less(i, j int) bool {
-	// We want Pop to give us the lowest priority (lowest fee)
-	return pq[i].priority < pq[j].priority
-}
-
-func (pq PriorityQueue) Swap(i, j int) {
-	pq[i], pq[j] = pq[j], pq[i]
-	pq[i].index = i
-	pq[j].index = j
-}
-
-func (pq *PriorityQueue) Push(x any) {
-	n := len(*pq)
-	item := x.(*Item)
-	item.index = n
-	*pq = append(*pq, item)
-}
-
-func (pq *PriorityQueue) Pop() any {
-	old := *pq
-	n := len(old)
-	item := old[n-1]
-	old[n-1] = nil  // avoid memory leak
-	item.index = -1 // for safety
-	*pq = old[0 : n-1]
+func (q *labelQueue) Pop() any {
+	n := len(q.items)
+	item := q.items[n-1]
+	q.items[n-1] = nil // avoid memory leak
+	q.items = q.items[:n-1]
 	return item
-}
-
-// update modifies the priority and value of an Item in the queue.
-func (pq *PriorityQueue) update(item *Item, value *PqItem, priority int) {
-	item.value = value
-	item.priority = priority
-	heap.Fix(pq, item.index)
 }

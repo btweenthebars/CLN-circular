@@ -10,20 +10,25 @@ import (
 	"time"
 )
 
-func (r *Rebalance) getRoute(maxHops int, exclude map[string]bool) (*graph.Route, error) {
+func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 	defer util.TimeTrack(time.Now(), "rebalance.getRoute", r.Node.Logf)
 
 	src := r.OutChannel.Destination
 	dst := r.InChannel.Source
 
 	r.Node.Logln(glightning.Debug, "looking for a route from ", r.Node.Graph.GetAlias(src), " to ", r.Node.Graph.GetAlias(dst))
-	route, err := r.Node.Graph.GetRoute(src, dst, r.Amount, exclude, maxHops)
+	maxFee := graph.MaxFeeForPPM(r.Amount, r.MaxPPM)
+	route, err := r.Node.Graph.GetCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops, maxFee)
+	if err == util.ErrNoRoute {
+		// Say how expensive the cheapest route is, if there is one, so maxppm can be tuned.
+		if cheapest, cerr := r.Node.Graph.GetCheapestCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops); cerr == nil {
+			return nil, util.NewRouteTooExpensiveError(cheapest.FeePPM(), r.MaxPPM)
+		}
+		return nil, err
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	route.Prepend(r.OutChannel)
-	route.Append(r.InChannel)
 
 	if route.FeePPM() > r.MaxPPM {
 		return nil, util.NewRouteTooExpensiveError(route.FeePPM(), r.MaxPPM)
@@ -32,9 +37,9 @@ func (r *Rebalance) getRoute(maxHops int, exclude map[string]bool) (*graph.Route
 	return route, nil
 }
 
-func (r *Rebalance) tryRoute(maxHops int, exclude map[string]bool) (*graph.PrettyRoute, error) {
+func (r *Rebalance) tryRoute(exclude map[string]bool) (*graph.PrettyRoute, error) {
 	r.Node.Logln(glightning.Debug, "generating route")
-	route, err := r.getRoute(maxHops, exclude)
+	route, err := r.getRoute(exclude)
 	if err != nil {
 		return nil, err
 	}
