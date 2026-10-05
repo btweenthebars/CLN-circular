@@ -3,6 +3,7 @@ package rebalance
 import (
 	"circular/graph"
 	"circular/util"
+	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 )
 
@@ -33,14 +34,30 @@ func (r *Rebalance) checkConnections(inChannel, outChannel *glightning.PeerChann
 	return nil
 }
 
+// checkLiquidity checks that the channels can carry the amount. lightningd's
+// spendable and receivable amounts account for channel reserves, commitment
+// fees and HTLCs in flight, which our balance alone does not.
 func (r *Rebalance) checkLiquidity(inChannel, outChannel *glightning.PeerChannel) error {
-	//validate that the amount is less than the liquidity of the channels
-	inAvailable := inChannel.TotalMsat.MSat() - inChannel.ToUsMsat.MSat()
-	if inAvailable < r.Amount {
+	if inChannel.ReceivableMsat.MSat() < r.Amount {
 		return util.ErrIncomingChannelDepleted
 	}
-	if outChannel.ToUsMsat.MSat() < r.Amount {
+	// the out channel also carries the fees: checkFirstHop checks the route's amount
+	if outChannel.SpendableMsat.MSat() < r.Amount {
 		return util.ErrOutgoingChannelDepleted
+	}
+	return nil
+}
+
+// checkFirstHop checks that our out channel can send what the route's first
+// hop carries: the amount plus the fees of the hops after it.
+func (r *Rebalance) checkFirstHop(route *graph.Route) error {
+	outChannel, err := r.Node.GetPeerChannelFromGraphChannel(r.OutChannel)
+	if err != nil {
+		return err
+	}
+	if spendable := outChannel.SpendableMsat.MSat(); spendable < route.Hops[0].MilliSatoshi {
+		return fmt.Errorf("%w: it can send %d msat, the route needs %d msat including fees",
+			util.ErrOutgoingChannelDepleted, spendable, route.Hops[0].MilliSatoshi)
 	}
 	return nil
 }

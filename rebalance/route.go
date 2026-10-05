@@ -42,6 +42,9 @@ func (r *Rebalance) tryRoute(exclude map[string]bool) (*graph.PrettyRoute, error
 	if err != nil {
 		return nil, err
 	}
+	if err := r.checkFirstHop(route); err != nil {
+		return nil, err
+	}
 
 	// Pay ourselves through a short-lived invoice, so that lightningd checks the
 	// incoming HTLC (payment secret, amount, CLTV) before releasing the preimage.
