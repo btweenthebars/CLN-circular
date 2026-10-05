@@ -33,6 +33,8 @@ type Node struct {
 	Id                 string
 	Peers              map[string]*glightning.Peer
 	scidToPeer         map[string]*glightning.Peer // reverse index: scid → peer, guarded by PeersLock
+	peersReadAt        time.Time                   // when refreshPeers read the channels in Peers, guarded by PeersLock
+	channelsReadAt     map[string]time.Time        // later reads of one peer's channels, guarded by PeersLock
 	Graph              *graph.Graph
 	DB                 *Store
 	Stopped            atomic.Bool // circular-stop: no new rebalances

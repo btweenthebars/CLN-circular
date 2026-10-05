@@ -112,29 +112,29 @@ func (n *Node) refreshPeers() error {
 		return err
 	}
 
+	readAt := time.Now()
 	channelsResp, err := n.lightning.ListPeerChannels("")
 	if err != nil {
 		n.Logln(glightning.Unusual, err)
 		return err
 	}
 
-	n.setPeers(peers, channelsResp.Channels)
-	n.addLocalChannelsToGraph(channelsResp.Channels)
+	n.addLocalChannelsToGraph(n.setPeers(peers, channelsResp.Channels, readAt))
 	return nil
 }
 
 // setPeers replaces the peers with those in listpeers and the peers of the
-// open channels in listpeerchannels. The map is built afresh: a peer gone from
-// both used to stay, with its old channels, and could still be picked as a
-// rebalance candidate.
-func (n *Node) setPeers(peers []*glightning.Peer, channels []*glightning.PeerChannel) {
+// open channels in listpeerchannels, read at readAt. The map is built afresh:
+// a peer gone from both used to stay, with its old channels, and could still
+// be picked as a rebalance candidate. A peer whose channels were read again
+// after readAt, after a rebalance, keeps those. It returns the open channels.
+func (n *Node) setPeers(peers []*glightning.Peer, channels []*glightning.PeerChannel, readAt time.Time) []*glightning.PeerChannel {
 	fresh := make(map[string]*glightning.Peer, len(peers))
 	for _, peer := range peers {
 		peer.Channels = make([]*glightning.PeerChannel, 0)
 		fresh[peer.Id] = peer
 	}
 
-	scidToPeer := make(map[string]*glightning.Peer, len(channels))
 	for _, channel := range channels {
 		if channel.State != "CHANNELD_NORMAL" {
 			continue
@@ -149,15 +149,41 @@ func (n *Node) setPeers(peers []*glightning.Peer, channels []*glightning.PeerCha
 			fresh[channel.PeerId] = peer
 		}
 		peer.Channels = append(peer.Channels, channel)
-		if channel.ShortChannelId != "" {
-			scidToPeer[channel.ShortChannelId] = peer
-		}
 	}
 
 	n.PeersLock.Lock()
+	defer n.PeersLock.Unlock()
+
+	for id, at := range n.channelsReadAt {
+		if !at.After(readAt) {
+			delete(n.channelsReadAt, id)
+			continue
+		}
+		old, ok := n.Peers[id]
+		if !ok || old == nil {
+			continue
+		}
+		if peer, ok := fresh[id]; ok {
+			peer.Channels = old.Channels
+		} else {
+			fresh[id] = old
+		}
+	}
+
+	scidToPeer := make(map[string]*glightning.Peer, len(channels))
+	open := make([]*glightning.PeerChannel, 0, len(channels))
+	for _, peer := range fresh {
+		for _, channel := range peer.Channels {
+			open = append(open, channel)
+			if channel.ShortChannelId != "" {
+				scidToPeer[channel.ShortChannelId] = peer
+			}
+		}
+	}
 	n.Peers = fresh
 	n.scidToPeer = scidToPeer
-	n.PeersLock.Unlock()
+	n.peersReadAt = readAt
+	return open
 }
 
 // addLocalChannelsToGraph puts both directions of our open channels in the
@@ -183,45 +209,58 @@ func (n *Node) addLocalChannelsToGraph(channels []*glightning.PeerChannel) {
 // balances without waiting for the next peer refresh.
 func (n *Node) RefreshPeerChannels(peerIds ...string) error {
 	for _, id := range peerIds {
+		readAt := time.Now()
 		resp, err := n.lightning.ListPeerChannels(id)
 		if err != nil {
 			return err
 		}
-		n.setPeerChannels(id, resp.Channels)
+		n.setPeerChannels(id, resp.Channels, readAt)
 	}
 	return nil
 }
 
-// setPeerChannels gives a known peer the open channels among channels. The
-// peer is replaced, not changed in place, as refreshPeers does: callers read
-// the peers they got earlier without the lock.
-func (n *Node) setPeerChannels(peerId string, channels []*glightning.PeerChannel) {
+// setPeerChannels gives a known peer the open channels among channels, read
+// at readAt, unless its channels were read since. The peer is replaced, not
+// changed in place, as refreshPeers does: callers read the peers they got
+// earlier without the lock.
+func (n *Node) setPeerChannels(peerId string, channels []*glightning.PeerChannel, readAt time.Time) {
 	n.PeersLock.Lock()
 	old, ok := n.Peers[peerId]
-	if !ok || old == nil {
+	if !ok || old == nil || !readAt.After(n.peersReadAt) || !readAt.After(n.channelsReadAt[peerId]) {
 		n.PeersLock.Unlock()
 		return
 	}
 	peer := *old
 	peer.Channels = make([]*glightning.PeerChannel, 0, len(channels))
+	for _, channel := range channels {
+		if channel.State == "CHANNELD_NORMAL" {
+			peer.Channels = append(peer.Channels, channel)
+		}
+	}
+	n.replacePeer(old, &peer)
+	if n.channelsReadAt == nil {
+		n.channelsReadAt = make(map[string]time.Time)
+	}
+	n.channelsReadAt[peerId] = readAt
+	n.PeersLock.Unlock()
+
+	n.addLocalChannelsToGraph(peer.Channels)
+}
+
+// replacePeer puts peer in place of old, in Peers and in the scid index.
+// PeersLock must be held.
+func (n *Node) replacePeer(old, peer *glightning.Peer) {
 	for scid, p := range n.scidToPeer {
 		if p == old {
 			delete(n.scidToPeer, scid)
 		}
 	}
-	for _, channel := range channels {
-		if channel.State != "CHANNELD_NORMAL" {
-			continue
-		}
-		peer.Channels = append(peer.Channels, channel)
+	for _, channel := range peer.Channels {
 		if channel.ShortChannelId != "" {
-			n.scidToPeer[channel.ShortChannelId] = &peer
+			n.scidToPeer[channel.ShortChannelId] = peer
 		}
 	}
-	n.Peers[peerId] = &peer
-	n.PeersLock.Unlock()
-
-	n.addLocalChannelsToGraph(peer.Channels)
+	n.Peers[peer.Id] = peer
 }
 
 func (n *Node) refreshLiquidity() {

@@ -179,19 +179,22 @@ func (n *Node) GetIncomingChannelFromScid(scid string) (*graph.Channel, error) {
 }
 
 func (n *Node) OnConnect(c *glightning.ConnectEvent) {
-	n.PeersLock.Lock()
-	defer n.PeersLock.Unlock()
-
-	if _, ok := n.Peers[c.PeerId]; ok {
-		n.Peers[c.PeerId].Connected = true
-	}
+	n.setConnected(c.PeerId, true)
 }
 
 func (n *Node) OnDisconnect(c *glightning.DisconnectEvent) {
+	n.setConnected(c.PeerId, false)
+}
+
+// setConnected replaces a known peer with a copy that has connected set:
+// callers read the peers they got earlier without the lock.
+func (n *Node) setConnected(peerId string, connected bool) {
 	n.PeersLock.Lock()
 	defer n.PeersLock.Unlock()
 
-	if _, ok := n.Peers[c.PeerId]; ok {
-		n.Peers[c.PeerId].Connected = false
+	if old, ok := n.Peers[peerId]; ok && old != nil {
+		peer := *old
+		peer.Connected = connected
+		n.replacePeer(old, &peer)
 	}
 }

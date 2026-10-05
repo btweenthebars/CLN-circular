@@ -103,7 +103,7 @@ func TestSetPeerChannelsReplacesThePeer(t *testing.T) {
 	after := *before
 	after.ToUsMsat = glightning.AmountFromMSat(400000)
 	closing := &glightning.PeerChannel{PeerId: "02peer", ShortChannelId: "8x8x8", State: "CHANNELD_SHUTTING_DOWN"}
-	n.setPeerChannels("02peer", []*glightning.PeerChannel{&after, closing})
+	n.setPeerChannels("02peer", []*glightning.PeerChannel{&after, closing}, time.Now())
 
 	peer := n.Peers["02peer"]
 	assert.NotSame(t, old, peer)
@@ -118,7 +118,7 @@ func TestSetPeerChannelsReplacesThePeer(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(400000), c.Liquidity)
 
-	n.setPeerChannels("02unknown", []*glightning.PeerChannel{&after})
+	n.setPeerChannels("02unknown", []*glightning.PeerChannel{&after}, time.Now())
 	assert.Len(t, n.Peers, 1)
 }
 
@@ -127,12 +127,12 @@ func TestSetPeerChannelsReplacesThePeer(t *testing.T) {
 func TestSetPeersForgetsPeersThatAreGone(t *testing.T) {
 	gone := &glightning.PeerChannel{PeerId: "02gone", ShortChannelId: "1x1x1", State: "CHANNELD_NORMAL"}
 	n := &Node{PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{}, scidToPeer: map[string]*glightning.Peer{}}
-	n.setPeers([]*glightning.Peer{{Id: "02gone"}}, []*glightning.PeerChannel{gone})
+	n.setPeers([]*glightning.Peer{{Id: "02gone"}}, []*glightning.PeerChannel{gone}, time.Now())
 	assert.True(t, n.HasPeer("02gone"))
 
 	open := &glightning.PeerChannel{PeerId: "02stays", ShortChannelId: "2x2x2", State: "CHANNELD_NORMAL", PeerConnected: true}
 	closed := &glightning.PeerChannel{PeerId: "02stays", ShortChannelId: "3x3x3", State: "ONCHAIN"}
-	n.setPeers([]*glightning.Peer{{Id: "02connected", Connected: true}}, []*glightning.PeerChannel{open, closed})
+	n.setPeers([]*glightning.Peer{{Id: "02connected", Connected: true}}, []*glightning.PeerChannel{open, closed}, time.Now())
 
 	assert.False(t, n.HasPeer("02gone"))
 	_, err := n.GetChannelPeerFromScid("1x1x1")
@@ -144,4 +144,60 @@ func TestSetPeersForgetsPeersThatAreGone(t *testing.T) {
 	peer, err := n.GetChannelPeerFromScid("2x2x2")
 	assert.NoError(t, err)
 	assert.Equal(t, "02stays", peer.Id)
+}
+
+// A rebalance reads its channels again after a split. A peer refresh whose
+// listpeerchannels ran before that read used to overwrite it with the
+// balances from before the split, and the reverse.
+func TestPeerReadsApplyInTheOrderTheyWereMade(t *testing.T) {
+	balance := func(toUs uint64) []*glightning.PeerChannel {
+		return []*glightning.PeerChannel{{PeerId: "02peer", ShortChannelId: "9x9x9", State: "CHANNELD_NORMAL",
+			TotalMsat: glightning.AmountFromMSat(1000000), ToUsMsat: glightning.AmountFromMSat(toUs)}}
+	}
+	toUs := func(n *Node) uint64 {
+		n.PeersLock.RLock()
+		defer n.PeersLock.RUnlock()
+		return n.Peers["02peer"].Channels[0].ToUsMsat.MSat()
+	}
+	n := &Node{Id: "02self", Graph: graph.NewGraph(), PeersLock: &sync.RWMutex{},
+		Peers: map[string]*glightning.Peer{}, scidToPeer: map[string]*glightning.Peer{}}
+	t0 := time.Now()
+	n.setPeers([]*glightning.Peer{{Id: "02peer"}}, balance(1000000), t0)
+
+	// the peer refresh read its channels at t1, the rebalance at t2 > t1, but
+	// the rebalance's read is applied first
+	t1, t2 := t0.Add(time.Second), t0.Add(2*time.Second)
+	n.setPeerChannels("02peer", balance(600000), t2)
+	open := n.setPeers([]*glightning.Peer{{Id: "02peer"}}, balance(1000000), t1)
+	assert.Equal(t, uint64(600000), toUs(n), "the newer read is kept")
+	assert.Equal(t, uint64(600000), open[0].ToUsMsat.MSat(), "and goes to the graph")
+	peer, err := n.GetChannelPeerFromScid("9x9x9")
+	assert.NoError(t, err)
+	assert.Same(t, n.Peers["02peer"], peer)
+
+	// a read older than the last peer refresh is dropped
+	t3 := t0.Add(3 * time.Second)
+	n.setPeers([]*glightning.Peer{{Id: "02peer"}}, balance(500000), t3)
+	n.setPeerChannels("02peer", balance(700000), t2)
+	assert.Equal(t, uint64(500000), toUs(n))
+	assert.Empty(t, n.channelsReadAt, "reads older than the refresh are forgotten")
+}
+
+// Connect and disconnect events changed the shared peer in place, while
+// IsPeerConnected read it without the lock.
+func TestConnectEventsReplaceThePeer(t *testing.T) {
+	old := &glightning.Peer{Id: "02peer", Channels: []*glightning.PeerChannel{{ShortChannelId: "1x1x1"}}}
+	n := &Node{PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{"02peer": old},
+		scidToPeer: map[string]*glightning.Peer{"1x1x1": old}}
+
+	n.OnConnect(&glightning.ConnectEvent{PeerId: "02peer"})
+	assert.False(t, old.Connected)
+	assert.True(t, n.Peers["02peer"].Connected)
+	assert.Same(t, n.Peers["02peer"], n.scidToPeer["1x1x1"])
+	assert.True(t, n.IsPeerConnected(&glightning.PeerChannel{ShortChannelId: "1x1x1"}))
+
+	n.OnDisconnect(&glightning.DisconnectEvent{PeerId: "02peer"})
+	assert.False(t, n.IsPeerConnected(&glightning.PeerChannel{ShortChannelId: "1x1x1"}))
+	n.OnConnect(&glightning.ConnectEvent{PeerId: "02unknown"})
+	assert.Len(t, n.Peers, 1)
 }
