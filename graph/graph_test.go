@@ -51,3 +51,18 @@ func TestMarkUnusableLeavesTheOtherDirection(t *testing.T) {
 	assert.Equal(t, uint64(5000000000), back.Liquidity)
 	assert.False(t, forward.CanForward(1))
 }
+
+// refreshPeers adds our channels again every 30 seconds; the adjacency list
+// used to grow by one entry per channel each time.
+func TestAddChannelListsAChannelOnce(t *testing.T) {
+	g := newTestGraph()
+	c := g.channel("1x1x1", "02a", "02b", 0, 0)
+	for i := 0; i < 100; i++ {
+		g.AddChannel(c)
+	}
+	g.channel("2x1x1", "02a", "02b", 0, 0)
+	assert.Equal(t, Edge{"1x1x1", "2x1x1"}, g.Inbound["02b"]["02a"])
+
+	g.DeleteChannel(c)
+	assert.Equal(t, Edge{"2x1x1"}, g.Inbound["02b"]["02a"])
+}

@@ -82,9 +82,21 @@ func allocate(links *map[string]map[string]Edge, from, to string) {
 	}
 }
 
+// AddChannel lists c in the adjacency list, once: it is called again for the
+// same channel on every peer refresh.
 func (g *Graph) AddChannel(c *Channel) {
 	allocate(&g.Inbound, c.Destination, c.Source)
-	g.Inbound[c.Destination][c.Source] = append(g.Inbound[c.Destination][c.Source], c.ShortChannelId)
+	edge := g.Inbound[c.Destination][c.Source]
+	listed := false
+	for _, scid := range edge {
+		if scid == c.ShortChannelId {
+			listed = true
+			break
+		}
+	}
+	if !listed {
+		g.Inbound[c.Destination][c.Source] = append(edge, c.ShortChannelId)
+	}
 
 	if c.maxHtlcMsat == 0 {
 		c.maxHtlcMsat = c.HtlcMaximumMilliSatoshis.MSat()
