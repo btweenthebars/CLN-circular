@@ -24,35 +24,32 @@ var (
 )
 
 type Node struct {
-	lightning           *glightning.Lightning
-	plugin              *glightning.Plugin
-	liquidityRefresh    time.Duration
-	initLock            *sync.Mutex
-	saveStats           bool
-	PeersLock           *sync.RWMutex
-	Id                  string
-	Peers               map[string]*glightning.Peer
-	scidToPeer          map[string]*glightning.Peer // reverse index: scid → peer, guarded by PeersLock
-	Graph               *graph.Graph
-	DB                  *Store
-	LiquidityUpdateChan chan *LiquidityUpdate
-	Stopped             atomic.Bool
-	ActivePayments      map[string]*ActivePayment
-	activePaymentsLock  *sync.RWMutex
+	lightning          *glightning.Lightning
+	plugin             *glightning.Plugin
+	liquidityRefresh   time.Duration
+	initLock           *sync.Mutex
+	saveStats          bool
+	PeersLock          *sync.RWMutex
+	Id                 string
+	Peers              map[string]*glightning.Peer
+	scidToPeer         map[string]*glightning.Peer // reverse index: scid → peer, guarded by PeersLock
+	Graph              *graph.Graph
+	DB                 *Store
+	Stopped            atomic.Bool
+	ActivePayments     map[string]*ActivePayment
+	activePaymentsLock *sync.RWMutex
 }
 
 func GetNode() *Node {
 	once.Do(func() {
 		singleton = &Node{
-			initLock:            &sync.Mutex{},
-			PeersLock:           &sync.RWMutex{},
-			Peers:               make(map[string]*glightning.Peer),
-			scidToPeer:          make(map[string]*glightning.Peer),
-			LiquidityUpdateChan: make(chan *LiquidityUpdate, 16),
-			ActivePayments:      make(map[string]*ActivePayment),
-			activePaymentsLock:  &sync.RWMutex{},
+			initLock:           &sync.Mutex{},
+			PeersLock:          &sync.RWMutex{},
+			Peers:              make(map[string]*glightning.Peer),
+			scidToPeer:         make(map[string]*glightning.Peer),
+			ActivePayments:     make(map[string]*ActivePayment),
+			activePaymentsLock: &sync.RWMutex{},
 		}
-		go singleton.UpdateLiquidity()
 	})
 	// This makes sure the node is not used until it is initialized or refreshed
 	singleton.initLock.Lock()

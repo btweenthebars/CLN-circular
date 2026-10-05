@@ -5,7 +5,6 @@ import (
 	"circular/node"
 	"circular/util"
 	"errors"
-	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"time"
 )
@@ -64,19 +63,13 @@ func (r *Rebalance) tryRoute(exclude map[string]bool) (*graph.PrettyRoute, error
 
 	_, err = r.Node.SendPay(route, invoice)
 	if err != nil {
-		// Extract erring channel from payment error and add it to exclude for
-		// future attempts so the pathfinder skips the known-bad channel.
+		// Learn from the failure now, so the next attempt avoids what failed.
 		var paymentError *glightning.PaymentError
-		if errors.As(err, &paymentError) && paymentError.Data.ErringChannel != "" {
-			key := fmt.Sprintf("%s/%d", paymentError.Data.ErringChannel, paymentError.Data.ErringDirection)
-			exclude[key] = true
-			r.Node.Logln(glightning.Debug, "excluded failing channel for next attempt: ", key)
+		if errors.As(err, &paymentError) && paymentError.Data != nil {
+			return nil, r.learnFromFailure(route, paymentError.Data, exclude)
 		}
 
 		if err == util.ErrSendPayTimeout {
-			return nil, err
-		}
-		if err == util.ErrWireFeeInsufficient {
 			return nil, err
 		}
 		if err == util.ErrFirstPeerNotReady {

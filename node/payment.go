@@ -3,7 +3,6 @@ package node
 import (
 	"circular/graph"
 	"circular/util"
-	"errors"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/elementsproject/glightning/glightning"
 	"strings"
@@ -76,21 +75,7 @@ func (n *Node) SendPay(route *graph.Route, invoice *RebalanceInvoice) (*glightni
 		// the payment has failed for good, so the invoice must never be paid
 		n.deleteInvoice(invoice.Label, "unpaid")
 
-		// in case of WIRE_FEE_INSUFFICIENT, we return only if the last hop is the one who originated the error
-		// in this way we make the rebalance fail if the last node changed fees, but treat
-		// WIRE_FEE_INSUFFICIENT errors along the path as a liquidity failure
-		if err.Error() == util.ErrWireFeeInsufficient.Error() {
-			// we need to get the full error
-			var paymentError *glightning.PaymentError
-			if errors.As(err, &paymentError) {
-				lastNode := finalRoute[len(finalRoute)-2].Id
-				if lastNode == paymentError.Data.ErringNode {
-					n.Logln(glightning.Debug, "last node is the node that caused the error")
-					return nil, util.ErrWireFeeInsufficient
-				}
-			}
-		}
-
+		// the caller learns from the failure (*glightning.PaymentError) before retrying
 		return nil, err
 	}
 
@@ -162,18 +147,9 @@ func (n *Node) OnPaymentFailure(sf *glightning.SendPayFailure) {
 		n.Logln(glightning.Unusual, err)
 	}
 
+	// The graph learns from the failure synchronously, in the rebalance that sent
+	// the payment, which knows the amount on every hop of the route.
 	n.Logf(glightning.Debug, "code: %d, failcode: %d, failcodename: %s", sf.Code, sf.Data.FailCode, sf.Data.FailCodeName)
-
-	// Non-blocking send: if the buffer is full during a rebalance storm, drop the
-	// update rather than blocking the glightning notification dispatch goroutine.
-	select {
-	case n.LiquidityUpdateChan <- &LiquidityUpdate{
-		Amount:         sf.Data.MilliSatoshi - util.Min(sf.Data.MilliSatoshi, 1000000),
-		ShortChannelID: sf.Data.ErringChannel,
-		Direction:      sf.Data.ErringDirection,
-	}:
-	default:
-	}
 }
 
 func (n *Node) OnPaymentSuccess(ss *glightning.SendPaySuccess) {

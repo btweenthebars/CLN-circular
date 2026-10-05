@@ -205,25 +205,80 @@ func (g *Graph) GetAlias(id string) string {
 	return id
 }
 
-func (g *Graph) UpdateChannel(channelId, oppositeChannelId string, amount uint64) {
+// OppositeChannelId returns the id of the other direction of channelId ("scid/direction").
+func OppositeChannelId(channelId string) string {
+	n := len(channelId)
+	if n < 2 || channelId[n-2] != '/' {
+		return channelId
+	}
+	if channelId[n-1] == '0' {
+		return channelId[:n-1] + "1"
+	}
+	return channelId[:n-1] + "0"
+}
+
+// LearnUpperBound records that channelId failed to forward amount for lack of
+// liquidity: it holds less than amount, so the other direction holds at least
+// the rest of the capacity. Beliefs are only ever tightened.
+func (g *Graph) LearnUpperBound(channelId string, amount uint64) {
+	if amount == 0 {
+		return
+	}
 	g.channelsLock.Lock()
 	defer g.channelsLock.Unlock()
 
 	now := time.Now().Unix()
-
-	if _, ok := g.Channels[channelId]; ok {
-		g.Channels[channelId].Liquidity = amount
-		g.Channels[channelId].Timestamp = now
-	}
-
-	if _, ok := g.Channels[oppositeChannelId]; ok {
-		cap := g.Channels[oppositeChannelId].AmountMsat.MSat()
-		if amount >= cap {
-			g.Channels[oppositeChannelId].Liquidity = 0
-		} else {
-			g.Channels[oppositeChannelId].Liquidity = cap - amount
+	if c, ok := g.Channels[channelId]; ok {
+		if c.Liquidity >= amount {
+			c.Liquidity = amount - 1
 		}
-		g.Channels[oppositeChannelId].Timestamp = now
+		c.Timestamp = now
+	}
+	if c, ok := g.Channels[OppositeChannelId(channelId)]; ok {
+		capacity := c.AmountMsat.MSat()
+		if capacity > amount && c.Liquidity < capacity-amount {
+			c.Liquidity = capacity - amount
+		}
+		c.Timestamp = now
+	}
+}
+
+// LearnLowerBound records that channelId forwarded amount: it holds at least
+// amount, so the other direction holds at most the rest of the capacity.
+func (g *Graph) LearnLowerBound(channelId string, amount uint64) {
+	g.channelsLock.Lock()
+	defer g.channelsLock.Unlock()
+
+	now := time.Now().Unix()
+	if c, ok := g.Channels[channelId]; ok {
+		if c.Liquidity < amount {
+			c.Liquidity = amount
+		}
+		c.Timestamp = now
+	}
+	if c, ok := g.Channels[OppositeChannelId(channelId)]; ok {
+		capacity := c.AmountMsat.MSat()
+		rest := uint64(0)
+		if capacity > amount {
+			rest = capacity - amount
+		}
+		if c.Liquidity > rest {
+			c.Liquidity = rest
+		}
+		c.Timestamp = now
+	}
+}
+
+// MarkUnusable records that channelId cannot forward anything (disabled,
+// closed or unknown to its node) until its liquidity belief is reset. The
+// other direction is left alone.
+func (g *Graph) MarkUnusable(channelId string) {
+	g.channelsLock.Lock()
+	defer g.channelsLock.Unlock()
+
+	if c, ok := g.Channels[channelId]; ok {
+		c.Liquidity = 0
+		c.Timestamp = time.Now().Unix()
 	}
 }
 
