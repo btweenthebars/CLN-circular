@@ -5,6 +5,7 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 	"testing"
+	"time"
 )
 
 func TestOppositeChannelId(t *testing.T) {
@@ -83,7 +84,8 @@ func TestSyncChannelsRemovesChannelsMissingFromTheSnapshot(t *testing.T) {
 		g.Channels["1x1x1/"+util.GetDirection("02a", "02b")].Channel,
 		g.Channels["1x1x1/"+util.GetDirection("02b", "02a")].Channel,
 	}
-	assert.Equal(t, 1, g.SyncChannels(listed, ours))
+	now := uint(time.Now().Unix())
+	assert.Equal(t, 1, g.SyncChannels(listed, ours, now))
 
 	assert.Len(t, g.Channels, 3)
 	_, err := g.GetChannel("2x2x2/" + util.GetDirection("02b", "02c"))
@@ -96,6 +98,12 @@ func TestSyncChannelsRemovesChannelsMissingFromTheSnapshot(t *testing.T) {
 	assert.NoError(t, err)
 
 	// a snapshot with less than half of the graph is not trusted for removals
-	assert.Equal(t, -1, g.SyncChannels(nil, ours))
+	assert.Equal(t, -1, g.SyncChannels(nil, ours, now))
 	assert.Len(t, g.Channels, 3)
+
+	// one of ours added after the keep set was read is updated after the snapshot
+	added := g.channel("4x4x4", "02c", "02a", 0, 0)
+	added.LastUpdate = now
+	assert.Equal(t, 0, g.SyncChannels(listed, ours, now))
+	assert.Len(t, g.Channels, 4)
 }

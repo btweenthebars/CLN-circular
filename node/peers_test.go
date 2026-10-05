@@ -75,13 +75,15 @@ func TestLocalChannelsSurviveGraphRefresh(t *testing.T) {
 		LastUpdate: uint(time.Now().Unix()), AmountMsat: glightning.AmountFromMSat(1000)}
 	gossip := []*glightning.Channel{public}
 
-	assert.Equal(t, 0, n.Graph.SyncChannels(gossip, n.localChannelIds()))
+	// the next graph refresh, after the peer refresh
+	asOf := uint(time.Now().Unix()) + 1
+	assert.Equal(t, 0, n.Graph.SyncChannels(gossip, n.localChannelIds(), asOf))
 	n.Graph.PruneChannels()
 	assert.Len(t, n.Graph.Channels, 3)
 
 	// once the channel is gone from listpeerchannels, it goes from the graph too
 	n.Peers = map[string]*glightning.Peer{}
-	assert.Equal(t, 2, n.Graph.SyncChannels(gossip, n.localChannelIds()))
+	assert.Equal(t, 2, n.Graph.SyncChannels(gossip, n.localChannelIds(), asOf))
 	assert.Len(t, n.Graph.Channels, 1)
 }
 

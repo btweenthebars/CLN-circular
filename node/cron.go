@@ -46,6 +46,7 @@ func (n *Node) refreshGraph() error {
 	defer util.TimeTrack(time.Now(), "node.refreshGraph", n.Logf)
 	n.Logln(glightning.Info, "refreshing graph")
 
+	asOf := uint(time.Now().Unix())
 	channelList, err := n.lightning.ListChannels()
 	if err != nil {
 		// glightning returns an error ("No channel found for short channel id ") when 0 channels exist in gossip
@@ -58,7 +59,7 @@ func (n *Node) refreshGraph() error {
 	}
 
 	n.Logln(glightning.Debug, "refreshing channels")
-	if removed := n.Graph.SyncChannels(channelList, n.localChannelIds()); removed < 0 {
+	if removed := n.Graph.SyncChannels(channelList, n.localChannelIds(), asOf); removed < 0 {
 		n.Logf(glightning.Unusual, "listchannels returned only %d channels: not removing the channels it lacks", len(channelList))
 	} else if removed > 0 {
 		n.Logf(glightning.Info, "removed %d channels that are no longer in gossip", removed)

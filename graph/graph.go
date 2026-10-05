@@ -118,12 +118,14 @@ func (g *Graph) RefreshChannels(channelList []*glightning.Channel) {
 }
 
 // SyncChannels makes the graph match channelList, a full listchannels
-// snapshot: it refreshes the listed channels and removes the others, which
-// lightningd forgets once they close. The channels in keep, our own, stay:
-// unannounced ones are never listed. It returns the number removed, or -1 when
-// the snapshot holds less than half of the other channels in the graph: such a
-// snapshot is likely incomplete, so nothing is removed.
-func (g *Graph) SyncChannels(channelList []*glightning.Channel, keep map[string]bool) int {
+// snapshot taken at asOf (Unix time): it refreshes the listed channels and
+// removes the others, which lightningd forgets once they close. The channels
+// in keep, our own, stay: unannounced ones are never listed. So do channels
+// updated at asOf or later, such as ours added after keep was read. It
+// returns the number removed, or -1 when the snapshot holds less than half of
+// the other channels in the graph: such a snapshot is likely incomplete, so
+// nothing is removed.
+func (g *Graph) SyncChannels(channelList []*glightning.Channel, keep map[string]bool, asOf uint) int {
 	g.channelsLock.Lock()
 	g.adjacencyListLock.Lock()
 	defer g.channelsLock.Unlock()
@@ -144,7 +146,7 @@ func (g *Graph) SyncChannels(channelList []*glightning.Channel, keep map[string]
 	g.refreshChannels(channelList, listed)
 	removed := 0
 	for channelId, c := range g.Channels {
-		if _, ok := listed[channelId]; ok || keep[channelId] {
+		if _, ok := listed[channelId]; ok || keep[channelId] || c.LastUpdate >= asOf {
 			continue
 		}
 		g.DeleteChannel(c)
