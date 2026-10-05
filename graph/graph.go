@@ -468,7 +468,7 @@ func (g *Graph) inboundFee(channelId string, amount uint64) int64 {
 		rate = -maxInboundFeeRate
 	}
 	// whole millions of msat, then the rest: rate x amount overflows int64
-	// from about 0.9 BTC at the capped rate
+	// from about 9.2 BTC at the capped rate
 	millions, rest := int64(amount/1000000), int64(amount%1000000)
 	return int64(fee.BaseFee) + millions*rate + rest*rate/1000000
 }
