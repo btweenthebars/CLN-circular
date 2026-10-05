@@ -58,7 +58,11 @@ func (n *Node) refreshGraph() error {
 	}
 
 	n.Logln(glightning.Debug, "refreshing channels")
-	n.Graph.RefreshChannels(channelList)
+	if removed := n.Graph.SyncChannels(channelList, n.localChannelIds()); removed < 0 {
+		n.Logf(glightning.Unusual, "listchannels returned only %d channels: not removing the channels it lacks", len(channelList))
+	} else if removed > 0 {
+		n.Logf(glightning.Info, "removed %d channels that are no longer in gossip", removed)
+	}
 
 	n.Logln(glightning.Debug, "pruning channels")
 	n.Graph.PruneChannels()
@@ -78,6 +82,24 @@ func (n *Node) refreshGraph() error {
 
 	n.Logln(glightning.Info, "graph has been refreshed")
 	return nil
+}
+
+// localChannelIds returns the ids of both directions of our open channels.
+func (n *Node) localChannelIds() map[string]bool {
+	n.PeersLock.RLock()
+	defer n.PeersLock.RUnlock()
+
+	ids := make(map[string]bool)
+	for _, peer := range n.Peers {
+		for _, channel := range peer.Channels {
+			if channel.ShortChannelId == "" {
+				continue
+			}
+			ids[channel.ShortChannelId+"/"+util.GetDirection(n.Id, peer.Id)] = true
+			ids[channel.ShortChannelId+"/"+util.GetDirection(peer.Id, n.Id)] = true
+		}
+	}
+	return ids
 }
 
 func (n *Node) refreshPeers() error {

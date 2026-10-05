@@ -110,6 +110,9 @@ func (n *Node) ConvertPeerChannelToGraphChannel(channel *glightning.PeerChannel,
 		Delay:                    updates.CltvExpiryDelta,
 		HtlcMinimumMilliSatoshis: updates.HtlcMinimumMsat,
 		HtlcMaximumMilliSatoshis: updates.HtlcMaximumMsat,
+		// current as of now: without it, the graph refresh pruned the channels
+		// that listchannels does not return, such as unannounced ones
+		LastUpdate: uint(time.Now().Unix()),
 	}
 
 	return graph.NewChannel(glChan, liquidity, time.Now().Unix())

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"circular/util"
+	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
@@ -65,4 +66,36 @@ func TestAddChannelListsAChannelOnce(t *testing.T) {
 
 	g.DeleteChannel(c)
 	assert.Equal(t, Edge{"2x1x1"}, g.Inbound["02b"]["02a"])
+}
+
+// Closed channels used to stay routable until their last update was 14 days
+// old.
+func TestSyncChannelsRemovesChannelsMissingFromTheSnapshot(t *testing.T) {
+	g := newTestGraph()
+	open := g.channel("1x1x1", "02a", "02b", 0, 0)
+	g.channel("1x1x1", "02b", "02a", 0, 0)
+	g.channel("2x2x2", "02b", "02c", 0, 0) // closed
+	g.channel("3x3x3", "02a", "02c", 0, 0) // one of ours, unannounced
+	open.Liquidity = 42
+
+	ours := map[string]bool{"3x3x3/" + util.GetDirection("02a", "02c"): true}
+	listed := []*glightning.Channel{
+		g.Channels["1x1x1/"+util.GetDirection("02a", "02b")].Channel,
+		g.Channels["1x1x1/"+util.GetDirection("02b", "02a")].Channel,
+	}
+	assert.Equal(t, 1, g.SyncChannels(listed, ours))
+
+	assert.Len(t, g.Channels, 3)
+	_, err := g.GetChannel("2x2x2/" + util.GetDirection("02b", "02c"))
+	assert.Equal(t, util.ErrNoChannel, err)
+	assert.Empty(t, g.Inbound["02c"]["02b"], "removed from the adjacency list")
+	c, err := g.GetChannel("1x1x1/" + util.GetDirection("02a", "02b"))
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(42), c.Liquidity, "listed channels keep their liquidity belief")
+	_, err = g.GetChannel("3x3x3/" + util.GetDirection("02a", "02c"))
+	assert.NoError(t, err)
+
+	// a snapshot with less than half of the graph is not trusted for removals
+	assert.Equal(t, -1, g.SyncChannels(nil, ours))
+	assert.Len(t, g.Channels, 3)
 }

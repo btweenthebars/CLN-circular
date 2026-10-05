@@ -106,22 +106,70 @@ func (g *Graph) AddChannel(c *Channel) {
 	}
 }
 
+// RefreshChannels adds or refreshes the channels in channelList, keeping what
+// was learnt about their liquidity.
 func (g *Graph) RefreshChannels(channelList []*glightning.Channel) {
 	g.channelsLock.Lock()
 	g.adjacencyListLock.Lock()
 	defer g.channelsLock.Unlock()
 	defer g.adjacencyListLock.Unlock()
 
+	g.refreshChannels(channelList, nil)
+}
+
+// SyncChannels makes the graph match channelList, a full listchannels
+// snapshot: it refreshes the listed channels and removes the others, which
+// lightningd forgets once they close. The channels in keep, our own, stay:
+// unannounced ones are never listed. It returns the number removed, or -1 when
+// the snapshot holds less than half of the other channels in the graph: such a
+// snapshot is likely incomplete, so nothing is removed.
+func (g *Graph) SyncChannels(channelList []*glightning.Channel, keep map[string]bool) int {
+	g.channelsLock.Lock()
+	g.adjacencyListLock.Lock()
+	defer g.channelsLock.Unlock()
+	defer g.adjacencyListLock.Unlock()
+
+	others := 0
+	for channelId := range g.Channels {
+		if !keep[channelId] {
+			others++
+		}
+	}
+	if len(channelList) < others/2 {
+		g.refreshChannels(channelList, nil)
+		return -1
+	}
+
+	listed := make(map[string]struct{}, len(channelList))
+	g.refreshChannels(channelList, listed)
+	removed := 0
+	for channelId, c := range g.Channels {
+		if _, ok := listed[channelId]; ok || keep[channelId] {
+			continue
+		}
+		g.DeleteChannel(c)
+		removed++
+	}
+	return removed
+}
+
+// refreshChannels does RefreshChannels with channelsLock and adjacencyListLock
+// held, and adds the id of each listed channel to listed, if not nil.
+func (g *Graph) refreshChannels(channelList []*glightning.Channel, listed map[string]struct{}) {
 	// we need to do NewChannel and not only update the liquidity because of gossip updates
 	for _, c := range channelList {
 		var channel *Channel
 		channelId := c.ShortChannelId + "/" + util.GetDirection(c.Source, c.Destination)
+		if listed != nil {
+			listed[channelId] = struct{}{}
+		}
 		// if the channel did not exist prior to this refresh estimate its initial liquidity to be 50/50
 		if existing, ok := g.Channels[channelId]; !ok {
 			channel = NewChannel(c, c.AmountMsat.MSat()/2, 0)
 			g.AddChannel(channel)
 		} else if existing.LastUpdate > c.LastUpdate {
-			// the gossip parser applied a newer update after this list was taken
+			// newer than the list: from a gossip update applied since, or one
+			// of our channels, refreshed from listpeerchannels
 			continue
 		} else {
 			channel = NewChannel(c, existing.Liquidity, existing.Timestamp)
