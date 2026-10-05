@@ -2,6 +2,7 @@ package node
 
 import (
 	"bufio"
+	"circular/graph"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -195,36 +196,58 @@ func storeReplaced(path string, inode uint64) bool {
 	return ok && uint64(stat.Ino) != inode
 }
 
+// parseChannelUpdate applies a channel_update to the graph: its policy, and
+// its inbound fee, or the removal of the inbound fee when the update has none.
 func (n *Node) parseChannelUpdate(body []byte) {
 	if len(body) < 130 {
 		return
 	}
 
-	scidBytes := body[98:106]
-	block := binary.BigEndian.Uint32(append([]byte{0}, scidBytes[0:3]...))
-	tx := binary.BigEndian.Uint32(append([]byte{0}, scidBytes[3:6]...))
-	out := binary.BigEndian.Uint16(scidBytes[6:8])
+	scid := body[98:106]
+	block := uint32(scid[0])<<16 | uint32(scid[1])<<8 | uint32(scid[2])
+	tx := uint32(scid[3])<<16 | uint32(scid[4])<<8 | uint32(scid[5])
+	out := binary.BigEndian.Uint16(scid[6:8])
 	scidStr := fmt.Sprintf("%dx%dx%d", block, tx, out)
 
 	messageFlags := body[110]
 	channelFlags := body[111]
+	direction := channelFlags & 1 // 0: sent by node_1, for payments from node_1 to node_2
 
-	offset := 130
+	update := &graph.ChannelUpdate{
+		ChannelId:       fmt.Sprintf("%s/%d", scidStr, direction),
+		Timestamp:       uint(binary.BigEndian.Uint32(body[106:110])),
+		MessageFlags:    messageFlags,
+		ChannelFlags:    channelFlags,
+		CltvDelta:       uint(binary.BigEndian.Uint16(body[112:114])),
+		HtlcMinimumMsat: binary.BigEndian.Uint64(body[114:122]),
+		BaseFeeMsat:     binary.BigEndian.Uint32(body[122:126]),
+		FeePPM:          binary.BigEndian.Uint32(body[126:130]),
+	}
+	tlvs := 130
 	if messageFlags&1 != 0 {
 		if len(body) < 138 {
 			return
 		}
-		offset = 138
+		update.HtlcMaximumMsat = binary.BigEndian.Uint64(body[130:138])
+		tlvs = 138
 	}
+	n.Graph.ApplyChannelUpdate(update)
 
-	if len(body) <= offset {
-		return // No TLVs
+	// The inbound fee applies to payments that reach the update's sender over
+	// this channel: the opposite direction.
+	key := fmt.Sprintf("%s/%d", scidStr, 1-direction)
+	if fee, ok := n.parseInboundFee(key, body[tlvs:]); ok {
+		n.Graph.SetInboundFee(key, fee.BaseFee, fee.FeeRate)
+		n.Logf(glightning.Debug, "Parsed inbound fee for %s: base=%d msat, rate=%d ppm", key, fee.BaseFee, fee.FeeRate)
+	} else if n.Graph.DeleteInboundFee(key) {
+		// the node no longer offers one: keeping it would underpay the node
+		n.Logf(glightning.Debug, "Inbound fee removed for %s", key)
 	}
-
-	n.parseTLVs(scidStr, channelFlags, body[offset:])
 }
 
-func (n *Node) parseTLVs(scidStr string, channelFlags byte, tlvBytes []byte) {
+// parseInboundFee returns the inbound fee (TLV 55555, bLIP-18) in a
+// channel_update's TLV stream, if it has a valid one.
+func (n *Node) parseInboundFee(key string, tlvBytes []byte) (graph.InboundFee, bool) {
 	offset := 0
 	for offset < len(tlvBytes) {
 		tType, ok := parseBigSize(tlvBytes, &offset)
@@ -232,31 +255,22 @@ func (n *Node) parseTLVs(scidStr string, channelFlags byte, tlvBytes []byte) {
 			break
 		}
 		tLen, ok := parseBigSize(tlvBytes, &offset)
-		if !ok {
-			break
-		}
-		if offset+int(tLen) > len(tlvBytes) {
+		if !ok || tLen > uint64(len(tlvBytes)-offset) {
 			break
 		}
 		tVal := tlvBytes[offset : offset+int(tLen)]
 		offset += int(tLen)
 
 		if tType == 55555 {
-			if len(tVal) == 8 {
-				baseFee := int32(binary.BigEndian.Uint32(tVal[0:4]))
-				feeRate := int32(binary.BigEndian.Uint32(tVal[4:8]))
-
-				// channelFlags & 1 is the direction of the channel_update.
-				direction := channelFlags & 1
-				// The inbound fee applies to payments traversing the channel in the opposite direction.
-				targetDirection := 1 - direction
-
-				key := fmt.Sprintf("%s/%d", scidStr, targetDirection)
-				n.Graph.SetInboundFee(key, baseFee, feeRate)
-				n.Logf(glightning.Debug, "Parsed inbound fee for %s: base=%d msat, rate=%d ppm", key, baseFee, feeRate)
-			} else {
-				n.Logf(glightning.Unusual, "Inbound fee TLV value length invalid: %d bytes", len(tVal))
+			if len(tVal) != 8 {
+				n.Logf(glightning.Unusual, "Inbound fee TLV for %s has an invalid length: %d bytes", key, len(tVal))
+				return graph.InboundFee{}, false
 			}
+			return graph.InboundFee{
+				BaseFee: int32(binary.BigEndian.Uint32(tVal[0:4])),
+				FeeRate: int32(binary.BigEndian.Uint32(tVal[4:8])),
+			}, true
 		}
 	}
+	return graph.InboundFee{}, false
 }

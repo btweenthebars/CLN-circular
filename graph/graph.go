@@ -117,14 +117,60 @@ func (g *Graph) RefreshChannels(channelList []*glightning.Channel) {
 		var channel *Channel
 		channelId := c.ShortChannelId + "/" + util.GetDirection(c.Source, c.Destination)
 		// if the channel did not exist prior to this refresh estimate its initial liquidity to be 50/50
-		if _, ok := g.Channels[channelId]; !ok {
+		if existing, ok := g.Channels[channelId]; !ok {
 			channel = NewChannel(c, c.AmountMsat.MSat()/2, 0)
 			g.AddChannel(channel)
+		} else if existing.LastUpdate > c.LastUpdate {
+			// the gossip parser applied a newer update after this list was taken
+			continue
 		} else {
-			channel = NewChannel(c, g.Channels[channelId].Liquidity, g.Channels[channelId].Timestamp)
+			channel = NewChannel(c, existing.Liquidity, existing.Timestamp)
 		}
 		g.Channels[channelId] = channel
 	}
+}
+
+// ChannelUpdate is the policy a channel_update announces for one direction of
+// a channel.
+type ChannelUpdate struct {
+	ChannelId       string // "scid/direction"
+	Timestamp       uint
+	MessageFlags    byte
+	ChannelFlags    byte
+	CltvDelta       uint
+	HtlcMinimumMsat uint64
+	HtlcMaximumMsat uint64 // present when MessageFlags&1 is set
+	BaseFeeMsat     uint32
+	FeePPM          uint32
+}
+
+// ApplyChannelUpdate gives a known channel the policy of a newer
+// channel_update from gossip, so that fee changes and disables take effect
+// without waiting for the next listchannels refresh. The channel is replaced,
+// not changed in place: routes built earlier keep the policy they were priced
+// with. It reports whether the channel was updated.
+func (g *Graph) ApplyChannelUpdate(u *ChannelUpdate) bool {
+	g.channelsLock.Lock()
+	defer g.channelsLock.Unlock()
+
+	old, ok := g.Channels[u.ChannelId]
+	if !ok || u.Timestamp <= old.LastUpdate {
+		return false
+	}
+	updated := *old.Channel
+	updated.LastUpdate = u.Timestamp
+	updated.MessageFlags = uint(u.MessageFlags)
+	updated.ChannelFlags = uint(u.ChannelFlags)
+	updated.IsActive = u.ChannelFlags&2 == 0 // the disable bit
+	updated.Delay = u.CltvDelta
+	updated.BaseFeeMillisatoshi = uint64(u.BaseFeeMsat)
+	updated.FeePerMillionth = uint64(u.FeePPM)
+	updated.HtlcMinimumMilliSatoshis = glightning.AmountFromMSat(u.HtlcMinimumMsat)
+	if u.MessageFlags&1 != 0 {
+		updated.HtlcMaximumMilliSatoshis = glightning.AmountFromMSat(u.HtlcMaximumMsat)
+	}
+	g.Channels[u.ChannelId] = NewChannel(&updated, old.Liquidity, old.Timestamp)
+	return true
 }
 
 func (g *Graph) RefreshAliases(nodes []*glightning.Node) {
@@ -331,6 +377,19 @@ func (g *Graph) SetInboundFee(channelId string, baseFee, feeRate int32) {
 	}
 }
 
+// DeleteInboundFee forgets the inbound fee of channelId and reports whether
+// there was one.
+func (g *Graph) DeleteInboundFee(channelId string) bool {
+	g.inboundFeesLock.Lock()
+	defer g.inboundFeesLock.Unlock()
+
+	if _, ok := g.InboundFees[channelId]; !ok {
+		return false
+	}
+	delete(g.InboundFees, channelId)
+	return true
+}
+
 func (g *Graph) GetInboundFee(c *Channel, amount uint64) int64 {
 	g.inboundFeesLock.RLock()
 	defer g.inboundFeesLock.RUnlock()
@@ -349,4 +408,3 @@ func (g *Graph) inboundFee(channelId string, amount uint64) int64 {
 	prop := (amt * int64(fee.FeeRate)) / 1000000
 	return int64(fee.BaseFee) + prop
 }
-
