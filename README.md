@@ -109,7 +109,7 @@ The actual amount that is going to be left in the outgoing channels is the minim
 
 Example: you have a 10M channel and you set `depleteuptopercent` to 0.2 (20%) and `depleteuptoamount` to 1000000. The actual amount that will be left in that channel will be the minimum of 0.2 and 1000000. So in this case, at least 1000000 sats will be left in that channel.
 
-A channel is only used for a split if it stays above the threshold after sending that split and its fees. The amount it has left is what lightningd reports as `spendable_msat`, which already leaves out the channel reserve and the HTLCs in flight.
+A channel is only used for a split if its balance, less the HTLCs in flight, stays above the threshold after sending that split and its fees.
 
 ### Push liquidity out of a channel to many destinations in parallel
 **Symmetrical to `circular-pull`, but for pushing liquidity out of a channel.**
@@ -135,7 +135,7 @@ cli circular-push -k outscid=123456x1x1 inlist='["03700917a25f79a3e427fe86e49b50
 
 Example: you have a 10M channel and you set `filluptopercent` to 0.2 (20%) and `filluptoamount` to 1000000. The minimum amount of remote liquidity that will be left in that channel will be the minimum of 0.2 and 1000000. So in this case, at least 1000000 sats will be left in that channel.
 
-As for `circular-pull`, the threshold is checked after the split, against the channel's `receivable_msat`.
+As for `circular-pull`, the threshold is checked after the split, against the remote balance less the HTLCs in flight.
 
 
 ### Get stats about the usage of the plugin

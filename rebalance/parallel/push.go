@@ -99,9 +99,10 @@ func (r *RebalancePush) CanUseChannel(channel *glightning.PeerChannel) error {
 		uint64(float64(channel.TotalMsat.MSat())*r.FillUpToPercent))
 	r.Node.Logln(glightning.Debug, "fillAmount:", fillAmount)
 
-	// Receivable, unlike the remote balance, already leaves out the peer's
-	// reserve and the HTLCs in flight.
-	if channel.ReceivableMsat.MSat() < fillAmount+r.splitAmount {
+	// The split moves the split amount out of the peer's balance, less what
+	// its HTLCs in flight already take. Receivable is only a limit on a
+	// single HTLC (see RebalancePull.CanUseChannel).
+	if remoteBalance(channel) < addSaturating(fillAmount, r.splitAmount) || channel.ReceivableMsat.MSat() < r.splitAmount {
 		return util.ErrChannelFilled
 	}
 

@@ -98,10 +98,12 @@ func (r *RebalancePull) CanUseChannel(channel *glightning.PeerChannel) error {
 		uint64(float64(channel.TotalMsat.MSat())*r.DepleteUpToPercent))
 	r.Node.Logln(glightning.Debug, "depleteAmount:", depleteAmount)
 
-	// The split takes the split amount and its fees. Spendable, unlike our
-	// balance, already leaves out the reserve and the HTLCs in flight.
-	split := r.splitAmount + graph.MaxFeeForPPM(r.splitAmount, r.maxPPM)
-	if channel.SpendableMsat.MSat() < depleteAmount+split {
+	// The split takes the split amount and its fees out of our balance, less
+	// what our HTLCs in flight already take. Spendable is only a limit on a
+	// single HTLC: lightningd caps it at 2^32-1 msat on channels without
+	// option_support_large_channel, so it cannot stand for the balance.
+	split := addSaturating(r.splitAmount, graph.MaxFeeForPPM(r.splitAmount, r.maxPPM))
+	if localBalance(channel) < addSaturating(depleteAmount, split) || channel.SpendableMsat.MSat() < split {
 		return util.ErrChannelDepleted
 	}
 
