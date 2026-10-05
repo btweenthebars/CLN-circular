@@ -3,6 +3,7 @@ package graph
 import (
 	"circular/util"
 	"github.com/elementsproject/glightning/glightning"
+	"math"
 	"sync"
 	"time"
 )
@@ -469,6 +470,13 @@ func (g *Graph) inboundFee(channelId string, amount uint64) int64 {
 	}
 	// whole millions of msat, then the rest: rate x amount overflows int64
 	// from about 9.2 BTC at the capped rate
-	millions, rest := int64(amount/1000000), int64(amount%1000000)
-	return int64(fee.BaseFee) + millions*rate + rest*rate/1000000
+	millions, rest := amount/1000000, int64(amount%1000000)
+	if rate != 0 && millions > uint64(math.MaxInt64/2/maxInboundFeeRate) {
+		// beyond any real amount (about 4.6M BTC): saturate rather than wrap
+		if rate > 0 {
+			return math.MaxInt64
+		}
+		return math.MinInt64
+	}
+	return int64(fee.BaseFee) + int64(millions)*rate + rest*rate/1000000
 }

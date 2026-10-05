@@ -113,13 +113,13 @@ func TestPathfinderInboundFee(t *testing.T) {
 	g.Inbound[cNode] = make(map[string]Edge)
 
 	chAB1 := NewChannel(&glightning.Channel{
-		Source:              a,
-		Destination:         b1,
-		ShortChannelId:      "1x1x1",
-		IsActive:            true,
-		BaseFeeMillisatoshi: 100,
-		FeePerMillionth:     0,
-		Delay:               10,
+		Source:                   a,
+		Destination:              b1,
+		ShortChannelId:           "1x1x1",
+		IsActive:                 true,
+		BaseFeeMillisatoshi:      100,
+		FeePerMillionth:          0,
+		Delay:                    10,
 		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
 		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
 	}, 5000000, 0)
@@ -127,13 +127,13 @@ func TestPathfinderInboundFee(t *testing.T) {
 	g.Channels["1x1x1/"+util.GetDirection(a, b1)] = chAB1
 
 	chB1C := NewChannel(&glightning.Channel{
-		Source:              b1,
-		Destination:         cNode,
-		ShortChannelId:      "2x1x1",
-		IsActive:            true,
-		BaseFeeMillisatoshi: 500,
-		FeePerMillionth:     0,
-		Delay:               10,
+		Source:                   b1,
+		Destination:              cNode,
+		ShortChannelId:           "2x1x1",
+		IsActive:                 true,
+		BaseFeeMillisatoshi:      500,
+		FeePerMillionth:          0,
+		Delay:                    10,
 		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
 		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
 	}, 5000000, 0)
@@ -141,13 +141,13 @@ func TestPathfinderInboundFee(t *testing.T) {
 	g.Channels["2x1x1/"+util.GetDirection(b1, cNode)] = chB1C
 
 	chAB2 := NewChannel(&glightning.Channel{
-		Source:              a,
-		Destination:         b2,
-		ShortChannelId:      "3x1x1",
-		IsActive:            true,
-		BaseFeeMillisatoshi: 200,
-		FeePerMillionth:     0,
-		Delay:               10,
+		Source:                   a,
+		Destination:              b2,
+		ShortChannelId:           "3x1x1",
+		IsActive:                 true,
+		BaseFeeMillisatoshi:      200,
+		FeePerMillionth:          0,
+		Delay:                    10,
 		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
 		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
 	}, 5000000, 0)
@@ -155,13 +155,13 @@ func TestPathfinderInboundFee(t *testing.T) {
 	g.Channels["3x1x1/"+util.GetDirection(a, b2)] = chAB2
 
 	chB2C := NewChannel(&glightning.Channel{
-		Source:              b2,
-		Destination:         cNode,
-		ShortChannelId:      "4x1x1",
-		IsActive:            true,
-		BaseFeeMillisatoshi: 500,
-		FeePerMillionth:     0,
-		Delay:               10,
+		Source:                   b2,
+		Destination:              cNode,
+		ShortChannelId:           "4x1x1",
+		IsActive:                 true,
+		BaseFeeMillisatoshi:      500,
+		FeePerMillionth:          0,
+		Delay:                    10,
 		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
 		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
 	}, 5000000, 0)
@@ -201,13 +201,13 @@ func TestPrettyRouteSavings(t *testing.T) {
 	g.Inbound[c] = make(map[string]Edge)
 
 	chOut := NewChannel(&glightning.Channel{
-		Source:              self,
-		Destination:         a,
-		ShortChannelId:      "9x9x9",
-		IsActive:            true,
-		BaseFeeMillisatoshi: 0,
-		FeePerMillionth:     0,
-		Delay:               10,
+		Source:                   self,
+		Destination:              a,
+		ShortChannelId:           "9x9x9",
+		IsActive:                 true,
+		BaseFeeMillisatoshi:      0,
+		FeePerMillionth:          0,
+		Delay:                    10,
 		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
 		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
 	}, 5000000, 0)
@@ -215,13 +215,13 @@ func TestPrettyRouteSavings(t *testing.T) {
 	g.Channels["9x9x9/"+util.GetDirection(self, a)] = chOut
 
 	chAB := NewChannel(&glightning.Channel{
-		Source:              a,
-		Destination:         b,
-		ShortChannelId:      "1x1x1",
-		IsActive:            true,
-		BaseFeeMillisatoshi: 100,
-		FeePerMillionth:     0,
-		Delay:               10,
+		Source:                   a,
+		Destination:              b,
+		ShortChannelId:           "1x1x1",
+		IsActive:                 true,
+		BaseFeeMillisatoshi:      100,
+		FeePerMillionth:          0,
+		Delay:                    10,
 		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
 		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
 	}, 5000000, 0)
@@ -229,13 +229,13 @@ func TestPrettyRouteSavings(t *testing.T) {
 	g.Channels["1x1x1/"+util.GetDirection(a, b)] = chAB
 
 	chBC := NewChannel(&glightning.Channel{
-		Source:              b,
-		Destination:         c,
-		ShortChannelId:      "2x1x1",
-		IsActive:            true,
-		BaseFeeMillisatoshi: 500,
-		FeePerMillionth:     0,
-		Delay:               10,
+		Source:                   b,
+		Destination:              c,
+		ShortChannelId:           "2x1x1",
+		IsActive:                 true,
+		BaseFeeMillisatoshi:      500,
+		FeePerMillionth:          0,
+		Delay:                    10,
 		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
 		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
 	}, 5000000, 0)
@@ -243,13 +243,13 @@ func TestPrettyRouteSavings(t *testing.T) {
 	g.Channels["2x1x1/"+util.GetDirection(b, c)] = chBC
 
 	chIn := NewChannel(&glightning.Channel{
-		Source:              c,
-		Destination:         self,
-		ShortChannelId:      "8x8x8",
-		IsActive:            true,
-		BaseFeeMillisatoshi: 0,
-		FeePerMillionth:     0,
-		Delay:               10,
+		Source:                   c,
+		Destination:              self,
+		ShortChannelId:           "8x8x8",
+		IsActive:                 true,
+		BaseFeeMillisatoshi:      0,
+		FeePerMillionth:          0,
+		Delay:                    10,
 		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
 		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000),
 	}, 5000000, 0)
@@ -491,4 +491,23 @@ func TestInboundFeeMatchesLND(t *testing.T) {
 	// 10 BTC at the capped rate: rate x amount does not fit in an int64
 	assert.Equal(t, int64(5+10000000000000), g.inboundFee("1x1x1/0", 1000000000000))
 	assert.Equal(t, int64(0), g.inboundFee("3x1x1/0", 1000000), "no inbound fee")
+}
+
+// A channel whose fee wrapped around looked cheap and was picked over a
+// reasonable one.
+func TestSearchAvoidsChannelsWithHugeFees(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 0, 0)
+	g.channel("3x1x1", outP, "02a", 0, 0)
+	g.channel("4x1x1", "02a", inP, 0, math.MaxUint32) // keeps payments off
+	g.channel("5x1x1", outP, "02b", 0, 0)
+	g.channel("6x1x1", "02b", inP, 0, 100)
+
+	// 4.99M sats: 4x1x1's amount x ppm does not fit in 64 bits
+	route, err := g.GetCheapestCircularRoute(out, in, 4990000000, nil, 8)
+	if assert.NoError(t, err) {
+		assert.Equal(t, []string{"1x1x1", "5x1x1", "6x1x1", "2x1x1"}, scids(route))
+		assert.Equal(t, uint64(499000), route.Fee())
+	}
 }

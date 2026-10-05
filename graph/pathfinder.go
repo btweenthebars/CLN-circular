@@ -228,12 +228,14 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 				return current.path(), nil
 			}
 			// the out-peer charges for forwarding from our channel
-			fee := nodeFee(outboundFee, g.inboundFee(firstHopId, current.amount+outboundFee))
-			if current.hops+1 <= req.maxHops && current.fee+fee <= req.maxFee && current.fee+fee >= current.fee {
+			fee := nodeFee(outboundFee, g.inboundFee(firstHopId, addSaturating(current.amount, outboundFee)))
+			totalFee := addSaturating(current.fee, fee)
+			if current.hops+1 <= req.maxHops && totalFee <= req.maxFee && totalFee < math.MaxUint64 &&
+				addSaturating(current.amount, fee) < math.MaxUint64 {
 				heap.Push(pq, &label{
 					channel: req.firstHop,
 					hops:    current.hops + 1,
-					fee:     current.fee + fee,
+					fee:     totalFee,
 					amount:  current.amount + fee,
 					next:    current,
 					final:   true,
@@ -246,7 +248,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 		if current.hops+1 > pathHops {
 			continue
 		}
-		if !addExpansion(expanded, u, expansion{current.hops, current.fee, current.fee + outboundFee}) {
+		if !addExpansion(expanded, u, expansion{current.hops, current.fee, addSaturating(current.fee, outboundFee)}) {
 			continue
 		}
 
@@ -264,13 +266,13 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 
 				// what u charges for this channel and the next one: as in LND, the
 				// inbound fee applies to the amount plus the outbound fee
-				fee := nodeFee(outboundFee, g.inboundFee(id, current.amount+outboundFee))
-				totalFee := current.fee + fee
-				if totalFee < current.fee || totalFee > req.maxFee {
+				fee := nodeFee(outboundFee, g.inboundFee(id, addSaturating(current.amount, outboundFee)))
+				totalFee := addSaturating(current.fee, fee)
+				if totalFee > req.maxFee || totalFee == math.MaxUint64 {
 					continue
 				}
-				amount := current.amount + fee
-				if !channel.CanForward(amount) {
+				amount := addSaturating(current.amount, fee)
+				if amount == math.MaxUint64 || !channel.CanForward(amount) {
 					continue
 				}
 
@@ -324,7 +326,7 @@ func addExpansion(expanded map[string][]expansion, u string, e expansion) bool {
 // can be negative, never below zero.
 func nodeFee(outboundFee uint64, inboundFee int64) uint64 {
 	if inboundFee >= 0 {
-		return outboundFee + uint64(inboundFee)
+		return addSaturating(outboundFee, uint64(inboundFee))
 	}
 	discount := uint64(-inboundFee)
 	if discount >= outboundFee {

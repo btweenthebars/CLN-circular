@@ -2,6 +2,8 @@ package graph
 
 import (
 	"github.com/elementsproject/glightning/glightning"
+	"math"
+	"math/bits"
 	"time"
 )
 
@@ -23,24 +25,43 @@ func NewChannel(channel *glightning.Channel, liquidity uint64, timestamp int64) 
 	}
 }
 
+// ComputeFee returns the channel's outbound fee for forwarding amount: the
+// base fee plus the proportional fee, rounded up. It saturates at
+// math.MaxUint64 rather than wrapping: amount x ppm overflows 64 bits from
+// about 4.3M sats at the highest ppm (2^32-1), which some nodes set to keep
+// payments off a channel, and a wrapped fee made such a channel look cheap.
 func (c *Channel) ComputeFee(amount uint64) uint64 {
-	result := c.BaseFeeMillisatoshi
-	// Multiply first, then divide once to avoid precision loss from two truncations.
-	// ceiling division: (a * b + divisor - 1) / divisor
-	numerator := amount * c.FeePerMillionth
-	var proportionalFee uint64 = 0
-	if numerator > 0 {
-		proportionalFee = (numerator + 999999) / 1000000
+	hi, lo := bits.Mul64(amount, c.FeePerMillionth)
+	// ceiling division: (amount x ppm + 999,999) / 1,000,000
+	lo, carry := bits.Add64(lo, 999999, 0)
+	hi += carry
+	if hi >= 1000000 {
+		return math.MaxUint64 // the quotient does not fit in 64 bits
 	}
-	result += proportionalFee
-	return result
+	proportionalFee, _ := bits.Div64(hi, lo, 1000000)
+	return addSaturating(c.BaseFeeMillisatoshi, proportionalFee)
 }
 
 func (c *Channel) ComputeFeePPM(amount uint64) uint64 {
 	if amount == 0 {
 		return 0
 	}
-	return c.ComputeFee(amount) * 1000000 / amount
+	fee := c.ComputeFee(amount)
+	hi, lo := bits.Mul64(fee, 1000000)
+	if fee == math.MaxUint64 || hi >= amount {
+		return math.MaxUint64
+	}
+	ppm, _ := bits.Div64(hi, lo, amount)
+	return ppm
+}
+
+// addSaturating returns a + b, or math.MaxUint64 if that overflows.
+func addSaturating(a, b uint64) uint64 {
+	sum, carry := bits.Add64(a, b, 0)
+	if carry != 0 {
+		return math.MaxUint64
+	}
+	return sum
 }
 
 func (c *Channel) GetHop(amount uint64, delay uint32) glightning.RouteHop {

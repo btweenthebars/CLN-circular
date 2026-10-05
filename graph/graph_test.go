@@ -4,6 +4,7 @@ import (
 	"circular/util"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
+	"math"
 	"testing"
 	"time"
 )
@@ -106,4 +107,29 @@ func TestSyncChannelsRemovesChannelsMissingFromTheSnapshot(t *testing.T) {
 	added.LastUpdate = now
 	assert.Equal(t, 0, g.SyncChannels(listed, ours, now))
 	assert.Len(t, g.Channels, 4)
+}
+
+// amount x ppm used to wrap around for large amounts at the highest ppm,
+// making a channel that charges 429,496% look almost free.
+func TestComputeFeeSaturates(t *testing.T) {
+	c := NewChannel(&glightning.Channel{BaseFeeMillisatoshi: 1000, FeePerMillionth: math.MaxUint32}, 0, 0)
+
+	// 1M sats at the highest ppm: a large fee, computed exactly
+	assert.Equal(t, uint64(1000+4294967295000), c.ComputeFee(1000000000))
+	// 5M sats: amount x ppm needs more than 64 bits
+	assert.Equal(t, uint64(1000+21474836475000), c.ComputeFee(5000000000))
+	assert.Equal(t, uint64(math.MaxUint64), c.ComputeFee(math.MaxUint64))
+	assert.Equal(t, uint64(math.MaxUint64), c.ComputeFeePPM(math.MaxUint64/2))
+	assert.Equal(t, uint64(4294967296), c.ComputeFeePPM(1000000000))
+
+	// still rounded up
+	c = NewChannel(&glightning.Channel{FeePerMillionth: 1}, 0, 0)
+	assert.Equal(t, uint64(1), c.ComputeFee(1))
+	assert.Equal(t, uint64(0), c.ComputeFee(0))
+
+	g := NewGraph()
+	g.SetInboundFee("1x1x1/0", 0, 10000000)
+	assert.Equal(t, int64(math.MaxInt64), g.inboundFee("1x1x1/0", math.MaxUint64))
+	g.SetInboundFee("1x1x1/0", 0, -10000000)
+	assert.Equal(t, int64(math.MinInt64), g.inboundFee("1x1x1/0", math.MaxUint64))
 }
