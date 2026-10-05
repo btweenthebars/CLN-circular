@@ -35,7 +35,8 @@ type Node struct {
 	scidToPeer         map[string]*glightning.Peer // reverse index: scid → peer, guarded by PeersLock
 	Graph              *graph.Graph
 	DB                 *Store
-	Stopped            atomic.Bool
+	Stopped            atomic.Bool // circular-stop: no new rebalances
+	gossipStopped      atomic.Bool
 	ActivePayments     map[string]*ActivePayment
 	activePaymentsLock *sync.RWMutex
 }

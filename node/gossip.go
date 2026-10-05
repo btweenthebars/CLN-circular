@@ -1,7 +1,9 @@
 package node
 
 import (
+	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"io"
@@ -45,14 +47,23 @@ func parseBigSize(data []byte, offset *int) (uint64, bool) {
 	return val, true
 }
 
-func (n *Node) StartGossipParser(lightningDir string, network string) {
-	defer func() {
-		if r := recover(); r != nil {
-			n.Logf(glightning.Unusual, "gossip parser panic, restarting: %v", r)
-			go n.StartGossipParser(lightningDir, network)
-		}
-	}()
+const (
+	gossipStoreHeaderLen      = 12
+	gossipStoreDeletedBit     = 0x8000
+	gossipStoreCompletedBit   = 0x2000 // set once a record is fully written...
+	gossipStoreCompletedSince = 15     // ...from store version 15 (CLN 25.12); 0x2000 meant something else before
+	gossipStorePollInterval   = 500 * time.Millisecond
+	gossipStoreRetryInterval  = 2 * time.Second
+)
 
+// errIncompleteRecord means the reader caught up with gossipd: the record is
+// not, or not yet fully, written.
+var errIncompleteRecord = errors.New("incomplete gossip_store record")
+
+// StartGossipParser follows lightningd's gossip_store and records the inbound
+// fees announced in channel_updates. It keeps running while rebalancing is
+// paused with circular-stop, until StopGossipParser is called.
+func (n *Node) StartGossipParser(lightningDir string, network string) {
 	path := filepath.Join(lightningDir, network, "gossip_store")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		path = filepath.Join(lightningDir, "gossip_store")
@@ -60,116 +71,128 @@ func (n *Node) StartGossipParser(lightningDir string, network string) {
 
 	n.Logf(glightning.Info, "Starting gossip store parser for: %s", path)
 
-	var file *os.File
-	var err error
-	count := 0
-
-	for {
-		if n.Stopped.Load() {
-			if file != nil {
-				file.Close()
-			}
-			return
-		}
-
-		if file == nil {
-			file, err = os.Open(path)
-			if err != nil {
-				n.Logf(glightning.Unusual, "Failed to open gossip_store: %v. Retrying...", err)
-				time.Sleep(2 * time.Second)
-				continue
-			}
-
-			// Read and check version header (1 byte)
-			var version [1]byte
-			if _, err := io.ReadFull(file, version[:]); err != nil {
-				n.Logf(glightning.Unusual, "Failed to read gossip_store version: %v. Retrying...", err)
-				file.Close()
-				file = nil
-				time.Sleep(2 * time.Second)
-				continue
-			}
-
-			n.Logf(glightning.Info, "Opened gossip_store: major=%d, minor=%d", version[0]>>5, version[0]&0x1f)
-		}
-
-		// Get current inode
-		fi, err := file.Stat()
-		var currentIno uint64
-		if err == nil {
-			if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
-				currentIno = stat.Ino
-			}
-		}
-
-		// Check if file has been replaced/compacted
-		newFi, err := os.Stat(path)
-		if err == nil {
-			if stat, ok := newFi.Sys().(*syscall.Stat_t); ok {
-				if stat.Ino != currentIno {
-					n.Logf(glightning.Info, "gossip_store was replaced (compaction detected). Reopening...")
-					file.Close()
-					file = nil
-					continue
-				}
-			}
-		}
-
-		// Try to read header (12 bytes)
-		var header [12]byte
-		bytesRead, err := io.ReadFull(file, header[:])
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			// Reached end of file, wait for new updates
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		if err != nil {
-			// Seek back any bytes already consumed so the next read starts clean
-			if bytesRead > 0 {
-				_, _ = file.Seek(-int64(bytesRead), io.SeekCurrent)
-			}
-			n.Logf(glightning.Unusual, "Error reading gossip_store header: %v", err)
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		flags := binary.BigEndian.Uint16(header[0:2])
-		length := binary.BigEndian.Uint16(header[2:4])
-
-		// Try to read body
-		body := make([]byte, length)
-		_, err = io.ReadFull(file, body)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			// Partial record at end of file. Rewind header and wait.
-			_, _ = file.Seek(-12, io.SeekCurrent)
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		if err != nil {
-			n.Logf(glightning.Unusual, "Error reading gossip_store body: %v", err)
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		// Skip deleted records
-		if flags&0x8000 != 0 {
-			continue
-		}
-
-		if len(body) < 2 {
-			continue
-		}
-
-		msgType := binary.BigEndian.Uint16(body[0:2])
-		if msgType == 258 { // channel_update
-			n.parseChannelUpdate(body)
-		}
-
-		count++
-		if count%500 == 0 {
-			time.Sleep(1 * time.Millisecond)
+	for !n.gossipStopped.Load() {
+		if err := n.followGossipStore(path); err != nil {
+			n.Logf(glightning.Unusual, "gossip_store: %v. Retrying...", err)
+			time.Sleep(gossipStoreRetryInterval)
 		}
 	}
+}
+
+// StopGossipParser makes StartGossipParser return.
+func (n *Node) StopGossipParser() {
+	n.gossipStopped.Store(true)
+}
+
+// followGossipStore reads the store from its start, then waits for gossipd to
+// append more. It returns nil when the store has been replaced (compaction),
+// so the caller reopens it.
+func (n *Node) followGossipStore(path string) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("parser panic: %v", r)
+		}
+	}()
+
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var version [1]byte
+	if _, err := io.ReadFull(file, version[:]); err != nil {
+		return fmt.Errorf("reading version: %w", err)
+	}
+	major, minor := version[0]>>5, version[0]&0x1f
+	n.Logf(glightning.Info, "Opened gossip_store: major=%d, minor=%d", major, minor)
+	waitForCompleted := major == 0 && minor >= gossipStoreCompletedSince
+	inode := fileInode(file)
+
+	reader := bufio.NewReaderSize(file, 64*1024)
+	offset := int64(len(version)) // where the next record starts
+	header := make([]byte, gossipStoreHeaderLen)
+	var body []byte
+
+	for !n.gossipStopped.Load() {
+		flags, record, err := readGossipRecord(reader, header, body, waitForCompleted)
+		body = record
+		if err == errIncompleteRecord {
+			// Caught up with gossipd. Wait, then read this record again from its
+			// start, discarding the part of it already consumed.
+			if storeReplaced(path, inode) {
+				n.Logf(glightning.Info, "gossip_store was replaced (compaction detected). Reopening...")
+				return nil
+			}
+			time.Sleep(gossipStorePollInterval)
+			if _, err := file.Seek(offset, io.SeekStart); err != nil {
+				return err
+			}
+			reader.Reset(file)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		offset += int64(gossipStoreHeaderLen + len(record))
+		if flags&gossipStoreDeletedBit == 0 && len(record) >= 2 && binary.BigEndian.Uint16(record[0:2]) == 258 {
+			n.parseChannelUpdate(record) // channel_update
+		}
+	}
+	return nil
+}
+
+// readGossipRecord reads the next record, reusing body's storage. It returns
+// errIncompleteRecord when the record is not fully written yet.
+func readGossipRecord(reader *bufio.Reader, header, body []byte, waitForCompleted bool) (uint16, []byte, error) {
+	if _, err := io.ReadFull(reader, header); err != nil {
+		return 0, body, incompleteRecord(err)
+	}
+	flags := binary.BigEndian.Uint16(header[0:2])
+	if waitForCompleted && flags&gossipStoreCompletedBit == 0 {
+		return 0, body, errIncompleteRecord
+	}
+
+	length := int(binary.BigEndian.Uint16(header[2:4]))
+	if cap(body) < length {
+		body = make([]byte, length)
+	}
+	body = body[:length]
+	if _, err := io.ReadFull(reader, body); err != nil {
+		return 0, body, incompleteRecord(err)
+	}
+	return flags, body, nil
+}
+
+func incompleteRecord(err error) error {
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return errIncompleteRecord
+	}
+	return err
+}
+
+func fileInode(file *os.File) uint64 {
+	info, err := file.Stat()
+	if err != nil {
+		return 0
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(stat.Ino)
+	}
+	return 0
+}
+
+// storeReplaced reports whether path now names a different file than inode.
+// While gossipd is renaming the new store into place, path may be missing:
+// that is checked again at the next wait.
+func storeReplaced(path string, inode uint64) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && uint64(stat.Ino) != inode
 }
 
 func (n *Node) parseChannelUpdate(body []byte) {
