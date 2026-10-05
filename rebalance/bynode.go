@@ -27,12 +27,14 @@ func (r *RebalanceByNode) New() interface{} {
 }
 
 func (r *RebalanceByNode) getBestOutgoingChannel() (*graph.Channel, error) {
-	// Score each candidate by ToUsMsat adjusted for outbound fee:
-	// prefer channels with high local balance and low fees.
-	// We approximate score = ToUsMsat / (1 + fee_rate_ppm/1_000_000).
-	// Since we're comparing ratios, multiply through: score = ToUsMsat * 1_000_000 / (1_000_000 + fee_rate_ppm).
+	// Score each candidate by what it can send, adjusted for outbound fee:
+	// prefer channels that can send more and charge less. Spendable is what
+	// the liquidity check uses, so a channel that passes it wins over one with
+	// a larger balance held up by reserves or HTLCs in flight.
+	// We approximate score = spendable / (1 + fee_rate_ppm/1_000_000).
+	// Since we're comparing ratios, multiply through: score = spendable * 1_000_000 / (1_000_000 + fee_rate_ppm).
 	best := r.Node.GetBestPeerChannel(r.OutNode, func(channel *glightning.PeerChannel) uint64 {
-		local := channel.ToUsMsat.MSat()
+		local := channel.SpendableMsat.MSat()
 		if local == 0 {
 			return 0
 		}
@@ -51,8 +53,9 @@ func (r *RebalanceByNode) getBestOutgoingChannel() (*graph.Channel, error) {
 }
 
 func (r *RebalanceByNode) getBestIncomingChannel() (*graph.Channel, error) {
+	// the channel that can receive the most, as the liquidity check counts it
 	best := r.Node.GetBestPeerChannel(r.InNode, func(channel *glightning.PeerChannel) uint64 {
-		return channel.TotalMsat.MSat() - channel.ToUsMsat.MSat()
+		return channel.ReceivableMsat.MSat()
 	})
 	if best == nil {
 		return nil, util.ErrNoPeerChannel
