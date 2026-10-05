@@ -3,8 +3,11 @@ package node
 import (
 	"circular/graph"
 	"circular/util"
+	"errors"
+	"fmt"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/elementsproject/glightning/glightning"
+	"github.com/elementsproject/glightning/jrpc2"
 	"strings"
 	"time"
 )
@@ -55,9 +58,9 @@ func (n *Node) SendPay(route *graph.Route, invoice *RebalanceInvoice) (*glightni
 
 	n.Logln(glightning.Debug, "sending payment")
 	if _, err := n.lightning.SendPay(finalRoute, paymentHash, invoice.Label, route.Amount, "", invoice.PaymentSecret, 0); err != nil {
-		n.Logln(glightning.Unusual, err)
+		n.Logln(glightning.Unusual, "sendpay failed: ", err)
 		n.deleteInvoice(invoice.Label, "unpaid")
-		return nil, util.ErrFirstPeerNotReady
+		return nil, sendPayError(err)
 	}
 
 	n.Logln(glightning.Debug, "waiting for payment to be confirmed")
@@ -82,6 +85,25 @@ func (n *Node) SendPay(route *graph.Route, invoice *RebalanceInvoice) (*glightni
 	n.deleteInvoice(invoice.Label, "paid")
 	return result, nil
 }
+
+// sendPayError returns the error of a sendpay call. When lightningd failed the
+// payment at once, at our own first hop (PAY_TRY_OTHER_ROUTE, with the usual
+// failure data), it is a *glightning.PaymentError, so the caller handles it
+// like any other failure. Every error used to be reported as "first peer not
+// ready", whatever it was.
+func sendPayError(err error) error {
+	var rpcErr *jrpc2.RpcError
+	if errors.As(err, &rpcErr) && rpcErr.Code == payTryOtherRoute && len(rpcErr.Data) > 0 {
+		var data glightning.PaymentErrorData
+		if rpcErr.ParseData(&data) == nil && data.ErringNode != "" {
+			return &glightning.PaymentError{RpcError: rpcErr, Data: &data}
+		}
+	}
+	return fmt.Errorf("sendpay: %w", err)
+}
+
+// payTryOtherRoute is lightningd's PAY_TRY_OTHER_ROUTE error code.
+const payTryOtherRoute = 204
 
 func (n *Node) manageTimeout(invoice *RebalanceInvoice) (*glightning.SendPayFields, error) {
 	paymentHash := invoice.PaymentHash

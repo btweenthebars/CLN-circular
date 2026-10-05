@@ -33,7 +33,6 @@ var (
 	ErrNoPeerChannel               = errors.New("not a peer or peer channel")
 	ErrNoSuchNode                  = errors.New("no such node")
 	ErrNoPeer                      = errors.New("no peer")
-	ErrFirstPeerNotReady           = errors.New("first peer not ready")
 	ErrNoPaymentSecret             = errors.New("lightningd returned no payment_secret for the rebalance invoice")
 	ErrCircularStopped             = errors.New("circular has been stopped. Use 'circular-resume' to resume activity")
 

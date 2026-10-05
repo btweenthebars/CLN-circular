@@ -72,13 +72,8 @@ func (r *Rebalance) tryRoute(exclude map[string]bool) (*graph.PrettyRoute, error
 			return nil, r.learnFromFailure(route, paymentError.Data, exclude)
 		}
 
-		if err == util.ErrSendPayTimeout {
-			return nil, err
-		}
-		if err == util.ErrFirstPeerNotReady {
-			return nil, err
-		}
-		return nil, util.ErrTemporaryFailure
+		// a timeout, or an RPC error: retrying the same call would not help
+		return nil, err
 	}
 
 	return prettyRoute, nil
