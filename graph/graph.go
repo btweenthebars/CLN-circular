@@ -438,6 +438,9 @@ func (g *Graph) DeleteInboundFee(channelId string) bool {
 	return true
 }
 
+// GetInboundFee returns the inbound fee that the node c leads to charges for
+// a payment arriving over c. As in LND, amount is what the node forwards plus
+// its outbound fee for forwarding it.
 func (g *Graph) GetInboundFee(c *Channel, amount uint64) int64 {
 	g.inboundFeesLock.RLock()
 	defer g.inboundFeesLock.RUnlock()
@@ -445,14 +448,25 @@ func (g *Graph) GetInboundFee(c *Channel, amount uint64) int64 {
 	return g.inboundFee(c.ShortChannelId+"/"+util.GetDirection(c.Source, c.Destination), amount)
 }
 
+// maxInboundFeeRate is the rate LND caps inbound fee rates to, either way.
+const maxInboundFeeRate = 10 * 1000000
+
 // inboundFee is GetInboundFee for callers that hold inboundFeesLock and know
-// the channel id.
+// the channel id. It computes the fee as LND's InboundFee.CalcFee does: the
+// rate is capped, and the proportional part rounds toward zero.
 func (g *Graph) inboundFee(channelId string, amount uint64) int64 {
 	fee, ok := g.InboundFees[channelId]
 	if !ok {
 		return 0
 	}
-	amt := int64(amount)
-	prop := (amt * int64(fee.FeeRate)) / 1000000
-	return int64(fee.BaseFee) + prop
+	rate := int64(fee.FeeRate)
+	if rate > maxInboundFeeRate {
+		rate = maxInboundFeeRate
+	} else if rate < -maxInboundFeeRate {
+		rate = -maxInboundFeeRate
+	}
+	// whole millions of msat, then the rest: rate x amount overflows int64
+	// from about 0.9 BTC at the capped rate
+	millions, rest := int64(amount/1000000), int64(amount%1000000)
+	return int64(fee.BaseFee) + millions*rate + rest*rate/1000000
 }

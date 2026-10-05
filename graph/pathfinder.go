@@ -176,10 +176,11 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 	// expanded[u] holds the labels already expanded at node u, as (hops, fee,
 	// fee plus u's outbound fee). A label at u that has no fewer hops, no lower
 	// fee and no lower fee-plus-outbound-fee than one of them cannot price any
-	// channel into u lower, so it is not expanded again. (A negative inbound fee
-	// rate can make that off by rate x fee difference, a few msat at most.)
-	// Without this, each channel out of a large node rescans all of the node's
-	// channels.
+	// channel into u lower, so it is not expanded again: the inbound fee is
+	// computed on the amount plus the outbound fee, so a channel's price
+	// depends on the label only through fee plus outbound fee (exactly, up to
+	// rounding, for inbound rates down to -100%). Without this, each channel
+	// out of a large node rescans all of the node's channels.
 	expanded := make(map[string][]expansion)
 
 	pq := &labelQueue{}
@@ -227,7 +228,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 				return current.path(), nil
 			}
 			// the out-peer charges for forwarding from our channel
-			fee := nodeFee(outboundFee, g.inboundFee(firstHopId, current.amount))
+			fee := nodeFee(outboundFee, g.inboundFee(firstHopId, current.amount+outboundFee))
 			if current.hops+1 <= req.maxHops && current.fee+fee <= req.maxFee && current.fee+fee >= current.fee {
 				heap.Push(pq, &label{
 					channel: req.firstHop,
@@ -261,8 +262,9 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 					continue
 				}
 
-				// what u charges for this channel and the next one, inbound fee included
-				fee := nodeFee(outboundFee, g.inboundFee(id, current.amount))
+				// what u charges for this channel and the next one: as in LND, the
+				// inbound fee applies to the amount plus the outbound fee
+				fee := nodeFee(outboundFee, g.inboundFee(id, current.amount+outboundFee))
 				totalFee := current.fee + fee
 				if totalFee < current.fee || totalFee > req.maxFee {
 					continue

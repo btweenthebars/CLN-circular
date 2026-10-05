@@ -56,10 +56,10 @@ func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
 		fee := route.Hops[i-1].MilliSatoshi - route.Hops[i].MilliSatoshi
 		feePPM := fee * 1000000 / route.Hops[i].MilliSatoshi
 		from = route.Hops[i].Source
-		
+
 		amountToForward := route.Hops[i].MilliSatoshi
 		outboundFee := route.Hops[i].ComputeFee(amountToForward)
-		inboundFee := route.Graph.GetInboundFee(route.Hops[i-1].Channel, amountToForward)
+		inboundFee := route.Graph.GetInboundFee(route.Hops[i-1].Channel, amountToForward+outboundFee)
 
 		hops[i] = PrettyRouteHop{
 			Id:             from,
@@ -141,7 +141,7 @@ func (r *PrettyRoute) Simple() string {
 	result += "Sending " + strconv.FormatUint(r.Amount, 10) + " sats from [" + r.SourceAlias + "] to [" + r.DestinationAlias
 	result += "] over " + strconv.Itoa(len(r.Hops)) + " hops, costing " + strconv.FormatUint(r.Fee, 10) + "msat ("
 	result += strconv.FormatUint(r.FeePPM, 10) + "PPM)"
-	
+
 	if r.InboundSavingsMSat != 0 {
 		if r.InboundSavingsMSat > 0 {
 			result += fmt.Sprintf(" [Saved %dmsat (%dPPM) due to inbound discount]", r.InboundSavingsMSat, r.InboundSavingsPPM)
@@ -149,7 +149,7 @@ func (r *PrettyRoute) Simple() string {
 			result += fmt.Sprintf(" [Extra %dmsat (%dPPM) due to inbound surcharge]", -r.InboundSavingsMSat, -r.InboundSavingsPPM)
 		}
 	}
-	
+
 	result += " via "
 	for i := 0; i < len(r.Hops); i++ {
 		alias := r.Hops[i].Alias

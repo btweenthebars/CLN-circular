@@ -442,3 +442,53 @@ func TestMaxFeeForPPM(t *testing.T) {
 	route.Hops[0].MilliSatoshi++
 	assert.Equal(t, uint64(11), route.FeePPM())
 }
+
+// LND computes a forwarding node's inbound fee on the amount it forwards plus
+// its outbound fee. Computing it on the forwarded amount alone underpaid
+// nodes with a positive inbound fee, which then failed the payment.
+func TestInboundFeeAppliesToAmountPlusOutboundFee(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 0, 0)
+	g.channel("3x1x1", outP, "02a", 0, 0)
+	g.channel("4x1x1", "02a", inP, 0, 1000) // 02a charges 1000 ppm...
+	// ... plus 1000 ppm inbound for payments arriving from the out-peer
+	g.SetInboundFee("3x1x1/"+util.GetDirection(outP, "02a"), 0, 1000)
+
+	const amount = 1000000000 // 1M sats
+	// outbound: 1,000,000 msat; inbound: 1000 ppm of 1,001,000,000 msat
+	const fee = 1000000 + 1001000
+
+	route, err := g.GetCheapestCircularRoute(out, in, amount, nil, 8)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"1x1x1", "3x1x1", "4x1x1", "2x1x1"}, scids(route))
+	assert.Equal(t, uint64(fee), route.Fee())
+	assert.Equal(t, uint64(amount+fee), route.Hops[1].MilliSatoshi, "what the out-peer forwards to 02a")
+
+	// the search prices the route the same way
+	_, err = g.GetCircularRoute(out, in, amount, nil, 8, fee-1)
+	assert.Equal(t, util.ErrNoRoute, err)
+	_, err = g.GetCircularRoute(out, in, amount, nil, 8, fee)
+	assert.NoError(t, err)
+
+	pretty := NewPrettyRoute(route, "")
+	assert.Equal(t, int64(1001000), pretty.Hops[2].InboundFee)
+	assert.Equal(t, uint64(1000000), pretty.Hops[2].OutboundFee)
+}
+
+// As LND's InboundFee.CalcFee: the rate is capped at 10,000,000 ppm either
+// way, and the proportional part rounds toward zero.
+func TestInboundFeeMatchesLND(t *testing.T) {
+	g := NewGraph()
+	g.SetInboundFee("1x1x1/0", 5, math.MaxInt32)
+	g.SetInboundFee("1x1x1/1", 0, -1)
+	g.SetInboundFee("2x1x1/0", -10, math.MinInt32)
+
+	assert.Equal(t, int64(5+10000000), g.inboundFee("1x1x1/0", 1000000))
+	assert.Equal(t, int64(0), g.inboundFee("1x1x1/1", 999999))
+	assert.Equal(t, int64(-1), g.inboundFee("1x1x1/1", 1999999))
+	assert.Equal(t, int64(-10-10000000), g.inboundFee("2x1x1/0", 1000000))
+	// 10 BTC at the capped rate: rate x amount does not fit in an int64
+	assert.Equal(t, int64(5+10000000000000), g.inboundFee("1x1x1/0", 1000000000000))
+	assert.Equal(t, int64(0), g.inboundFee("3x1x1/0", 1000000), "no inbound fee")
+}

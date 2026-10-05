@@ -66,10 +66,10 @@ func (r *Route) recomputeFeeAndDelay() {
 	for i := len(r.Hops) - 2; i >= 0; i-- {
 		hop := r.Hops[i+1]
 		amountToForward := hop.MilliSatoshi
-		
+
 		// the same pricing as the route search, so the route costs what was searched
 		outboundFee := hop.ComputeFee(amountToForward)
-		inboundFee := r.Graph.GetInboundFee(r.Hops[i].Channel, amountToForward)
+		inboundFee := r.Graph.GetInboundFee(r.Hops[i].Channel, amountToForward+outboundFee)
 		r.Hops[i].MilliSatoshi = amountToForward + nodeFee(outboundFee, inboundFee)
 
 		delay := hop.Delay
