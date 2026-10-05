@@ -15,7 +15,10 @@ const (
 )
 
 func (n *Node) setupCronJobs(options map[string]glightning.Option) {
-	c := cron.New()
+	// A job that is still running when it is due again is skipped, not run
+	// twice at once: two peer or graph refreshes could finish out of order.
+	// (The default logger writes to stdout, which is lightningd's JSON-RPC.)
+	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DiscardLogger)))
 
 	// every 10 minutes by default, refresh the information gathered via gossip
 	addCronJob(c, strconv.Itoa(options["circular-graph-refresh"].GetValue().(int))+"m", func() {
@@ -155,6 +158,10 @@ func (n *Node) setPeers(peers []*glightning.Peer, channels []*glightning.PeerCha
 	n.PeersLock.Lock()
 	defer n.PeersLock.Unlock()
 
+	if !readAt.After(n.peersReadAt) {
+		// a later refresh has already been applied
+		return nil
+	}
 	for id, at := range n.channelsReadAt {
 		if !at.After(readAt) {
 			delete(n.channelsReadAt, id)

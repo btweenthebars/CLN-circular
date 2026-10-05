@@ -183,6 +183,10 @@ func TestPeerReadsApplyInTheOrderTheyWereMade(t *testing.T) {
 	n.setPeerChannels("02peer", balance(700000), t2)
 	assert.Equal(t, uint64(500000), toUs(n))
 	assert.Empty(t, n.channelsReadAt, "reads older than the refresh are forgotten")
+
+	// so is a whole refresh that finishes after a later one
+	assert.Nil(t, n.setPeers([]*glightning.Peer{{Id: "02peer"}}, balance(400000), t2))
+	assert.Equal(t, uint64(500000), toUs(n))
 }
 
 // Connect and disconnect events changed the shared peer in place, while
