@@ -7,19 +7,23 @@ import (
 	"time"
 )
 
+// GetBestPeerChannel returns the channel with peer id that scores highest on
+// metric. metric runs without PeersLock held, because metrics look channels up
+// with functions that take it: taking a read lock twice deadlocks as soon as a
+// writer (refreshPeers, a connect or disconnect) is waiting in between.
 func (n *Node) GetBestPeerChannel(id string, metric func(*glightning.PeerChannel) uint64) *glightning.PeerChannel {
 	n.PeersLock.RLock()
-	defer n.PeersLock.RUnlock()
-
-	peer, ok := n.Peers[id]
-	if !ok || peer == nil || len(peer.Channels) == 0 {
-		return nil
+	var channels []*glightning.PeerChannel
+	if peer, ok := n.Peers[id]; ok && peer != nil {
+		channels = append(channels, peer.Channels...)
 	}
-	channels := peer.Channels
-	best := channels[0]
+	n.PeersLock.RUnlock()
+
+	var best *glightning.PeerChannel
+	var bestScore uint64
 	for _, channel := range channels {
-		if metric(channel) > metric(best) {
-			best = channel
+		if score := metric(channel); best == nil || score > bestScore {
+			best, bestScore = channel, score
 		}
 	}
 	return best
