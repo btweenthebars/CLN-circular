@@ -121,3 +121,27 @@ func TestSetPeerChannelsReplacesThePeer(t *testing.T) {
 	n.setPeerChannels("02unknown", []*glightning.PeerChannel{&after})
 	assert.Len(t, n.Peers, 1)
 }
+
+// A peer that left listpeers used to stay in n.Peers with its old channels,
+// and could still be picked as a rebalance candidate.
+func TestSetPeersForgetsPeersThatAreGone(t *testing.T) {
+	gone := &glightning.PeerChannel{PeerId: "02gone", ShortChannelId: "1x1x1", State: "CHANNELD_NORMAL"}
+	n := &Node{PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{}, scidToPeer: map[string]*glightning.Peer{}}
+	n.setPeers([]*glightning.Peer{{Id: "02gone"}}, []*glightning.PeerChannel{gone})
+	assert.True(t, n.HasPeer("02gone"))
+
+	open := &glightning.PeerChannel{PeerId: "02stays", ShortChannelId: "2x2x2", State: "CHANNELD_NORMAL", PeerConnected: true}
+	closed := &glightning.PeerChannel{PeerId: "02stays", ShortChannelId: "3x3x3", State: "ONCHAIN"}
+	n.setPeers([]*glightning.Peer{{Id: "02connected", Connected: true}}, []*glightning.PeerChannel{open, closed})
+
+	assert.False(t, n.HasPeer("02gone"))
+	_, err := n.GetChannelPeerFromScid("1x1x1")
+	assert.Equal(t, util.ErrNoPeerChannel, err)
+	assert.Equal(t, 2, n.PeerCount())
+	assert.True(t, n.HasPeer("02connected"), "listpeers peers without channels are kept")
+	assert.Equal(t, []*glightning.PeerChannel{open}, n.Peers["02stays"].Channels)
+	assert.True(t, n.Peers["02stays"].Connected)
+	peer, err := n.GetChannelPeerFromScid("2x2x2")
+	assert.NoError(t, err)
+	assert.Equal(t, "02stays", peer.Id)
+}

@@ -92,7 +92,7 @@ func (r *RebalanceByNode) Call() (jrpc2.Result, error) {
 }
 
 func (r *RebalanceByNode) validatePeers() error {
-	if len(r.Node.Peers) == 0 {
+	if r.Node.PeerCount() == 0 {
 		return util.ErrNoPeers
 	}
 	//validate that the nodes are not self
@@ -105,10 +105,7 @@ func (r *RebalanceByNode) validatePeers() error {
 	}
 
 	//validate that the nodes are actually peers
-	if _, ok := r.Node.Peers[r.InNode]; !ok {
-		return util.ErrNoPeer
-	}
-	if _, ok := r.Node.Peers[r.OutNode]; !ok {
+	if !r.Node.HasPeer(r.InNode) || !r.Node.HasPeer(r.OutNode) {
 		return util.ErrNoPeer
 	}
 	return nil

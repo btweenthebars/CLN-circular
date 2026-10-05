@@ -59,6 +59,14 @@ func (n *Node) HasPeer(id string) bool {
 	return ok
 }
 
+// PeerCount returns the number of peers.
+func (n *Node) PeerCount() int {
+	n.PeersLock.RLock()
+	defer n.PeersLock.RUnlock()
+
+	return len(n.Peers)
+}
+
 func (n *Node) GetChannelPeerFromScid(scid string) (*glightning.Peer, error) {
 	n.PeersLock.RLock()
 	defer n.PeersLock.RUnlock()

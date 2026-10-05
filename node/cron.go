@@ -118,36 +118,46 @@ func (n *Node) refreshPeers() error {
 		return err
 	}
 
-	n.PeersLock.Lock()
+	n.setPeers(peers, channelsResp.Channels)
+	n.addLocalChannelsToGraph(channelsResp.Channels)
+	return nil
+}
+
+// setPeers replaces the peers with those in listpeers and the peers of the
+// open channels in listpeerchannels. The map is built afresh: a peer gone from
+// both used to stay, with its old channels, and could still be picked as a
+// rebalance candidate.
+func (n *Node) setPeers(peers []*glightning.Peer, channels []*glightning.PeerChannel) {
+	fresh := make(map[string]*glightning.Peer, len(peers))
 	for _, peer := range peers {
 		peer.Channels = make([]*glightning.PeerChannel, 0)
-		n.Peers[peer.Id] = peer
+		fresh[peer.Id] = peer
 	}
 
-	// rebuild the SCID reverse index and ensure all channel peers with active channels exist in n.Peers
-	n.scidToPeer = make(map[string]*glightning.Peer, len(channelsResp.Channels))
-	for _, channel := range channelsResp.Channels {
+	scidToPeer := make(map[string]*glightning.Peer, len(channels))
+	for _, channel := range channels {
 		if channel.State != "CHANNELD_NORMAL" {
 			continue
 		}
-		peer, ok := n.Peers[channel.PeerId]
+		peer, ok := fresh[channel.PeerId]
 		if !ok {
 			peer = &glightning.Peer{
 				Id:        channel.PeerId,
 				Connected: channel.PeerConnected,
 				Channels:  make([]*glightning.PeerChannel, 0),
 			}
-			n.Peers[channel.PeerId] = peer
+			fresh[channel.PeerId] = peer
 		}
 		peer.Channels = append(peer.Channels, channel)
 		if channel.ShortChannelId != "" {
-			n.scidToPeer[channel.ShortChannelId] = peer
+			scidToPeer[channel.ShortChannelId] = peer
 		}
 	}
-	n.PeersLock.Unlock()
 
-	n.addLocalChannelsToGraph(channelsResp.Channels)
-	return nil
+	n.PeersLock.Lock()
+	n.Peers = fresh
+	n.scidToPeer = scidToPeer
+	n.PeersLock.Unlock()
 }
 
 // addLocalChannelsToGraph puts both directions of our open channels in the
