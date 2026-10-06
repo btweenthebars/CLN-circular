@@ -2,9 +2,13 @@ package node
 
 import (
 	"circular/graph"
+	"fmt"
+	"github.com/dgraph-io/badger/v4"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
+	"sync"
 	"testing"
+	"time"
 )
 
 // The stats total added up msatoshi, which CLN 23.05 removed: it was always 0.
@@ -43,4 +47,40 @@ func TestCloseReleasesTheDatabase(t *testing.T) {
 	value, err := reopened.Get("key")
 	assert.NoError(t, err)
 	assert.Equal(t, "value", string(value))
+}
+
+// Badger panics on a read that starts while it is closing, which a shutdown
+// during a payment notification or circular-stats could hit.
+func TestStoreIsSafeToUseWhileClosing(t *testing.T) {
+	store := NewDB(t.TempDir())
+	for i := 0; i < 100; i++ {
+		assert.NoError(t, store.Set(fmt.Sprintf("%s%d", SUCCESS_PREFIX, i), []byte(`{"amount_msat":"1e+08"}`)))
+	}
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				var err error
+				switch i % 3 {
+				case 0:
+					_, err = store.Get(SUCCESS_PREFIX + "1")
+				case 1:
+					_, err = store.ListSuccesses()
+				default:
+					err = store.Set(fmt.Sprintf("key%d-%d", g, i), []byte("v"))
+				}
+				if err == badger.ErrDBClosed {
+					return
+				}
+				assert.NoError(t, err)
+			}
+		}(g)
+	}
+	time.Sleep(50 * time.Millisecond)
+	assert.NoError(t, store.Close())
+	wg.Wait()
+	assert.Equal(t, badger.ErrDBClosed, store.DropPrefix([]byte(SUCCESS_PREFIX)))
 }

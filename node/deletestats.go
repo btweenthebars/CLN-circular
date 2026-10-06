@@ -26,7 +26,7 @@ func (s *DeleteStats) Call() (jrpc2.Result, error) {
 func (n *Node) DeleteStats() *DeleteStats {
 	defer util.TimeTrack(time.Now(), "node.DeleteStats", n.Logf)
 
-	if err := n.DB.db.DropPrefix(
+	if err := n.DB.DropPrefix(
 		[]byte(SUCCESS_PREFIX),
 		[]byte(FAILURE_PREFIX),
 		[]byte(ROUTE_PREFIX)); err != nil {

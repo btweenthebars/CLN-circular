@@ -14,9 +14,13 @@ const (
 	FOURTEEN_DAYS = 14 * 24 * time.Hour
 )
 
+// Store is the plugin's Badger database. Its methods are safe to call while
+// it closes: they wait for Close, or return badger.ErrDBClosed after it.
+// (Badger itself panics on a read that starts while it is closing.)
 type Store struct {
-	db        *badger.DB
-	closeOnce sync.Once
+	db     *badger.DB
+	lock   sync.RWMutex // held for reading by every operation, for writing by Close
+	closed bool
 }
 
 func NewDB(path string) *Store {
@@ -31,18 +35,46 @@ func NewDB(path string) *Store {
 	}
 }
 
-// Close flushes and closes the database, once: Badger keeps writes in memory
-// and holds a lock on its directory until it is closed.
+// Close closes the database once the operations in progress are done.
+// Further operations return badger.ErrDBClosed.
 func (s *Store) Close() error {
-	var err error
-	s.closeOnce.Do(func() {
-		err = s.db.Close()
-	})
-	return err
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return s.db.Close()
+}
+
+// open takes the read lock for an operation, and returns false, with the
+// lock released, once the database is closed.
+func (s *Store) open() bool {
+	s.lock.RLock()
+	if s.closed {
+		s.lock.RUnlock()
+		return false
+	}
+	return true
+}
+
+// DropPrefix deletes every key that starts with one of prefixes.
+func (s *Store) DropPrefix(prefixes ...[]byte) error {
+	if !s.open() {
+		return badger.ErrDBClosed
+	}
+	defer s.lock.RUnlock()
+	return s.db.DropPrefix(prefixes...)
 }
 
 // Every key is allowed to stay in the db for at most 14 days
 func (s *Store) Set(key string, value []byte) error {
+	if !s.open() {
+		return badger.ErrDBClosed
+	}
+	defer s.lock.RUnlock()
+
 	err := s.db.Update(func(txn *badger.Txn) error {
 		return txn.SetEntry(badger.NewEntry([]byte(key), value).WithTTL(FOURTEEN_DAYS))
 	})
@@ -53,6 +85,11 @@ func (s *Store) Set(key string, value []byte) error {
 }
 
 func (s *Store) Get(key string) ([]byte, error) {
+	if !s.open() {
+		return nil, badger.ErrDBClosed
+	}
+	defer s.lock.RUnlock()
+
 	var value []byte
 	err := s.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
@@ -73,6 +110,11 @@ func (s *Store) Get(key string) ([]byte, error) {
 }
 
 func (s *Store) Delete(key string) error {
+	if !s.open() {
+		return badger.ErrDBClosed
+	}
+	defer s.lock.RUnlock()
+
 	err := s.db.Update(func(txn *badger.Txn) error {
 		return txn.Delete([]byte(key))
 	})
@@ -83,6 +125,11 @@ func (s *Store) Delete(key string) error {
 }
 
 func (s *Store) ListFailures() ([]glightning.SendPayFailure, error) {
+	if !s.open() {
+		return nil, badger.ErrDBClosed
+	}
+	defer s.lock.RUnlock()
+
 	result := make([]glightning.SendPayFailure, 0)
 	err := s.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
@@ -110,6 +157,11 @@ func (s *Store) ListFailures() ([]glightning.SendPayFailure, error) {
 }
 
 func (s *Store) ListSuccesses() ([]glightning.SendPaySuccess, error) {
+	if !s.open() {
+		return nil, badger.ErrDBClosed
+	}
+	defer s.lock.RUnlock()
+
 	result := make([]glightning.SendPaySuccess, 0)
 	err := s.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
@@ -137,6 +189,11 @@ func (s *Store) ListSuccesses() ([]glightning.SendPaySuccess, error) {
 }
 
 func (s *Store) ListRoutes() ([]graph.PrettyRoute, error) {
+	if !s.open() {
+		return nil, badger.ErrDBClosed
+	}
+	defer s.lock.RUnlock()
+
 	result := make([]graph.PrettyRoute, 0)
 	err := s.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
