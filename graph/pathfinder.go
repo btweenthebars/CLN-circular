@@ -339,6 +339,9 @@ func addExpansion(expanded map[string][]expansion, u string, e expansion) bool {
 // nodeFee is what a node charges: its outbound fee plus its inbound fee, which
 // can be negative, never below zero.
 func nodeFee(outboundFee uint64, inboundFee int64) uint64 {
+	if outboundFee == math.MaxUint64 {
+		return outboundFee // saturated: no discount makes it cheap
+	}
 	if inboundFee >= 0 {
 		return addSaturating(outboundFee, uint64(inboundFee))
 	}

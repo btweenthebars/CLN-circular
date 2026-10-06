@@ -49,10 +49,7 @@ func (r *Route) Fee() uint64 {
 }
 
 func (r *Route) FeePPM() uint64 {
-	if r.Amount == 0 {
-		return 0
-	}
-	return (r.Fee() * 1000000) / r.Amount
+	return feePPM(r.Fee(), r.Amount)
 }
 
 func (r *Route) GetFeeWithoutInboundFee() uint64 {
@@ -63,7 +60,7 @@ func (r *Route) GetFeeWithoutInboundFee() uint64 {
 	for i := len(r.Hops) - 2; i >= 0; i-- {
 		hop := r.Hops[i+1]
 		outboundFee := hop.ComputeFee(amountToForward)
-		amountToForward += outboundFee
+		amountToForward = addSaturating(amountToForward, outboundFee)
 	}
 	return amountToForward - r.Amount
 }

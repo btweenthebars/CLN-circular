@@ -54,7 +54,7 @@ func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
 
 	for i := 1; i < len(route.Hops); i++ {
 		fee := route.Hops[i-1].MilliSatoshi - route.Hops[i].MilliSatoshi
-		feePPM := fee * 1000000 / route.Hops[i].MilliSatoshi
+		ppm := feePPM(fee, route.Hops[i].MilliSatoshi)
 		from = route.Hops[i].Source
 
 		amountToForward := route.Hops[i].MilliSatoshi
@@ -67,7 +67,7 @@ func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
 			MilliSatoshi:   route.Hops[i].MilliSatoshi,
 			Delay:          route.Hops[i].Delay,
 			Fee:            fee,
-			FeePPM:         feePPM,
+			FeePPM:         ppm,
 			OutboundFee:    outboundFee,
 			InboundFee:     inboundFee,
 		}
@@ -75,10 +75,7 @@ func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
 	}
 
 	feeWithout := route.GetFeeWithoutInboundFee()
-	feeWithoutPPM := uint64(0)
-	if route.Amount > 0 {
-		feeWithoutPPM = (feeWithout * 1000000) / route.Amount
-	}
+	feeWithoutPPM := feePPM(feeWithout, route.Amount)
 	actualFee := route.Fee()
 	actualFeePPM := route.FeePPM()
 

@@ -133,3 +133,24 @@ func TestComputeFeeSaturates(t *testing.T) {
 	g.SetInboundFee("1x1x1/0", 0, -10000000)
 	assert.Equal(t, int64(math.MinInt64), g.inboundFee("1x1x1/0", math.MaxUint64))
 }
+
+// Route and hop ppm still multiplied the fee by a million in 64 bits, so a
+// route through a channel at the highest ppm reported a wrapped, low rate.
+func TestRouteFeePPMDoesNotWrap(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", "02self", "02out", 0, 0)
+	in := g.channel("3x1x1", "02in", "02self", 0, 0)
+	g.channel("2x1x1", "02out", "02in", 0, math.MaxUint32)
+
+	route, err := g.GetCheapestCircularRoute(out, in, 5000000000, nil, 8)
+	if assert.NoError(t, err) {
+		assert.Equal(t, uint64(21474836475000), route.Fee())
+		assert.Equal(t, uint64(4294967295), route.FeePPM())
+		pretty := NewPrettyRoute(route, "")
+		assert.Equal(t, uint64(4294967295), pretty.FeePPM)
+		assert.Equal(t, uint64(4294967295), pretty.Hops[1].FeePPM)
+	}
+	assert.Equal(t, uint64(0), feePPM(5, 0))
+	assert.Equal(t, uint64(math.MaxUint64), feePPM(math.MaxUint64, 1))
+	assert.Equal(t, uint64(math.MaxUint64), nodeFee(math.MaxUint64, math.MinInt64))
+}

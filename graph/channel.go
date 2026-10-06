@@ -48,10 +48,15 @@ func (c *Channel) ComputeFee(amount uint64) uint64 {
 }
 
 func (c *Channel) ComputeFeePPM(amount uint64) uint64 {
+	return feePPM(c.ComputeFee(amount), amount)
+}
+
+// feePPM returns fee as parts per million of amount, rounded down: 0 for a
+// zero amount, math.MaxUint64 for a saturated fee or one that does not fit.
+func feePPM(fee, amount uint64) uint64 {
 	if amount == 0 {
 		return 0
 	}
-	fee := c.ComputeFee(amount)
 	hi, lo := bits.Mul64(fee, 1000000)
 	if fee == math.MaxUint64 || hi >= amount {
 		return math.MaxUint64
