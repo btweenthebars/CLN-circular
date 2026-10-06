@@ -17,6 +17,14 @@ import (
 // a slightly more expensive but shorter one that would still fit within the
 // hop limit. A label is dropped only when another label on the same channel is
 // at least as cheap and at most as long.
+//
+// Peers refuse an HTLC that expires more than 2016 blocks ahead, so labels
+// whose CLTV delay passes MAX_ROUTE_DELAY are dropped: every route returned is
+// within it. Labels are not compared on delay, which keeps the search fast,
+// so a cheap label with a long delay can hide a dearer one with a short delay
+// and then run past the limit. A search comparing delays as well would find
+// that route, but on mainnet data it took seconds per search and found no
+// route the fast search missed.
 
 // label is one way of reaching the end of the route from `channel`.
 type label struct {
@@ -25,6 +33,7 @@ type label struct {
 	hops    int    // channels from this one to the end of the route, inclusive
 	fee     uint64 // fees charged by the nodes after this channel
 	amount  uint64 // amount carried by this channel
+	delay   uint   // CLTV delay of the HTLC over this channel, in blocks
 	next    *label // the following channel, towards the receiver
 	final   bool   // the route is complete
 }
@@ -186,7 +195,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 	pq := &labelQueue{}
 
 	if req.lastHop != nil {
-		heap.Push(pq, &label{channel: req.lastHop, hops: 1, amount: req.amount})
+		heap.Push(pq, &label{channel: req.lastHop, hops: 1, amount: req.amount, delay: INITIAL_DELAY})
 	} else {
 		// dst receives the payment and charges no fee
 		for v, edge := range g.Inbound[req.dst] {
@@ -203,7 +212,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 					continue
 				}
 				record(id, 1, 0)
-				heap.Push(pq, &label{channel: channel, id: id, hops: 1, amount: req.amount})
+				heap.Push(pq, &label{channel: channel, id: id, hops: 1, amount: req.amount, delay: INITIAL_DELAY})
 			}
 		}
 	}
@@ -221,6 +230,9 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 		// u forwards the payment over current.channel
 		u := current.channel.Source
 		outboundFee := current.channel.ComputeFee(current.amount)
+		// and adds its CLTV delta for that channel: past the limit, no route
+		// can be built on this label
+		delay := current.delay + current.channel.Delay
 
 		if u == req.src {
 			if req.firstHop == nil {
@@ -231,12 +243,13 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 			fee := nodeFee(outboundFee, g.inboundFee(firstHopId, addSaturating(current.amount, outboundFee)))
 			totalFee := addSaturating(current.fee, fee)
 			if current.hops+1 <= req.maxHops && totalFee <= req.maxFee && totalFee < math.MaxUint64 &&
-				addSaturating(current.amount, fee) < math.MaxUint64 {
+				addSaturating(current.amount, fee) < math.MaxUint64 && delay <= MAX_ROUTE_DELAY {
 				heap.Push(pq, &label{
 					channel: req.firstHop,
 					hops:    current.hops + 1,
 					fee:     totalFee,
 					amount:  current.amount + fee,
+					delay:   delay,
 					next:    current,
 					final:   true,
 				})
@@ -245,7 +258,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 			continue
 		}
 
-		if current.hops+1 > pathHops {
+		if current.hops+1 > pathHops || delay > MAX_ROUTE_DELAY {
 			continue
 		}
 		if !addExpansion(expanded, u, expansion{current.hops, current.fee, addSaturating(current.fee, outboundFee)}) {
@@ -287,6 +300,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 					hops:    hops,
 					fee:     totalFee,
 					amount:  amount,
+					delay:   delay,
 					next:    current,
 				})
 			}

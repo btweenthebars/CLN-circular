@@ -511,3 +511,53 @@ func TestSearchAvoidsChannelsWithHugeFees(t *testing.T) {
 		assert.Equal(t, uint64(499000), route.Fee())
 	}
 }
+
+// Peers refuse HTLCs that expire more than 2016 blocks ahead, and the search
+// had no limit on a route's total CLTV delay.
+func TestCircularRouteKeepsWithinTheDelayLimit(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 0, 0)
+	g.channel("3x1x1", outP, "02a", 0, 0).Delay = 400
+	g.channel("4x1x1", "02a", inP, 0, 0).Delay = 1500 // the cheap way, too slow
+	g.channel("5x1x1", outP, "02b", 0, 0)
+	g.channel("6x1x1", "02b", inP, 100, 0)
+
+	for _, find := range []func() (*Route, error){
+		func() (*Route, error) { return g.GetCircularRoute(out, in, 1000000, nil, 8, 1000) },
+		func() (*Route, error) { return g.GetCheapestCircularRoute(out, in, 1000000, nil, 8) },
+	} {
+		route, err := find()
+		if assert.NoError(t, err) {
+			assert.Equal(t, []string{"1x1x1", "5x1x1", "6x1x1", "2x1x1"}, scids(route))
+			assert.Equal(t, uint(INITIAL_DELAY+10+10+10), route.Hops[0].Delay)
+		}
+	}
+
+	// with no way within the limit, there is no route
+	g.Channels["6x1x1/"+util.GetDirection("02b", inP)].Delay = 2000
+	_, err := g.GetCheapestCircularRoute(out, in, 1000000, nil, 8)
+	assert.Equal(t, util.ErrNoRoute, err)
+
+	// a route right at the limit is fine
+	g.Channels["4x1x1/"+util.GetDirection("02a", inP)].Delay = MAX_ROUTE_DELAY - INITIAL_DELAY - 10 - 400
+	route, err := g.GetCheapestCircularRoute(out, in, 1000000, nil, 8)
+	if assert.NoError(t, err) {
+		assert.Equal(t, []string{"1x1x1", "3x1x1", "4x1x1", "2x1x1"}, scids(route))
+		assert.Equal(t, uint(MAX_ROUTE_DELAY), route.Hops[0].Delay)
+	}
+
+	// node to node, the sender adds no delta of its own (3x1x1's 400)
+	g.Channels["4x1x1/"+util.GetDirection("02a", inP)].Delay = MAX_ROUTE_DELAY - INITIAL_DELAY
+	route, err = g.GetRoute(outP, inP, 1000000, nil, 8)
+	if assert.NoError(t, err) {
+		assert.Equal(t, []string{"3x1x1", "4x1x1"}, scids(route))
+		assert.Equal(t, uint(MAX_ROUTE_DELAY), route.Hops[0].Delay)
+	}
+	g.Channels["4x1x1/"+util.GetDirection("02a", inP)].Delay++
+	g.Channels["6x1x1/"+util.GetDirection("02b", inP)].Delay = 10
+	route, err = g.GetRoute(outP, inP, 1000000, nil, 8)
+	if assert.NoError(t, err) {
+		assert.Equal(t, []string{"5x1x1", "6x1x1"}, scids(route))
+	}
+}

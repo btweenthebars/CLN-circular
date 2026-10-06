@@ -6,6 +6,12 @@ import (
 
 const (
 	INITIAL_DELAY = 144
+
+	// MAX_ROUTE_DELAY is the largest total CLTV delay a route may have, in
+	// blocks. LND and CLN refuse HTLCs that expire more than 2016 blocks
+	// ahead by default; sendpay adds a block to the delay, and peers' views of
+	// the chain tip can differ by a few blocks.
+	MAX_ROUTE_DELAY = 2000
 )
 
 type RouteHop struct {
