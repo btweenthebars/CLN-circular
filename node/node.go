@@ -100,6 +100,18 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 	n.Logln(glightning.Info, "node initialized")
 }
 
+// Close stops rebalancing and the gossip parser, and closes the database. It
+// runs when lightningd shuts the plugin down.
+func (n *Node) Close() {
+	n.Stopped.Store(true)
+	n.StopGossipParser()
+	if n.DB != nil {
+		if err := n.DB.Close(); err != nil {
+			n.Logln(glightning.Unusual, "error closing the database: ", err)
+		}
+	}
+}
+
 func (n *Node) getGraphFromFile(err error, config *glightning.Config) {
 	err = n.LoadGraphFromFile(config.LightningDir+"/"+CIRCULAR_DIR, graph.FILE)
 	if err != nil {

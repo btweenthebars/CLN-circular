@@ -144,12 +144,15 @@ lightning-cli circular-stats > stats.json
 ```
 This command will return the following stats:
 * `graph_stats`: stats about the graph that `circular` has learned
+* `rebalanced_msat`: the total amount the successful rebalances below moved
 * `successes`: successful rebalances done by `circular`
 * `failures`: failed rebalances done by `circular`
 * `routes`: routes taken by `circular`
 
 It's a good idea to pipe the output into a file, since it can be quite big.
 ⚠ To limit the size, `circular` will only keep the last 14 days of stats.
+
+Panics and other output to stderr go to `circular/stderr.log` in the lightning directory. It is moved to `stderr.log.old` when it passes 10 MB.
 
 ### Get active in-flight payments
 ```bash

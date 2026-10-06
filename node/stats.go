@@ -6,14 +6,17 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/elementsproject/glightning/jrpc2"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Stats struct {
-	GraphStats *graph.Stats                `json:"graph_stats"`
-	Successes  []glightning.SendPaySuccess `json:"successes"`
-	Failures   []glightning.SendPayFailure `json:"failures"`
-	Routes     []graph.PrettyRoute         `json:"routes"`
+	GraphStats *graph.Stats `json:"graph_stats"`
+	// RebalancedMsat is the total the successes below delivered
+	RebalancedMsat uint64                      `json:"rebalanced_msat"`
+	Successes      []glightning.SendPaySuccess `json:"successes"`
+	Failures       []glightning.SendPayFailure `json:"failures"`
+	Routes         []graph.PrettyRoute         `json:"routes"`
 }
 
 func (s *Stats) Name() string {
@@ -46,12 +49,37 @@ func (n *Node) GetStats() *Stats {
 		n.Logln(glightning.Unusual, err)
 	}
 
-	return &Stats{
-		GraphStats: n.Graph.GetStats(),
-		Successes:  successes,
-		Failures:   failures,
-		Routes:     routes,
+	var rebalanced uint64
+	for _, success := range successes {
+		rebalanced += successAmount(success)
 	}
+
+	return &Stats{
+		GraphStats:     n.Graph.GetStats(),
+		RebalancedMsat: rebalanced,
+		Successes:      successes,
+		Failures:       failures,
+		Routes:         routes,
+	}
+}
+
+// successAmount returns what a successful rebalance delivered, in msat. CLN
+// 23.05 removed the msatoshi field the total used to add up, so it was always
+// 0. The amount is in amount_msat, which glightning keeps as text: "123msat"
+// from older CLN, or the number lightningd sends now, printed like "1.23e+08".
+func successAmount(success glightning.SendPaySuccess) uint64 {
+	if success.MilliSatoshi > 0 {
+		return success.MilliSatoshi
+	}
+	text := strings.TrimSuffix(strings.TrimSpace(success.AmountMilliSatoshi), "msat")
+	if amount, err := strconv.ParseUint(text, 10, 64); err == nil {
+		return amount
+	}
+	// exact for whole msat amounts below 2^53, about 90,000 BTC
+	if amount, err := strconv.ParseFloat(text, 64); err == nil && amount >= 0 && amount < 1<<63 {
+		return uint64(amount)
+	}
+	return 0
 }
 
 func (s *Stats) String() string {
@@ -62,11 +90,7 @@ func (s *Stats) String() string {
 	result += "failures: " + strconv.Itoa(len(s.Failures)) + "\n"
 	result += "routes: " + strconv.Itoa(len(s.Routes)) + "\n"
 
-	var totalMoved uint64 = 0
-	for _, success := range s.Successes {
-		totalMoved += success.MilliSatoshi
-	}
-	result += "Total amount of BTC rebalanced: " + strconv.FormatUint(totalMoved/1000, 10) + "sats"
+	result += "Total amount of BTC rebalanced: " + strconv.FormatUint(s.RebalancedMsat/1000, 10) + "sats"
 
 	return result
 }

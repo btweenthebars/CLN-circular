@@ -6,6 +6,7 @@ import (
 	"github.com/dgraph-io/badger/v4"
 	"github.com/elementsproject/glightning/glightning"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -14,7 +15,8 @@ const (
 )
 
 type Store struct {
-	db *badger.DB
+	db        *badger.DB
+	closeOnce sync.Once
 }
 
 func NewDB(path string) *Store {
@@ -27,6 +29,16 @@ func NewDB(path string) *Store {
 	return &Store{
 		db: database,
 	}
+}
+
+// Close flushes and closes the database, once: Badger keeps writes in memory
+// and holds a lock on its directory until it is closed.
+func (s *Store) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		err = s.db.Close()
+	})
+	return err
 }
 
 // Every key is allowed to stay in the db for at most 14 days

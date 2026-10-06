@@ -7,6 +7,7 @@ import (
 	"github.com/virtuald/go-paniclog"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -48,14 +49,20 @@ func main() {
 	// the incoming HTLC itself after checking its payment secret and amount.
 
 	err := plugin.Start(os.Stdin, os.Stdout)
+	// lightningd closed the connection without a shutdown notification
+	node.GetNode().Close()
 	if err != nil {
 		log.Fatalln(err)
 	}
 }
 
+const (
+	stderrLog        = "stderr.log"
+	stderrLogMaxSize = 10 << 20 // bytes: a larger log is moved to stderr.log.old at start
+)
+
 func redirectStderr(dir string) error {
-	filename := dir + "/" + fmt.Sprintf("stderr-%d.log", time.Now().Unix())
-	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0644)
+	f, err := openStderrLog(dir, time.Now())
 	if err != nil {
 		return err
 	}
@@ -65,4 +72,32 @@ func redirectStderr(dir string) error {
 		return err
 	}
 	return nil
+}
+
+// openStderrLog opens dir/stderr.log for appending. Each start used to create
+// a new stderr-<time>.log that nothing removed. The log is moved to
+// stderr.log.old once it passes stderrLogMaxSize, and the old per-start files
+// that stayed empty, as they almost all do, are removed.
+func openStderrLog(dir string, now time.Time) (*os.File, error) {
+	path := filepath.Join(dir, stderrLog)
+	if info, err := os.Stat(path); err == nil && info.Size() > stderrLogMaxSize {
+		if err := os.Rename(path, path+".old"); err != nil {
+			return nil, err
+		}
+	}
+
+	if old, err := filepath.Glob(filepath.Join(dir, "stderr-*.log")); err == nil {
+		for _, name := range old {
+			if info, err := os.Stat(name); err == nil && info.Mode().IsRegular() && info.Size() == 0 {
+				_ = os.Remove(name)
+			}
+		}
+	}
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(f, "--- circular started at %s ---\n", now.UTC().Format(time.RFC3339))
+	return f, nil
 }
