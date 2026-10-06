@@ -59,7 +59,7 @@ func NewPrettyRoute(route *Route, paymentHash string) *PrettyRoute {
 
 		amountToForward := route.Hops[i].MilliSatoshi
 		outboundFee := route.Hops[i].ComputeFee(amountToForward)
-		inboundFee := route.Graph.GetInboundFee(route.Hops[i-1].Channel, amountToForward+outboundFee)
+		inboundFee := route.Graph.GetInboundFee(route.Hops[i-1].Channel, addSaturating(amountToForward, outboundFee))
 
 		hops[i] = PrettyRouteHop{
 			Id:             from,
