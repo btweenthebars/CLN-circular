@@ -34,6 +34,13 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		g.GetAlias(failure.ErringNode), failure.ErringChannel, failure.ErringDirection,
 		failure.FailCodeName, failure.FailCode)
 
+	if failure.ErringNode == r.Node.Id && failure.ErringIndex == 0 && len(route.Hops) > 0 {
+		// lightningd would not send it over our out channel, for example
+		// because the peer is not connected
+		hop := route.Hops[0]
+		return fmt.Errorf("our channel %s to %s could not send the payment: %s",
+			hop.ShortChannelId, g.GetAlias(hop.Destination), failure.FailCodeName)
+	}
 	if failure.ErringNode == r.Node.Id {
 		// our own node refused it, for example because it arrived after the invoice was deleted
 		return fmt.Errorf("our node failed the payment: %s", failure.FailCodeName)

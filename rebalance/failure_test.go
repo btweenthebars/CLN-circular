@@ -132,3 +132,19 @@ func TestFailuresThatStopTheRun(t *testing.T) {
 	err = r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failFeeInsufficient), map[string]bool{})
 	assert.Equal(t, util.ErrWireFeeInsufficient, err)
 }
+
+// When lightningd refuses at once to send over our out channel, the error
+// names our node at index 0. It used to be reported as "our node failed the
+// payment", as if the final hop had rejected it.
+func TestFailureAtOurFirstHopNamesTheChannel(t *testing.T) {
+	r, route := testRoute(t)
+	failure := failureAt(self, "1x1x1", 0, failUnknownNextPeer)
+	failure.FailCodeName = "WIRE_UNKNOWN_NEXT_PEER"
+	err := r.learnFromFailure(route, failure, map[string]bool{})
+	assert.EqualError(t, err, "our channel 1x1x1 to "+outP+" could not send the payment: WIRE_UNKNOWN_NEXT_PEER")
+
+	// our node rejecting the payment as its final hop
+	failure.ErringIndex = uint64(len(route.Hops))
+	err = r.learnFromFailure(route, failure, map[string]bool{})
+	assert.EqualError(t, err, "our node failed the payment: WIRE_UNKNOWN_NEXT_PEER")
+}
