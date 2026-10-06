@@ -1,43 +1,91 @@
 package parallel
 
 import (
+	"bytes"
 	"circular/rebalance"
+	"encoding/json"
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/elementsproject/glightning/jrpc2"
+	"sort"
 	"time"
 )
 
-// Success is a map from PPM to amount
-// for each PPM, the amount of sats rebalanced at that ppm
-type Success map[uint64]uint64
+// Success is what one candidate channel moved: the peer's alias and node id,
+// and for each fee rate paid (ppm), the sats rebalanced at that rate. It is
+// written as one flat JSON object:
+//
+//	{"alias": "Bcash", "node_id": "02...", "756": 640136}
+type Success struct {
+	Alias  string
+	NodeId string
+	ByPPM  map[uint64]uint64
+}
+
+// MarshalJSON writes the alias and node id first, then the rates in
+// increasing order.
+func (s *Success) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	if s.Alias != "" {
+		alias, err := json.Marshal(s.Alias)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteString(`"alias":`)
+		buf.Write(alias)
+		buf.WriteByte(',')
+	}
+	nodeId, err := json.Marshal(s.NodeId)
+	if err != nil {
+		return nil, err
+	}
+	buf.WriteString(`"node_id":`)
+	buf.Write(nodeId)
+	ppms := make([]uint64, 0, len(s.ByPPM))
+	for ppm := range s.ByPPM {
+		ppms = append(ppms, ppm)
+	}
+	sort.Slice(ppms, func(i, j int) bool { return ppms[i] < ppms[j] })
+	for _, ppm := range ppms {
+		fmt.Fprintf(&buf, `,"%d":%d`, ppm, s.ByPPM[ppm])
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
 
 type Result struct {
-	RebalanceTarget  uint64             `json:"rebalance_target"`
-	RebalancedAmount uint64             `json:"rebalanced_amount"`
-	Attempts         uint64             `json:"attempts"`
-	Time             string             `json:"time"`
-	Successes        map[string]Success `json:"successes"`
-	LastError        string             `json:"last_error,omitempty"`
+	RebalanceTarget  uint64 `json:"rebalance_target"`
+	RebalancedAmount uint64 `json:"rebalanced_amount"`
+	Attempts         uint64 `json:"attempts"`
+	Time             string `json:"time"`
+	// Successes are keyed by the short channel id of the candidate channel:
+	// the one drained by circular-pull, or filled by circular-push
+	Successes map[string]*Success `json:"successes"`
+	LastError string              `json:"last_error,omitempty"`
 }
 
 func NewResult(target uint64) *Result {
 	return &Result{
 		RebalanceTarget:  target / 1000,
 		RebalancedAmount: 0,
-		Successes:        make(map[string]Success),
+		Successes:        make(map[string]*Success),
 	}
 }
 
-func (r *AbstractRebalance) AddSuccessGeneric(alias string, ppm, amount uint64) {
+// AddSuccessGeneric records amount sats moved at ppm through candidate
+// channel scid, whose peer is nodeId.
+func (r *AbstractRebalance) AddSuccessGeneric(scid, nodeId string, ppm, amount uint64) {
 	r.Result.RebalancedAmount += amount
-	if _, ok := r.Result.Successes[alias]; !ok {
-		r.Result.Successes[alias] = make(map[uint64]uint64)
+	success, ok := r.Result.Successes[scid]
+	if !ok {
+		r.Node.Graph.LockAliases()
+		alias := r.Node.Graph.Aliases[nodeId]
+		r.Node.Graph.UnlockAliases()
+		success = &Success{Alias: alias, NodeId: nodeId, ByPPM: make(map[uint64]uint64)}
+		r.Result.Successes[scid] = success
 	}
-	if _, ok := r.Result.Successes[alias][ppm]; !ok {
-		r.Result.Successes[alias][ppm] = 0
-	}
-	r.Result.Successes[alias][ppm] += amount
+	success.ByPPM[ppm] += amount
 }
 
 func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {

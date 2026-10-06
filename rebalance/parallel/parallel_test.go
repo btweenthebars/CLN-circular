@@ -1,8 +1,11 @@
 package parallel
 
 import (
+	"circular/graph"
 	"circular/node"
+	"circular/rebalance"
 	"circular/util"
+	"encoding/json"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 	"math"
@@ -93,4 +96,50 @@ func TestPushDefaultsMatchTheReadme(t *testing.T) {
 	r.setDefaults()
 	assert.Equal(t, 0.8, r.FillUpToPercent)
 	assert.Equal(t, uint64(10000000000), r.FillUpToAmount)
+}
+
+// Successes were keyed by alias only, so channels to the same peer, or peers
+// sharing an alias, were merged, and the node id was missing.
+func TestSuccessesAreKeyedByChannel(t *testing.T) {
+	g := graph.NewGraph()
+	g.Aliases["02bcash"] = "BCash_Is_Trash"
+	route := func(scids ...string) *graph.PrettyRoute {
+		r := &graph.PrettyRoute{}
+		for _, scid := range scids {
+			r.Hops = append(r.Hops, graph.PrettyRouteHop{ShortChannelId: scid})
+		}
+		return r
+	}
+	success := func(out, in string, ppm, amount uint64, r *graph.PrettyRoute) *rebalance.Result {
+		return &rebalance.Result{Status: "success", Out: out, In: in, PPM: ppm, Amount: amount, Route: r}
+	}
+
+	pull := &RebalancePull{AbstractRebalance: AbstractRebalance{Node: &node.Node{Graph: g}, Result: NewResult(2926336000)}}
+	pull.AddSuccess(success("02bcash", "02in", 756, 600000, route("1x1x1", "2x2x2", "9x9x9")))
+	pull.AddSuccess(success("02bcash", "02in", 756, 40136, route("1x1x1", "3x3x3", "9x9x9")))
+	pull.AddSuccess(success("02bcash", "02in", 12, 1000, route("4x4x4", "3x3x3", "9x9x9"))) // another channel to the same peer
+	pull.AddSuccess(success("02noalias", "02in", 30, 5, route("5x5x5", "9x9x9")))
+
+	out, err := json.Marshal(pull.Result)
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{
+		"rebalance_target": 2926336,
+		"rebalanced_amount": 641141,
+		"attempts": 0,
+		"time": "",
+		"successes": {
+			"1x1x1": {"alias": "BCash_Is_Trash", "node_id": "02bcash", "756": 640136},
+			"4x4x4": {"alias": "BCash_Is_Trash", "node_id": "02bcash", "12": 1000},
+			"5x5x5": {"node_id": "02noalias", "30": 5}
+		}
+	}`, string(out))
+	assert.Contains(t, string(out), `{"alias":"BCash_Is_Trash","node_id":"02bcash","756":640136}`, "alias and node id come first")
+
+	// circular-push keys by the channel it fills: the route's last
+	push := &RebalancePush{AbstractRebalance: AbstractRebalance{Node: &node.Node{Graph: g}, Result: NewResult(0)}}
+	push.AddSuccess(success("02out", "02bcash", 5, 7, route("8x8x8", "2x2x2", "1x1x1")))
+	push.AddSuccess(success("02out", "02bcash", 3, 1, route("8x8x8", "2x2x2", "1x1x1")))
+	out, err = json.Marshal(push.Result.Successes)
+	assert.NoError(t, err)
+	assert.Equal(t, `{"1x1x1":{"alias":"BCash_Is_Trash","node_id":"02bcash","3":1,"5":7}}`, string(out))
 }

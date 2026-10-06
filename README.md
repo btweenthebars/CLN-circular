@@ -111,6 +111,24 @@ Example: you have a 10M channel and you set `depleteuptopercent` to 0.2 (20%) an
 
 A channel is only used for a split if its balance, less the HTLCs in flight, stays above the threshold after sending that split and its fees.
 
+The result of `circular-pull` (and `circular-push`) looks like this:
+```json
+{
+  "rebalance_target": 2926336,
+  "rebalanced_amount": 640136,
+  "attempts": 2073,
+  "time": "4877.893s",
+  "successes": {
+    "123456x1x0": {
+      "alias": "BCash_Is_Trash",
+      "node_id": "02...",
+      "756": 640136
+    }
+  }
+}
+```
+`successes` is keyed by the short channel id of each channel that was used: the outgoing channel drained by `circular-pull`, or the incoming channel filled by `circular-push`. Each entry has the peer's alias (when known) and node id, then the sats rebalanced at each fee rate paid, in ppm.
+
 ### Push liquidity out of a channel to many destinations in parallel
 **Symmetrical to `circular-pull`, but for pushing liquidity out of a channel.**
 ```bash

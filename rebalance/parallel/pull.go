@@ -176,12 +176,11 @@ func (r *RebalancePull) EnqueueCandidate(result *rebalance2.Result) {
 	r.QueueLock.Unlock()
 }
 
+// AddSuccess records the success under the out channel it drained.
 func (r *RebalancePull) AddSuccess(result *rebalance2.Result) {
-	r.Node.Graph.LockAliases()
-	defer r.Node.Graph.UnlockAliases()
-	alias := "unknown"
-	if a, ok := r.Node.Graph.Aliases[result.Out]; ok {
-		alias = a
+	scid := ""
+	if result.Route != nil && len(result.Route.Hops) > 0 {
+		scid = result.Route.Hops[0].ShortChannelId
 	}
-	r.AddSuccessGeneric(alias, result.PPM, result.Amount)
+	r.AddSuccessGeneric(scid, result.Out, result.PPM, result.Amount)
 }

@@ -175,12 +175,11 @@ func (r *RebalancePush) EnqueueCandidate(result *rebalance2.Result) {
 	r.QueueLock.Unlock()
 }
 
+// AddSuccess records the success under the in channel it filled.
 func (r *RebalancePush) AddSuccess(result *rebalance2.Result) {
-	r.Node.Graph.LockAliases()
-	defer r.Node.Graph.UnlockAliases()
-	alias := "unknown"
-	if a, ok := r.Node.Graph.Aliases[result.In]; ok {
-		alias = a
+	scid := ""
+	if result.Route != nil && len(result.Route.Hops) > 0 {
+		scid = result.Route.Hops[len(result.Route.Hops)-1].ShortChannelId
 	}
-	r.AddSuccessGeneric(alias, result.PPM, result.Amount)
+	r.AddSuccessGeneric(scid, result.In, result.PPM, result.Amount)
 }
