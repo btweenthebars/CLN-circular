@@ -508,3 +508,91 @@ func TestOnlyTheCandidatesOwnFailuresCount(t *testing.T) {
 		}
 	}
 }
+
+// judge feeds judgeCandidate a result for candidate c with n splits in
+// flight, this one included, and reports whether c went back in the queue.
+func judge(f *fakeSplits, c *graph.Channel, n int, result *rebalance.Result) bool {
+	f.Candidates.Clear()
+	f.launched[candidateId(c)] = c
+	result.Candidate = candidateId(c)
+	f.splitsInFlight = n
+	f.judgeCandidate(result)
+	return f.Candidates.Len() == 1
+}
+
+func busy() *rebalance.Result {
+	return &rebalance.Result{Status: "failure", FailedAt: rebalance.SideIn, Retry: rebalance.RetryWhenFree}
+}
+
+func success() *rebalance.Result {
+	return &rebalance.Result{Status: "success", AmountMsat: 1000}
+}
+
+// Every growth of the target's limit tried one more split at once: with a
+// target that takes 2, a third of all splits were refused.
+func TestTargetCapWaitsLongerAfterARefusedGrowth(t *testing.T) {
+	f := splitsOn(t, 2, nil)
+	f.splits = 4
+	c := f.Candidates.At(0)
+	judge(f, c, 3, busy()) // 2 others in flight
+	assert.Equal(t, 2, f.targetCap)
+
+	growsAfter := func() int {
+		cap := f.targetCap
+		for n := 1; n <= 1000; n++ {
+			judge(f, c, 2, success())
+			if f.targetCap > cap {
+				return n
+			}
+		}
+		return -1
+	}
+	assert.Equal(t, 2, growsAfter(), "as many successes as the limit")
+	judge(f, c, 3, busy()) // the third at once was refused
+	assert.Equal(t, 2, f.targetCap)
+	assert.Equal(t, 4, growsAfter(), "twice as many")
+	judge(f, c, 3, busy())
+	assert.Equal(t, 8, growsAfter())
+
+	// a growth that was not refused keeps the wait, for the larger limit
+	assert.Equal(t, 3, f.targetCap)
+	assert.Equal(t, 3*4, growsAfter())
+
+	// it never goes above the splits allowed
+	f.targetCap = 4
+	for n := 0; n < 100; n++ {
+		judge(f, c, 2, success())
+	}
+	assert.Equal(t, 4, f.targetCap)
+}
+
+// A candidate the target refused as busy came back after every growth of
+// the limit, for the whole run, though the target may refuse it alone (for
+// the fees its route adds to the HTLC, say).
+func TestCandidateRefusedAsBusyTooOftenIsLeftOut(t *testing.T) {
+	f := splitsOn(t, 2, nil)
+	c := f.Candidates.At(0)
+	var requeued []bool
+	for i := 0; i < 5; i++ {
+		requeued = append(requeued, judge(f, c, 2, busy()))
+	}
+	assert.Equal(t, []bool{true, true, true, false, false}, requeued)
+	assert.False(t, f.targetStopped, "the other candidates may still fit")
+	assert.Equal(t, uint64(0), f.Node.CandidateRecord(candidateId(c)).Failures, "not counted against it")
+}
+
+// A target that takes 2 splits at a time, over a long run.
+func TestBusyTargetIsNotProbedAfterEverySuccess(t *testing.T) {
+	b := &busyTarget{fakeSplits: splitsOn(t, 40, nil), capacity: 2}
+	b.RebalanceMethods = b
+	b.amount, b.splits = 4000000000, 4 // 40 splits of 100k sats
+	b.RebalanceResultChan = make(chan *rebalance.Result, 4)
+	b.refresh = func(...string) error { return nil }
+	b.FireCandidates()
+	result, err := b.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(4000000), result.(*Result).RebalancedAmount)
+	// the first round over the limit, then one refusal per growth, after 2,
+	// 4, 8 then 16 successes; growing after every 2 refused about 20
+	assert.LessOrEqual(t, len(b.asked)-40, 2+5, "refused splits")
+}

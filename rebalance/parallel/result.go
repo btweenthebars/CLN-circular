@@ -148,8 +148,10 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 //     flight as the target held then, and the candidate gets another try
 //     once one of them finishes. Retrying at once only met the same
 //     refusal: in circular-push every split leaves through the target. The
-//     limit grows back by one every time that many splits succeed, in case
-//     the refusal had another cause.
+//     limit grows back by one once that many splits succeed, in case the
+//     refusal had another cause; each time one more at once is refused, it
+//     waits twice as long to try again. A candidate refused as busy more
+//     than maxBusyRefusals times is not tried again in the run.
 //   - When the target refused with nothing else in flight, its channels are
 //     read again and the candidate tried once more: the balances the
 //     refusal was based on may have been read while other splits held them.
@@ -162,10 +164,12 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 	if result.Status == "success" {
 		r.Node.RecordCandidate(result.Candidate, true, result.AmountMsat, result.Fee)
 		r.targetRechecked = false
-		if r.targetCap > 0 {
-			if r.capSuccesses++; r.capSuccesses >= r.targetCap && r.targetCap < r.splits {
+		if r.targetCap > 0 && r.targetCap < r.splits {
+			if r.capSuccesses++; r.capSuccesses >= r.targetCap*r.backoff() {
+				// try one more at once
 				r.targetCap++
 				r.capSuccesses = 0
+				r.capProbing = true
 			}
 		}
 		return
@@ -187,9 +191,23 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 		others := r.splitsInFlight - 1
 		if result.Retry == rebalance.RetryWhenFree && others > 0 {
 			if r.targetCap == 0 || others < r.targetCap {
+				if r.capProbing && r.capBackoff < maxCapBackoff {
+					// one more at once was too many: wait longer before trying again
+					r.capBackoff = r.backoff() * 2
+				}
 				r.targetCap = others
 				r.capSuccesses = 0
+				r.capProbing = false
 				r.Node.Logf(glightning.Debug, "the target channel takes %d splits at a time", others)
+			}
+			if r.busyRefusals == nil {
+				r.busyRefusals = make(map[string]int)
+			}
+			if r.busyRefusals[result.Candidate]++; r.busyRefusals[result.Candidate] > maxBusyRefusals {
+				// refused more often than the others: the target may refuse it
+				// alone, for example for the fees its route adds to the HTLC
+				r.Node.Logln(glightning.Debug, "candidate ", result.Candidate, " was refused by the target too often: not trying it again in this run")
+				return
 			}
 			r.requeue(result.Candidate)
 			return
@@ -213,9 +231,26 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 	}
 }
 
+// maxBusyRefusals is how many times the target may refuse a candidate as
+// busy before the run gives up on that candidate; maxCapBackoff bounds how
+// much longer the run waits before giving the target one more split at once
+// after such a try was refused.
+const (
+	maxBusyRefusals = 3
+	maxCapBackoff   = 64
+)
+
+// backoff is capBackoff, 1 when unset.
+func (r *AbstractRebalance) backoff() int {
+	if r.capBackoff < 1 {
+		return 1
+	}
+	return r.capBackoff
+}
+
 // requeue puts candidate id back at the front of the queue. Each requeue
-// follows a refusal that lowered the target's limit, or a re-read or retry
-// allowed once, so a candidate cannot come back forever.
+// follows a busy refusal, at most maxBusyRefusals per candidate, or a re-read
+// or retry allowed once, so a candidate cannot come back forever.
 func (r *AbstractRebalance) requeue(id string) {
 	candidate, ok := r.launched[id]
 	if !ok {

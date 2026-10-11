@@ -55,8 +55,13 @@ type AbstractRebalance struct {
 	// succeeded since it last changed; targetRechecked: the target was read
 	// again after refusing with nothing in flight, and nothing succeeded
 	// since; targetStopped: it takes no more
-	targetCap       int
-	capSuccesses    int
+	targetCap    int
+	capSuccesses int
+	// capBackoff multiplies the successes needed before the limit grows
+	// (0 counts as 1), doubled each time growing it was refused (capProbing)
+	capBackoff      int
+	capProbing      bool
+	busyRefusals    map[string]int // busy refusals by the target, by candidate
 	targetRechecked bool
 	targetStopped   bool
 	// refresh reads our channels with peers again; tests replace
