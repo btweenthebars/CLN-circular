@@ -180,6 +180,10 @@ func (g *Graph) refreshChannels(channelList []*glightning.Channel, listed map[st
 			continue
 		} else {
 			channel = NewChannel(c, existing.Liquidity, existing.Timestamp)
+			if c.LastUpdate > existing.LastUpdate {
+				// a failure blamed on the old policy says nothing about the new one
+				g.Unavoid(channelId)
+			}
 		}
 		g.Channels[channelId] = channel
 	}

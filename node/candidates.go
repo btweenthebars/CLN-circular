@@ -100,6 +100,9 @@ func (n *Node) restoreCandidates(list map[string]CandidateRecord) {
 		c.records = make(map[string]*CandidateRecord)
 	}
 	for id, r := range list {
+		if _, ok := c.records[id]; ok {
+			continue // recorded since the start: newer
+		}
 		r := r
 		c.records[id] = &r
 	}

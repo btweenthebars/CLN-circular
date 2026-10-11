@@ -259,3 +259,30 @@ func TestAvoidList(t *testing.T) {
 	tg.ApplyChannelUpdate(&ChannelUpdate{ChannelId: id, Timestamp: c.LastUpdate + 1, MessageFlags: 1, HtlcMaximumMsat: 1})
 	assert.Empty(t, tg.Avoided(0))
 }
+
+func TestReviewFollowUps(t *testing.T) {
+	g := newTestGraph()
+	c := g.channel("1x1x1", "02a", "02b", 0, 0)
+	id := "1x1x1/" + util.GetDirection("02a", "02b")
+	now := time.Now().Unix()
+
+	// a saved belief older than what the graph has does not replace it
+	c.Liquidity, c.Timestamp = 42, now
+	assert.Equal(t, 0, g.ApplyBeliefs(map[string]Belief{id: {Liquidity: 7, Timestamp: now - 10}}, 0))
+	assert.Equal(t, uint64(42), c.Liquidity)
+
+	// a channel found unusable does not fade back into routes
+	c.Liquidity, c.Timestamp = 0, now-7200
+	g.DecayLiquidity(time.Hour)
+	assert.Equal(t, uint64(0), c.Liquidity)
+
+	// newer listchannels data lifts the channel off the avoid list, as gossip does
+	g.Avoid(id, now+600)
+	same := *c.Channel
+	g.RefreshChannels([]*glightning.Channel{&same})
+	assert.True(t, g.Avoided(now)[id], "the same update: still avoided")
+	newer := *c.Channel
+	newer.LastUpdate++
+	g.RefreshChannels([]*glightning.Channel{&newer})
+	assert.False(t, g.Avoided(now)[id])
+}

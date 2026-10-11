@@ -5,6 +5,7 @@ import (
 	"circular/util"
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
+	"github.com/robfig/cron/v3"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -39,9 +40,12 @@ type Node struct {
 	channelsReadAt     map[string]time.Time        // later reads of one peer's channels, guarded by PeersLock
 	Graph              *graph.Graph
 	DB                 *Store
-	dataDir            string           // lightning-dir/circular
-	pendingBeliefs     *learnedState    // read at start, applied after the first graph refresh
-	migrateLegacy      bool             // pendingBeliefs came from an earlier version's graph.json
+	dataDir            string        // lightning-dir/circular
+	learnedLock        sync.Mutex    // guards pendingBeliefs and migrateLegacy, and serializes saves
+	pendingBeliefs     *learnedState // read at start, applied after the first graph refresh
+	migrateLegacy      bool          // pendingBeliefs came from an earlier version's graph.json
+	learnedApplied     atomic.Bool   // the first graph refresh applied what was saved
+	cron               *cron.Cron
 	candidates         candidateRecords // how our channels did as pull/push candidates
 	Stopped            atomic.Bool      // circular-stop: no new rebalances
 	gossipStopped      atomic.Bool
@@ -113,11 +117,21 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 func (n *Node) Close() {
 	n.Stopped.Store(true)
 	n.StopGossipParser()
-	if n.Graph != nil && n.dataDir != "" && n.pendingBeliefs == nil {
-		// keep what was learned since the last graph refresh
+	if n.cron != nil {
+		// let a running refresh finish, for a little while
+		select {
+		case <-n.cron.Stop().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}
+	// keep what was learned since the last graph refresh, unless what the
+	// previous run saved has not been applied yet: saving now would lose it
+	if n.Graph != nil && n.dataDir != "" && n.learnedApplied.Load() {
+		n.learnedLock.Lock()
 		if err := n.SaveLearned(n.dataDir); err != nil {
 			n.Logf(glightning.Unusual, "error saving liquidity beliefs: %+v", err)
 		}
+		n.learnedLock.Unlock()
 	}
 	if n.DB != nil {
 		if err := n.DB.Close(); err != nil {
@@ -134,13 +148,18 @@ func (n *Node) loadLearned() {
 		n.Logln(glightning.Info, "no saved liquidity beliefs: starting from the defaults")
 		return
 	}
+	n.learnedLock.Lock()
 	n.pendingBeliefs = state
 	n.migrateLegacy = legacy
+	n.learnedLock.Unlock()
 }
 
 // applyLearned applies the beliefs loadLearned read, once the graph has its
 // channels, and saves what the graph knows.
 func (n *Node) applyLearned() {
+	n.learnedLock.Lock()
+	defer n.learnedLock.Unlock()
+
 	if n.pendingBeliefs != nil {
 		since := time.Now().Add(-n.liquidityRefresh).Unix()
 		applied := n.Graph.ApplyBeliefs(n.pendingBeliefs.Liquidity, since)
@@ -151,6 +170,7 @@ func (n *Node) applyLearned() {
 		n.restoreCandidates(n.pendingBeliefs.Candidates)
 		n.pendingBeliefs = nil
 	}
+	n.learnedApplied.Store(true)
 	if err := n.SaveLearned(n.dataDir); err != nil {
 		n.Logf(glightning.Unusual, "error saving liquidity beliefs: %+v", err)
 		return

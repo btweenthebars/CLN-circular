@@ -51,7 +51,6 @@ func (r *AbstractRebalance) Init(amount, maxppm, splitamount, minsplit uint64, s
 	r.AmountLock = &sync.Mutex{}
 	r.QueueLock = &sync.Mutex{}
 	r.TotalAttempts = 0
-	r.RebalanceResultChan = make(chan *rebalance2.Result, splits)
 	r.Node.Logf(glightning.Debug, "%+v", r)
 	r.amount = amount
 	r.maxPPM = maxppm
@@ -62,6 +61,7 @@ func (r *AbstractRebalance) Init(amount, maxppm, splitamount, minsplit uint64, s
 	r.attempts = attempts
 	r.maxHops = maxhops
 	r.setGenericDefaults()
+	r.RebalanceResultChan = make(chan *rebalance2.Result, r.splits)
 	r.Node.Logln(glightning.Debug, "AbstractRebalance initialized")
 }
 

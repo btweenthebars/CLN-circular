@@ -34,7 +34,8 @@ func (g *Graph) Beliefs() map[string]Belief {
 }
 
 // ApplyBeliefs gives the channels in the graph the beliefs saved by an
-// earlier run, unless they are older than since (Unix time) or no longer fit
+// earlier run, unless they are older than since (Unix time) or than what the
+// graph knows (our channels, read from listpeerchannels), or no longer fit
 // the channel's capacity. It returns how many it applied.
 func (g *Graph) ApplyBeliefs(beliefs map[string]Belief, since int64) int {
 	g.channelsLock.Lock()
@@ -43,7 +44,7 @@ func (g *Graph) ApplyBeliefs(beliefs map[string]Belief, since int64) int {
 	applied := 0
 	for id, b := range beliefs {
 		c, ok := g.Channels[id]
-		if !ok || b.Timestamp < since || b.Liquidity > c.AmountMsat.MSat() {
+		if !ok || b.Timestamp < since || b.Timestamp <= c.Timestamp || b.Liquidity > c.AmountMsat.MSat() {
 			continue
 		}
 		c.Liquidity = b.Liquidity
@@ -54,7 +55,8 @@ func (g *Graph) ApplyBeliefs(beliefs map[string]Belief, since int64) int {
 }
 
 // DecayLiquidity moves each learned belief toward the default, half the
-// capacity, halving its distance from it every halfLife. What a payment
+// capacity, halving its distance from it every halfLife. Beliefs of 0 are
+// left alone. What a payment
 // showed fades as balances change, instead of holding in full until
 // circular-liquidity-refresh and then vanishing at once. It returns how many
 // beliefs it moved. A halfLife of 0 turns it off.
@@ -81,7 +83,9 @@ func (g *Graph) DecayLiquidity(halfLife time.Duration) int {
 		}
 		elapsed := now - from
 		def := c.AmountMsat.MSat() / 2
-		if elapsed <= 0 || c.Liquidity == def {
+		// a channel found unusable (disabled, closed, unknown to its node)
+		// stays so until the hard reset or a newer policy
+		if elapsed <= 0 || c.Liquidity == def || c.Liquidity == 0 {
 			continue
 		}
 		keep := math.Pow(0.5, float64(elapsed)/halfLife.Seconds())

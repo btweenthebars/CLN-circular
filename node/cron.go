@@ -37,6 +37,7 @@ func (n *Node) setupCronJobs(options map[string]glightning.Option) {
 	})
 
 	c.Start()
+	n.cron = c
 }
 
 func addCronJob(c *cron.Cron, interval string, f func()) {

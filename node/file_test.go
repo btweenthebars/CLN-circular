@@ -134,3 +134,18 @@ func TestAvoidListIsSaved(t *testing.T) {
 	restarted.applyLearned()
 	assert.Equal(t, map[string]bool{"02badnode": true, id("1x1x1"): true}, restarted.Graph.Avoided(now))
 }
+
+// A shutdown before the first graph refresh applied what was saved used to
+// overwrite it with empty beliefs.
+func TestCloseBeforeTheFirstRefreshKeepsWhatWasSaved(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().Unix()
+	assert.NoError(t, (&Node{Graph: graphWithChannel("1x1x1", 9, now)}).SaveLearned(dir))
+
+	n := &Node{Graph: graph.NewGraph(), dataDir: dir, liquidityRefresh: time.Hour}
+	n.loadLearned()
+	n.Close()
+	state, _, err := n.LoadLearned(dir)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(9), state.Liquidity[id("1x1x1")].Liquidity)
+}
