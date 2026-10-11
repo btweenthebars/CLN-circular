@@ -74,14 +74,23 @@ func (r *Rebalance) Run() *Result {
 	defer func() { r.Amount = requested }()
 
 	// a route that worked before needs no search
-	known := r.knownRoute()
+	known := r.knownRoute(exclude)
 	for i <= r.Attempts {
 		r.Node.Logln(glightning.Debug, "===================== ATTEMPT ", i, " =====================")
 
 		// One search returns the route with the fewest hops within maxppm,
 		// and the cheapest of those.
+		reused := known != nil
 		result, sent, err := r.runAttempt(exclude, known)
 		known = nil
+		if reused && err != nil && errors.Is(err, util.ErrTemporaryFailure) {
+			// The route that worked no longer does: what failed is learned and
+			// excluded. Search in the same attempt, without shrinking a route
+			// that was not searched for.
+			r.Node.Logln(glightning.Debug, "the route that worked before failed: searching")
+			extra++
+			continue
+		}
 		if errors.Is(err, errShortOfLiquidity) && sent != nil {
 			// the route works, but for less: retry it before searching again
 			var shrinks int
@@ -143,13 +152,16 @@ func (r *Rebalance) Run() *Result {
 }
 
 // knownRoute prices r.Route for r.Amount, or returns nil if it cannot be
-// used: a channel is gone or disabled, or it now costs more than maxppm.
-func (r *Rebalance) knownRoute() *graph.Route {
+// used: a channel is gone or disabled, it now costs more than maxppm, the
+// graph believes a channel along it can no longer carry the amount (for
+// example because the last payment used it up), or it passes through a node
+// or channel to avoid.
+func (r *Rebalance) knownRoute(exclude map[string]bool) *graph.Route {
 	if len(r.Route) == 0 {
 		return nil
 	}
 	route, err := r.Node.Graph.GetRouteOverChannels(r.Route, r.Amount)
-	if err != nil || route.FeePPM() > r.MaxPPM {
+	if err != nil || route.FeePPM() > r.MaxPPM || !r.Node.Graph.CanCarry(route, exclude) {
 		r.Node.Logln(glightning.Debug, "the route that worked before cannot be used again: searching")
 		return nil
 	}

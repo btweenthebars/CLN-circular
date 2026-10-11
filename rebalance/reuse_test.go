@@ -181,3 +181,75 @@ func TestNodeFailuresAreAvoidedByLaterRebalances(t *testing.T) {
 	assert.Equal(t, 1, len(n.paid))
 	assert.Equal(t, id("6x1x1", outP, "02good"), n.paid[0][1], "the next rebalance went around 02bad")
 }
+
+// A route reused after a split had used it up was sent again in full, and
+// with attempts=1 no search ran.
+func TestKnownRouteIsCheckedAgainstWhatTheGraphLearned(t *testing.T) {
+	n, out, in := shortRoute()
+	addChannel(n.Graph, "8x1x1", outP, "02c", 1) // a second way, 1 msat dearer: outpeer -> 02c -> 02b
+	addChannel(n.Graph, "9x1x1", "02c", "02b", 0)
+	r := rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	first := r.Run()
+	if first.Status != "success" {
+		t.Fatal(first.Message)
+	}
+	assert.Equal(t, uint64(50000), first.Amount, "through 02a, shrunk")
+	assert.Contains(t, first.Channels, id("3x1x1", "02a", "02b"))
+
+	// 02a -> 02b is now believed nearly empty: the next split searches
+	n.paid = nil
+	r = rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	r.Route = first.Channels
+	second := r.Run()
+	assert.Equal(t, "success", second.Status, second.Message)
+	assert.Equal(t, uint64(100000), second.Amount)
+	for _, paid := range n.paid {
+		assert.NotContains(t, paid, id("3x1x1", "02a", "02b"))
+	}
+}
+
+// When a reused route fails anyway, the same attempt searches for another.
+func TestFailedKnownRouteDoesNotUseUpTheAttempt(t *testing.T) {
+	n, out, in := shortRoute()
+	addChannel(n.Graph, "8x1x1", outP, "02c", 0)
+	addChannel(n.Graph, "9x1x1", "02c", "02b", 0)
+	n.liquidity[id("3x1x1", "02a", "02b")] = 0 // the graph does not know yet
+	r := rebalanceOn(n, out, in, 100000000)
+	r.Route = []string{id("1x1x1", self, outP), id("2x1x1", outP, "02a"), id("3x1x1", "02a", "02b"),
+		id("4x1x1", "02b", inP), id("5x1x1", inP, self)}
+	result := r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Equal(t, 2, len(n.paid), "the known route, then a searched one")
+	assert.Equal(t, id("8x1x1", outP, "02c"), n.paid[1][1])
+	assert.Equal(t, uint64(2), result.Attempts)
+}
+
+// A reused route went straight through nodes other splits had learned to avoid.
+func TestKnownRouteRespectsTheAvoidList(t *testing.T) {
+	n, out, in := shortRoute()
+	addChannel(n.Graph, "8x1x1", outP, "02c", 0)
+	addChannel(n.Graph, "9x1x1", "02c", "02b", 0)
+	n.liquidity = map[string]uint64{}
+	n.Graph.Avoid("02a", 1<<40)
+	r := rebalanceOn(n, out, in, 100000000)
+	r.Route = []string{id("1x1x1", self, outP), id("2x1x1", outP, "02a"), id("3x1x1", "02a", "02b"),
+		id("4x1x1", "02b", inP), id("5x1x1", inP, self)}
+	assert.Equal(t, "success", r.Run().Status)
+	assert.Equal(t, 1, len(n.paid))
+	assert.Equal(t, id("8x1x1", outP, "02c"), n.paid[0][1])
+}
+
+// A node failure from our own out-peer put it on the avoid list, which
+// blocked every route through our channel with it for 30 minutes.
+func TestOurPeersAreNotAvoided(t *testing.T) {
+	r, route := testRoute(t)
+	exclude := map[string]bool{}
+	_ = r.learnFromFailure(route, failureAt(outP, "2x1x1", 0, failNodeBit|2), exclude)
+	assert.True(t, exclude[outP], "excluded for this run, as before")
+	assert.Empty(t, r.Node.Graph.Avoided(0))
+
+	_ = r.learnFromFailure(route, failureAt("02a", "3x1x1", 0, failNodeBit|2), exclude)
+	assert.Equal(t, map[string]bool{"02a": true}, r.Node.Graph.Avoided(0))
+}

@@ -396,6 +396,27 @@ func (g *Graph) GetRouteOverChannels(ids []string, amount uint64) (*Route, error
 	return route, nil
 }
 
+// CanCarry reports whether the graph believes every channel of route, other
+// than the first and last (our own), holds its hop's amount, and whether none
+// of its nodes or channels is in exclude.
+func (g *Graph) CanCarry(route *Route, exclude map[string]bool) bool {
+	ids := route.ChannelIds()
+	g.channelsLock.RLock()
+	defer g.channelsLock.RUnlock()
+
+	for i := 1; i < len(route.Hops)-1; i++ {
+		hop := route.Hops[i]
+		if exclude[ids[i]] || exclude[hop.Source] {
+			return false
+		}
+		c, ok := g.Channels[ids[i]]
+		if !ok || !c.CanForward(hop.MilliSatoshi) {
+			return false
+		}
+	}
+	return true
+}
+
 // ChannelIds returns the ids ("scid/direction") of the route's channels, in
 // payment order.
 func (r *Route) ChannelIds() []string {

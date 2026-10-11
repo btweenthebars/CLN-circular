@@ -13,9 +13,13 @@ import (
 const AVOID_DURATION = 30 * time.Minute
 
 // avoid excludes key for the rest of this run, and from later runs for
-// AVOID_DURATION.
+// AVOID_DURATION. Our out-peer and in-peer are excluded from this run only:
+// avoiding them would block every route through our own channels with them.
 func (r *Rebalance) avoid(exclude map[string]bool, key string) {
 	exclude[key] = true
+	if key == r.OutChannel.Destination || key == r.InChannel.Source {
+		return
+	}
 	r.Node.Graph.Avoid(key, time.Now().Add(AVOID_DURATION).Unix())
 }
 
