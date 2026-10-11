@@ -110,14 +110,17 @@ func (n *Node) refreshPeers() error {
 	defer util.TimeTrack(time.Now(), "node.refreshPeers", n.Logf)
 	n.Logln(glightning.Debug, "refreshing peers")
 
-	// both reads happen after readAt
-	readAt := time.Now()
 	peers, err := n.lightning.ListPeers()
 	if err != nil {
 		n.Logln(glightning.Unusual, err)
 		return err
 	}
 
+	// The channels are read after readAt, and so is the connection state of
+	// every peer with a channel: setPeers takes it from the channels. A peer
+	// read again on its own since keeps those channels. Only the connection
+	// state of peers without channels comes from the earlier listpeers.
+	readAt := time.Now()
 	channelsResp, err := n.lightning.ListPeerChannels("")
 	if err != nil {
 		n.Logln(glightning.Unusual, err)
