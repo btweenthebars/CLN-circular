@@ -50,6 +50,10 @@ type AbstractRebalance struct {
 	// another try after the target channel refused for a moment
 	launched map[string]*graph.Channel
 	retried  map[string]bool
+	// targetCap, if not 0, is how many splits the target channel takes at
+	// once, learned when it refused one; targetStopped: it takes no more
+	targetCap     int
+	targetStopped bool
 	RebalanceMethods
 }
 
@@ -83,6 +87,14 @@ func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uin
 		r.candidateSide = rebalance2.SideOut
 	}
 	r.launched[candidateId(candidate)] = candidate
+	// our channels, as last read from lightningd: their fees may have changed
+	// since the run started
+	if fresh, err := r.Node.Graph.GetChannel(candidateId(out)); err == nil {
+		out = fresh
+	}
+	if fresh, err := r.Node.Graph.GetChannel(candidateId(in)); err == nil {
+		in = fresh
+	}
 	r.Node.Logln(glightning.Debug, "Firing candidate: ", key, " for ", amount/1000, " sats, attempts: ", r.attempts)
 	rebalance := rebalance2.NewRebalance(out, in, amount, r.maxPPM, r.attempts, r.maxHops)
 	rebalance.Node = r.Node

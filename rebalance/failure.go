@@ -23,6 +23,13 @@ func (r *Rebalance) avoid(exclude map[string]bool, key string) {
 	r.Node.Graph.Avoid(key, time.Now().Add(AVOID_DURATION).Unix())
 }
 
+func retryWhenFreeIf(busy bool) Retry {
+	if busy {
+		return RetryWhenFree
+	}
+	return RetryNo
+}
+
 // errShortOfLiquidity is util.ErrTemporaryFailure for a channel along the route,
 // not one of ours, that could not carry the amount: the same route may carry
 // less.
@@ -62,7 +69,7 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		hop := route.Hops[0]
 		return onOut(fmt.Errorf("our channel %s to %s could not send the payment: %s",
 			hop.ShortChannelId, g.GetAlias(hop.Destination), failure.FailCodeName),
-			failure.FailCode == failTemporaryChannelFailure)
+			retryWhenFreeIf(failure.FailCode == failTemporaryChannelFailure))
 	}
 	if failure.ErringNode == r.Node.Id {
 		// our own node refused it, for example because it arrived after the invoice was deleted
@@ -99,7 +106,7 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 	case failTemporaryChannelFailure:
 		if inChannel {
 			return onIn(fmt.Errorf("%s cannot send %d sats to us over %s right now",
-				g.GetAlias(failure.ErringNode), hop.MilliSatoshi/1000, hop.ShortChannelId), true)
+				g.GetAlias(failure.ErringNode), hop.MilliSatoshi/1000, hop.ShortChannelId), RetryWhenFree)
 		}
 		g.LearnUpperBound(id, hop.MilliSatoshi)
 		exclude[id] = true
@@ -109,12 +116,15 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		// Our copy of the channel's policy is out of date.
 		if inChannel {
 			if failure.FailCode == failFeeInsufficient {
-				// our copy of the in-peer's fee is stale: the next peer refresh
-				// fixes it
-				return onIn(util.ErrWireFeeInsufficient, true)
+				// our copy of the in-peer's fee is stale: read it again, so that
+				// the next try pays the new fee
+				if err := r.Node.RefreshPeerChannels(r.InChannel.Source); err != nil {
+					return onIn(util.ErrWireFeeInsufficient, RetryNo)
+				}
+				return onIn(util.ErrWireFeeInsufficient, RetryNow)
 			}
 			return onIn(fmt.Errorf("%s rejected the payment on our channel %s: %s",
-				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), false)
+				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), RetryNo)
 		}
 		if !r.refreshPolicy(hop.Channel, id) {
 			// the update has not reached us yet: avoid the channel until it does
@@ -124,12 +134,24 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 	case failChannelDisabled, failPermanentChannelFailure, failUnknownNextPeer:
 		if inChannel {
 			return onIn(fmt.Errorf("%s cannot use our channel %s: %s",
-				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), false)
+				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), RetryNo)
 		}
 		g.MarkUnusable(id)
 		exclude[id] = true
 
 	default:
+		if inChannel {
+			// the in-peer, or its channel to us, failed it: not the route
+			exclude[failure.ErringNode] = true
+			return onIn(fmt.Errorf("%s failed the payment on our channel %s: %s",
+				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), RetryNo)
+		}
+		if k == 1 && failure.FailCode&failNodeBit != 0 {
+			// the out-peer itself failed: not the route
+			exclude[failure.ErringNode] = true
+			return onOut(fmt.Errorf("%s failed the payment: %s",
+				g.GetAlias(failure.ErringNode), failure.FailCodeName), RetryNo)
+		}
 		if failure.FailCode&failNodeBit != 0 {
 			r.avoid(exclude, failure.ErringNode)
 		} else {

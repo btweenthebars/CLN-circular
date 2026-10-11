@@ -17,6 +17,11 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 
 	r.Node.Logln(glightning.Debug, "looking for a route from ", r.Node.Graph.GetAlias(src), " to ", r.Node.Graph.GetAlias(dst))
 	maxFee := graph.MaxFeeForPPM(r.Amount, r.MaxPPM)
+	if inFee := r.InChannel.ComputeFee(r.Amount); inFee > maxFee {
+		// the in-peer's own fee for our channel is more than maxppm allows: no
+		// route can do, whatever the out channel
+		return nil, onIn(util.NewRouteTooExpensiveError(r.InChannel.ComputeFeePPM(r.Amount), r.MaxPPM), RetryNo)
+	}
 	route, err := r.Node.Graph.GetCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops, maxFee)
 	if err == util.ErrNoRoute {
 		// Say how expensive the cheapest route is, if there is one, so maxppm can be tuned.

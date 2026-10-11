@@ -132,13 +132,23 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	return r.Result, nil
 }
 
-// judgeCandidate records how the split's candidate did. A failure counts
-// against it only if it happened on its own channel or along the route: not
-// on the target channel, and not for a reason on neither, such as
-// circular-stop or a timeout. When the target channel refused only for the
-// moment (HTLC slots or value in flight taken by the other splits, a fee
-// about to be refreshed), the candidate goes back to the end of the queue,
-// once per run.
+// judgeCandidate records how the split's candidate did, and adapts the run
+// to what the target channel (the in channel for circular-pull, the out
+// channel for circular-push) can take. It runs before the split is counted
+// out of splitsInFlight.
+//
+//   - A failure counts against the candidate only if it happened on the
+//     candidate's own channel or along the route; not on the target channel,
+//     and not for a reason on neither, such as circular-stop or a timeout.
+//   - A failure due to a policy just read again (RetryNow) gives the
+//     candidate another try, once per run, and counts against nobody.
+//   - When the target refused because other splits hold its HTLC slots or
+//     balance (RetryWhenFree), the run keeps at most as many splits in
+//     flight as the target held then, and the candidate gets another try
+//     once one of them finishes. Retrying at once only met the same
+//     refusal: in circular-push every split leaves through the target.
+//   - When the target refused with nothing else in flight, or for good, no
+//     more splits are fired: every candidate would meet the same refusal.
 func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 	if result.Candidate == "" {
 		return
@@ -147,21 +157,42 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 		r.Node.RecordCandidate(result.Candidate, true, result.AmountMsat, result.Fee)
 		return
 	}
+	if result.Retry == rebalance.RetryNow && result.FailedAt != rebalance.SideNone && result.FailedAt != rebalance.SideRoute {
+		r.retryCandidate(result.Candidate)
+		return
+	}
 	switch result.FailedAt {
 	case r.candidateSide, rebalance.SideRoute:
 		r.Node.RecordCandidate(result.Candidate, false, 0, 0)
 	case rebalance.SideNone:
 		// neither channel's fault
 	default: // the target channel
-		candidate, ok := r.launched[result.Candidate]
-		if result.Transient && ok && !r.retried[result.Candidate] {
-			r.retried[result.Candidate] = true
-			r.QueueLock.Lock()
-			r.Candidates.PushBack(candidate)
-			r.QueueLock.Unlock()
-			r.Node.Logln(glightning.Debug, "the target channel refused for the moment: ", result.Candidate, " will be tried again")
+		others := r.splitsInFlight - 1
+		if result.Retry == rebalance.RetryWhenFree && others > 0 {
+			if r.targetCap == 0 || others < r.targetCap {
+				r.targetCap = others
+				r.Node.Logf(glightning.Debug, "the target channel takes %d splits at a time", others)
+			}
+			r.retryCandidate(result.Candidate)
+			return
 		}
+		r.targetStopped = true
+		r.Node.Logln(glightning.Info, "the target channel cannot take more for now: firing no more splits. ", result.Message)
 	}
+}
+
+// retryCandidate puts candidate id back at the front of the queue, once per
+// run.
+func (r *AbstractRebalance) retryCandidate(id string) {
+	candidate, ok := r.launched[id]
+	if !ok || r.retried[id] {
+		return
+	}
+	r.retried[id] = true
+	r.QueueLock.Lock()
+	r.Candidates.PushFront(candidate)
+	r.QueueLock.Unlock()
+	r.Node.Logln(glightning.Debug, "candidate ", id, " will be tried again")
 }
 
 func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {

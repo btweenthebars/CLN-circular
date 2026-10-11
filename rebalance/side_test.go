@@ -13,27 +13,28 @@ import (
 // one on the target channel or one caused by circular-stop.
 func TestFailureSide(t *testing.T) {
 	for _, c := range []struct {
-		err       error
-		side      Side
-		transient bool
+		err   error
+		side  Side
+		retry Retry
 	}{
-		{nil, SideNone, false},
-		{util.ErrCircularStopped, SideNone, false},
-		{util.ErrSendPayTimeout, SideNone, false},
-		{errors.New("sendpay: connection reset"), SideNone, false},
-		{util.ErrNoRoute, SideRoute, false},
-		{util.NewRouteTooExpensiveError(500, 10), SideRoute, false},
-		{errShortOfLiquidity, SideRoute, false},
-		{util.ErrIncomingChannelDepleted, SideIn, false},
-		{util.ErrIncomingPeerDisconnected, SideIn, false},
-		{fmt.Errorf("%w: it can send 1 msat", util.ErrOutgoingChannelDepleted), SideOut, false},
-		{util.ErrOutgoingPeerDisconnected, SideOut, false},
-		{onIn(util.ErrWireFeeInsufficient, true), SideIn, true},
-		{onOut(errors.New("our channel could not send"), true), SideOut, true},
+		{nil, SideNone, RetryNo},
+		{util.ErrCircularStopped, SideNone, RetryNo},
+		{util.ErrSendPayTimeout, SideNone, RetryNo},
+		{errors.New("sendpay: connection reset"), SideNone, RetryNo},
+		{util.ErrNoRoute, SideRoute, RetryNo},
+		{util.NewRouteTooExpensiveError(500, 10), SideRoute, RetryNo},
+		{errShortOfLiquidity, SideRoute, RetryNo},
+		{util.ErrIncomingChannelDepleted, SideIn, RetryWhenFree},
+		{util.ErrIncomingPeerDisconnected, SideIn, RetryNo},
+		{fmt.Errorf("%w: it can send 1 msat", util.ErrOutgoingChannelDepleted), SideOut, RetryWhenFree},
+		{util.ErrOutgoingPeerDisconnected, SideOut, RetryNo},
+		{onIn(util.ErrWireFeeInsufficient, RetryNow), SideIn, RetryNow},
+		{onOut(errors.New("our channel could not send"), RetryWhenFree), SideOut, RetryWhenFree},
+		{onIn(util.NewRouteTooExpensiveError(500, 10), RetryNo), SideIn, RetryNo},
 	} {
-		side, transient := failureSide(c.err)
+		side, retry := failureSide(c.err)
 		assert.Equal(t, c.side, side, "%v", c.err)
-		assert.Equal(t, c.transient, transient, "%v", c.err)
+		assert.Equal(t, c.retry, retry, "%v", c.err)
 	}
 }
 
@@ -42,21 +43,21 @@ func TestRunReportsWhereItFailed(t *testing.T) {
 
 	// lightningd refused at once to add the HTLC to our out channel
 	err := r.learnFromFailure(route, failureAt(self, "1x1x1", 0, failTemporaryChannelFailure), map[string]bool{})
-	side, transient := failureSide(err)
+	side, retry := failureSide(err)
 	assert.Equal(t, SideOut, side)
-	assert.True(t, transient)
+	assert.Equal(t, RetryWhenFree, retry)
 
 	// the in-peer could not send to us
 	err = r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failTemporaryChannelFailure), map[string]bool{})
-	side, transient = failureSide(err)
+	side, retry = failureSide(err)
 	assert.Equal(t, SideIn, side)
-	assert.True(t, transient)
+	assert.Equal(t, RetryWhenFree, retry)
 
 	// the in-peer's channel to us is disabled: not passing
 	err = r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failChannelDisabled), map[string]bool{})
-	side, transient = failureSide(err)
+	side, retry = failureSide(err)
 	assert.Equal(t, SideIn, side)
-	assert.False(t, transient)
+	assert.Equal(t, RetryNo, retry)
 
 	// a failure in the middle of the route
 	err = r.learnFromFailure(route, failureAt("02a", "3x1x1", 0, failTemporaryChannelFailure), map[string]bool{})
@@ -72,11 +73,38 @@ func TestRunResultCarriesTheFailureSide(t *testing.T) {
 	result := r.Run()
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, SideIn, result.FailedAt)
-	assert.False(t, result.Transient)
+	assert.Equal(t, RetryWhenFree, result.Retry, "receivable leaves out HTLCs in flight")
 
 	n, out, in = shortRoute()
 	r = rebalanceOn(n, out, in, 100000000)
 	r.Node.Stopped.Store(true)
 	result = r.Run()
 	assert.Equal(t, SideNone, result.FailedAt)
+}
+
+// The in-peer's own fee is the same for every candidate of circular-pull:
+// it was blamed on each of them as "route too expensive".
+func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
+	n, out, in := shortRoute()
+	in.Channel.FeePerMillionth = 5000
+	r := rebalanceOn(n, out, in, 100000000)
+	result := r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, SideIn, result.FailedAt)
+	assert.Contains(t, result.Message, "route too expensive")
+	assert.Empty(t, n.paid)
+}
+
+// A node failure from our own in-peer or out-peer was counted as the route's.
+func TestPeerNodeFailuresAreOnOurSide(t *testing.T) {
+	r, route := testRoute(t)
+	err := r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failNodeBit|2), map[string]bool{})
+	side, _ := failureSide(err)
+	assert.Equal(t, SideIn, side)
+	err = r.learnFromFailure(route, failureAt(outP, "2x1x1", 0, failNodeBit|2), map[string]bool{})
+	side, _ = failureSide(err)
+	assert.Equal(t, SideOut, side)
+	err = r.learnFromFailure(route, failureAt("02a", "3x1x1", 0, failNodeBit|2), map[string]bool{})
+	side, _ = failureSide(err)
+	assert.Equal(t, SideRoute, side)
 }

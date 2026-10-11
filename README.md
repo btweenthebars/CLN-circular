@@ -134,6 +134,8 @@ The result of `circular-pull` (and `circular-push`) looks like this:
 ```
 Candidates are tried best first, by how they did in earlier splits (kept across runs in `learned.json`): a channel that failed in the last 30 minutes, and hasn't succeeded since, goes last; the others by success rate, then by the fee rate their splits paid. Channels never tried count as an even chance.
 
+A failed split counts against its candidate only if it failed on the candidate's channel or along the route. If the target channel refuses a split because the other splits hold its HTLC slots or balance, the run keeps no more splits in flight than the target took, and the refused candidate is tried again once one finishes. If the target refuses with nothing else in flight, or for good (disabled, disconnected, its own fee above `maxppm`), no more splits are started.
+
 Once a split succeeds, the next split through the same channel first tries the same route again, with current fees, and only searches if that route is no longer usable or now costs more than `maxppm`. Splits that shrank count for what they delivered, and the following splits ask for what is left.
 
 `successes` is keyed by the short channel id of each channel that was used: the outgoing channel drained by `circular-pull`, or the incoming channel filled by `circular-push`. Each entry has the peer's alias (when known) and node id, then the sats rebalanced at each fee rate paid, in ppm.

@@ -13,6 +13,7 @@ import (
 	"math"
 	"sync"
 	"testing"
+	"time"
 )
 
 // a 10M sats channel with local balance toUs
@@ -153,7 +154,7 @@ type fakeSplits struct {
 	*AbstractRebalance
 	deliver func(call int, amount uint64) uint64
 	// failure says where call number call failed, and whether it may pass
-	failure func(call int) (rebalance.Side, bool)
+	failure func(call int) (rebalance.Side, rebalance.Retry)
 	calls   int
 	asked   []uint64
 	lock    sync.Mutex
@@ -174,9 +175,9 @@ func (f *fakeSplits) EnqueueCandidate(result *rebalance.Result) {
 func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	f.lock.Lock()
 	delivered := f.deliver(f.calls, amount)
-	side, transient := rebalance.SideRoute, false
+	side, retry := rebalance.SideRoute, rebalance.RetryNo
 	if f.failure != nil {
-		side, transient = f.failure(f.calls)
+		side, retry = f.failure(f.calls)
 	}
 	f.calls++
 	f.launched[candidateId(candidate)] = candidate
@@ -185,7 +186,7 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	result := rebalance.NewResult("failure", amount/1000, candidate.Destination, "02target")
 	result.Requested = amount
 	result.Candidate = candidateId(candidate)
-	result.FailedAt, result.Transient = side, transient
+	result.FailedAt, result.Retry = side, retry
 	if delivered > 0 {
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
@@ -284,30 +285,95 @@ func TestCandidatesAreRankedByEarlierSplits(t *testing.T) {
 	assert.Len(t, order, 3)
 }
 
-// A split that failed on the target channel counted against its candidate,
-// and the candidate was dropped even when the target only refused for a
-// moment, which in circular-push can end a run early.
-func TestTargetFailuresDoNotBlameTheCandidate(t *testing.T) {
-	// one candidate; its first split fails because the target refused for a moment
+// A target channel that refused for good, or with nothing else in flight,
+// made every following candidate fail the same way.
+func TestTargetThatTakesNoMoreStopsTheRun(t *testing.T) {
+	f := splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
+	f.FireCandidates()
+	_, _ = f.WaitForResult()
+	assert.Equal(t, 1, len(f.asked), "nothing else was in flight: the target is full")
+	assert.Equal(t, uint64(0), f.Node.CandidateRecord(candidateId(f.launched[firstLaunched(f)])).Failures)
+}
+
+// A policy read again after a stale-fee failure gives the candidate one more
+// try, at once, counted against nobody.
+func TestStalePolicyGivesOneMoreTry(t *testing.T) {
 	f := splitsOn(t, 1, func(call int, amount uint64) uint64 {
 		if call == 0 {
 			return 0
 		}
 		return amount
 	})
-	f.failure = func(int) (rebalance.Side, bool) { return rebalance.SideIn, true }
+	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryNow }
 	f.FireCandidates()
-	result, err := f.WaitForResult()
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(300000), result.(*Result).RebalancedAmount, "the candidate was tried again")
-	assert.Equal(t, uint64(0), f.Node.CandidateRecord("1x1x1/"+util.GetDirection("02self", "02peer0")).Failures)
+	result, _ := f.WaitForResult()
+	assert.Equal(t, uint64(300000), result.(*Result).RebalancedAmount)
+}
 
-	// only once per run
-	f = splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
-	f.failure = func(int) (rebalance.Side, bool) { return rebalance.SideIn, true }
-	f.FireCandidates()
-	_, _ = f.WaitForResult()
-	assert.Equal(t, 2, len(f.asked))
+func firstLaunched(f *fakeSplits) string {
+	for id := range f.launched {
+		return id
+	}
+	return ""
+}
+
+// busyTarget stands in for circular-push through a target channel that takes
+// at most capacity splits at a time: lightningd refuses more at once, while
+// accepted splits take a while. Each candidate can take one split.
+type busyTarget struct {
+	*fakeSplits
+	capacity int
+	accepted int
+	used     map[string]bool
+}
+
+func (b *busyTarget) EnqueueCandidate(*rebalance.Result) {} // each candidate takes one split
+
+func (b *busyTarget) Fire(candidate *graph.Channel, amount uint64) {
+	b.lock.Lock()
+	b.asked = append(b.asked, amount)
+	b.launched[candidateId(candidate)] = candidate
+	accept := b.accepted < b.capacity
+	if accept {
+		b.accepted++
+	}
+	b.lock.Unlock()
+
+	result := rebalance.NewResult("failure", amount/1000, candidate.Destination, "02target")
+	result.Requested, result.Candidate = amount, candidateId(candidate)
+	if !accept {
+		result.FailedAt, result.Retry = rebalance.SideIn, rebalance.RetryWhenFree
+		go func() { b.RebalanceResultChan <- result }()
+		return
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		b.lock.Lock()
+		b.accepted--
+		b.lock.Unlock()
+		ok := rebalance.NewResult("success", amount/1000, candidate.Destination, "02target")
+		ok.AmountMsat, ok.Requested, ok.Candidate, ok.PPM = amount, amount, candidateId(candidate), 10
+		ok.Route = &graph.PrettyRoute{Hops: []graph.PrettyRouteHop{{ShortChannelId: candidate.ShortChannelId}}}
+		b.RebalanceResultChan <- ok
+	}()
+}
+
+// With 4 splits but a target that takes 2 at a time, the refused splits were
+// retried at once, refused again and dropped: 200k of 600k moved.
+func TestBusyTargetLimitsTheSplitsInFlight(t *testing.T) {
+	b := &busyTarget{fakeSplits: splitsOn(t, 6, nil), capacity: 2}
+	b.RebalanceMethods = b
+	b.amount, b.splits = 600000000, 4
+	b.RebalanceResultChan = make(chan *rebalance.Result, 4)
+
+	b.FireCandidates()
+	result, err := b.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(600000), result.(*Result).RebalancedAmount, "every candidate got its split")
+	assert.Equal(t, 2, b.targetCap)
+	assert.LessOrEqual(t, len(b.asked), 8, "at most the first round over the cap is refused")
 }
 
 func TestOnlyTheCandidatesOwnFailuresCount(t *testing.T) {
@@ -322,11 +388,11 @@ func TestOnlyTheCandidatesOwnFailuresCount(t *testing.T) {
 	} {
 		f := splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
 		side := c.side
-		f.failure = func(int) (rebalance.Side, bool) { return side, false }
+		f.failure = func(int) (rebalance.Side, rebalance.Retry) { return side, rebalance.RetryNo }
 		f.FireCandidates()
 		_, _ = f.WaitForResult()
 		assert.Equal(t, 1, len(f.asked), "not retried: the failure does not pass")
-		failures := f.Node.CandidateRecord("1x1x1/"+util.GetDirection("02self", "02peer0")).Failures
+		failures := f.Node.CandidateRecord("1x1x1/" + util.GetDirection("02self", "02peer0")).Failures
 		if c.counted {
 			assert.Equal(t, uint64(1), failures, "side %d", c.side)
 		} else {

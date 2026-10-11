@@ -152,7 +152,7 @@ func (r *Rebalance) Run() *Result {
 
 	failure := NewResult("failure", r.Amount/1000, r.OutChannel.Destination, r.InChannel.Source)
 	failure.Attempts = uint64(i - 1 + extra)
-	failure.FailedAt, failure.Transient = failureSide(lastErr)
+	failure.FailedAt, failure.Retry = failureSide(lastErr)
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " attempts."
 	failure.Message += lastError
 

@@ -22,43 +22,61 @@ const (
 	SideIn
 )
 
+// Retry tells whether a failure on one of our channels may pass.
+type Retry int
+
+const (
+	// RetryNo: it will fail the same way.
+	RetryNo Retry = iota
+	// RetryWhenFree: the channel was busy (HTLC slots, value or balance
+	// taken by HTLCs in flight); a try may pass once some of them settle.
+	RetryWhenFree
+	// RetryNow: our copy of the channel's policy was out of date and has been
+	// read again; another try may pass at once.
+	RetryNow
+)
+
 // sideError is an error on one of our channels.
 type sideError struct {
-	side Side
-	// transient: the channel refused for the moment (HTLC slots, value in
-	// flight, a policy about to be refreshed); a later try may work
-	transient bool
-	err       error
+	side  Side
+	retry Retry
+	err   error
 }
 
 func (e *sideError) Error() string { return e.err.Error() }
 func (e *sideError) Unwrap() error { return e.err }
 
-func onOut(err error, transient bool) error {
-	return &sideError{side: SideOut, transient: transient, err: err}
+func onOut(err error, retry Retry) error {
+	return &sideError{side: SideOut, retry: retry, err: err}
 }
 
-func onIn(err error, transient bool) error {
-	return &sideError{side: SideIn, transient: transient, err: err}
+func onIn(err error, retry Retry) error {
+	return &sideError{side: SideIn, retry: retry, err: err}
 }
 
 // failureSide tells where err happened, and whether it may pass.
-func failureSide(err error) (Side, bool) {
+func failureSide(err error) (Side, Retry) {
 	var se *sideError
 	switch {
 	case err == nil:
-		return SideNone, false
+		return SideNone, RetryNo
 	case errors.As(err, &se):
-		return se.side, se.transient
-	case errors.Is(err, util.ErrOutgoingChannelDepleted), errors.Is(err, util.ErrOutgoingChannelNotInNormalState),
-		errors.Is(err, util.ErrOutgoingPeerDisconnected), errors.Is(err, util.ErrNoOutgoingChannel):
-		return SideOut, false
-	case errors.Is(err, util.ErrIncomingChannelDepleted), errors.Is(err, util.ErrIncomingChannelNotInNormalState),
-		errors.Is(err, util.ErrIncomingPeerDisconnected), errors.Is(err, util.ErrNoIncomingChannel):
-		return SideIn, false
+		return se.side, se.retry
+	// spendable and receivable leave out HTLCs in flight: the balance may
+	// come back once they settle
+	case errors.Is(err, util.ErrOutgoingChannelDepleted):
+		return SideOut, RetryWhenFree
+	case errors.Is(err, util.ErrIncomingChannelDepleted):
+		return SideIn, RetryWhenFree
+	case errors.Is(err, util.ErrOutgoingChannelNotInNormalState), errors.Is(err, util.ErrOutgoingPeerDisconnected),
+		errors.Is(err, util.ErrNoOutgoingChannel):
+		return SideOut, RetryNo
+	case errors.Is(err, util.ErrIncomingChannelNotInNormalState), errors.Is(err, util.ErrIncomingPeerDisconnected),
+		errors.Is(err, util.ErrNoIncomingChannel):
+		return SideIn, RetryNo
 	case errors.Is(err, util.ErrNoRoute), errors.Is(err, util.ErrNoSuchNode), errors.Is(err, util.ErrTemporaryFailure),
 		errors.As(err, &util.ErrRouteTooExpensive{}):
-		return SideRoute, false
+		return SideRoute, RetryNo
 	}
-	return SideNone, false
+	return SideNone, RetryNo
 }
