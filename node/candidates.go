@@ -113,6 +113,24 @@ func (n *Node) restoreCandidates(list map[string]CandidateRecord) {
 	}
 }
 
+// pruneCandidates forgets the records of channels no longer among ours,
+// given as the ids of both directions of our open channels. It returns how
+// many it removed.
+func (n *Node) pruneCandidates(open map[string]bool) int {
+	c := &n.candidates
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	removed := 0
+	for id := range c.records {
+		if !open[id] {
+			delete(c.records, id)
+			removed++
+		}
+	}
+	return removed
+}
+
 // RankCandidates orders candidate channel ids best first:
 //   - those that failed within the last 30 minutes, and have not succeeded
 //     since, come last;

@@ -170,6 +170,15 @@ func (n *Node) applyLearned() {
 		n.restoreCandidates(n.pendingBeliefs.Candidates)
 		n.pendingBeliefs = nil
 	}
+	// records of channels that closed would otherwise stay forever; with no
+	// peers read yet, there is nothing to compare with
+	if n.PeersLock != nil {
+		if open := n.localChannelIds(); len(open) > 0 {
+			if removed := n.pruneCandidates(open); removed > 0 {
+				n.Logf(glightning.Debug, "forgot the candidate records of %d closed channels", removed)
+			}
+		}
+	}
 	n.learnedApplied.Store(true)
 	if err := n.SaveLearned(n.dataDir); err != nil {
 		n.Logf(glightning.Unusual, "error saving liquidity beliefs: %+v", err)

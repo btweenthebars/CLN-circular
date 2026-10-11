@@ -1,7 +1,10 @@
 package node
 
 import (
+	"circular/util"
+	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
+	"sync"
 	"testing"
 	"time"
 )
@@ -56,4 +59,21 @@ func TestCandidateRecordsAreSaved(t *testing.T) {
 	assert.Equal(t, uint64(1), r.Successes)
 	assert.Equal(t, uint64(5000), r.AmountMsat)
 	assert.Equal(t, uint64(2), r.FeeMsat)
+}
+
+// Records of channels that closed were kept, and saved, forever.
+func TestCandidateRecordsOfClosedChannelsAreForgotten(t *testing.T) {
+	n := &Node{Id: "02self", Graph: graphWithChannel("1x1x1", 500000, 0), dataDir: t.TempDir(),
+		liquidityRefresh: time.Hour, PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{}}
+	open := "5x5x5/" + util.GetDirection("02self", "02peer")
+	n.RecordCandidate(open, true, 1, 0)
+	n.RecordCandidate("6x6x6/0", true, 1, 0) // closed since
+
+	n.applyLearned() // no peers read yet: nothing is forgotten
+	assert.Equal(t, uint64(1), n.CandidateRecord("6x6x6/0").Successes)
+
+	n.Peers["02peer"] = &glightning.Peer{Id: "02peer", Channels: []*glightning.PeerChannel{{ShortChannelId: "5x5x5"}}}
+	n.applyLearned()
+	assert.Equal(t, uint64(1), n.CandidateRecord(open).Successes)
+	assert.Equal(t, uint64(0), n.CandidateRecord("6x6x6/0").Successes)
 }
