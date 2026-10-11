@@ -98,10 +98,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		rebalanceResult := <-r.RebalanceResultChan
 
 		r.TotalAttempts += rebalanceResult.Attempts
-		if rebalanceResult.Candidate != "" {
-			r.Node.RecordCandidate(rebalanceResult.Candidate, rebalanceResult.Status == "success",
-				rebalanceResult.AmountMsat, rebalanceResult.Fee)
-		}
+		r.judgeCandidate(rebalanceResult)
 
 		if rebalanceResult.Status == "success" {
 			r.Node.Logln(glightning.Info, rebalanceResult.Message)
@@ -133,6 +130,38 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Node.Logf(glightning.Info, "Parallel rebalance finished. Total attempts: %d, time: %s, amount rebalanced: %d sats",
 		r.Result.Attempts, r.Result.Time, r.Result.RebalancedAmount)
 	return r.Result, nil
+}
+
+// judgeCandidate records how the split's candidate did. A failure counts
+// against it only if it happened on its own channel or along the route: not
+// on the target channel, and not for a reason on neither, such as
+// circular-stop or a timeout. When the target channel refused only for the
+// moment (HTLC slots or value in flight taken by the other splits, a fee
+// about to be refreshed), the candidate goes back to the end of the queue,
+// once per run.
+func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
+	if result.Candidate == "" {
+		return
+	}
+	if result.Status == "success" {
+		r.Node.RecordCandidate(result.Candidate, true, result.AmountMsat, result.Fee)
+		return
+	}
+	switch result.FailedAt {
+	case r.candidateSide, rebalance.SideRoute:
+		r.Node.RecordCandidate(result.Candidate, false, 0, 0)
+	case rebalance.SideNone:
+		// neither channel's fault
+	default: // the target channel
+		candidate, ok := r.launched[result.Candidate]
+		if result.Transient && ok && !r.retried[result.Candidate] {
+			r.retried[result.Candidate] = true
+			r.QueueLock.Lock()
+			r.Candidates.PushBack(candidate)
+			r.QueueLock.Unlock()
+			r.Node.Logln(glightning.Debug, "the target channel refused for the moment: ", result.Candidate, " will be tried again")
+		}
+	}
 }
 
 func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {

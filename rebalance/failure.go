@@ -60,8 +60,9 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		// lightningd would not send it over our out channel, for example
 		// because the peer is not connected
 		hop := route.Hops[0]
-		return fmt.Errorf("our channel %s to %s could not send the payment: %s",
-			hop.ShortChannelId, g.GetAlias(hop.Destination), failure.FailCodeName)
+		return onOut(fmt.Errorf("our channel %s to %s could not send the payment: %s",
+			hop.ShortChannelId, g.GetAlias(hop.Destination), failure.FailCodeName),
+			failure.FailCode == failTemporaryChannelFailure)
 	}
 	if failure.ErringNode == r.Node.Id {
 		// our own node refused it, for example because it arrived after the invoice was deleted
@@ -97,8 +98,8 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 	switch failure.FailCode {
 	case failTemporaryChannelFailure:
 		if inChannel {
-			return fmt.Errorf("%s cannot send %d sats to us over %s right now",
-				g.GetAlias(failure.ErringNode), hop.MilliSatoshi/1000, hop.ShortChannelId)
+			return onIn(fmt.Errorf("%s cannot send %d sats to us over %s right now",
+				g.GetAlias(failure.ErringNode), hop.MilliSatoshi/1000, hop.ShortChannelId), true)
 		}
 		g.LearnUpperBound(id, hop.MilliSatoshi)
 		exclude[id] = true
@@ -108,10 +109,12 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		// Our copy of the channel's policy is out of date.
 		if inChannel {
 			if failure.FailCode == failFeeInsufficient {
-				return util.ErrWireFeeInsufficient
+				// our copy of the in-peer's fee is stale: the next peer refresh
+				// fixes it
+				return onIn(util.ErrWireFeeInsufficient, true)
 			}
-			return fmt.Errorf("%s rejected the payment on our channel %s: %s",
-				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName)
+			return onIn(fmt.Errorf("%s rejected the payment on our channel %s: %s",
+				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), false)
 		}
 		if !r.refreshPolicy(hop.Channel, id) {
 			// the update has not reached us yet: avoid the channel until it does
@@ -120,8 +123,8 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 
 	case failChannelDisabled, failPermanentChannelFailure, failUnknownNextPeer:
 		if inChannel {
-			return fmt.Errorf("%s cannot use our channel %s: %s",
-				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName)
+			return onIn(fmt.Errorf("%s cannot use our channel %s: %s",
+				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), false)
 		}
 		g.MarkUnusable(id)
 		exclude[id] = true

@@ -132,7 +132,7 @@ func TestFailuresThatStopTheRun(t *testing.T) {
 
 	// the in-peer changed its fee on our channel
 	err = r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failFeeInsufficient), map[string]bool{})
-	assert.Equal(t, util.ErrWireFeeInsufficient, err)
+	assert.True(t, errors.Is(err, util.ErrWireFeeInsufficient))
 }
 
 // When lightningd refuses at once to send over our out channel, the error

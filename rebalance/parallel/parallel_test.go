@@ -152,6 +152,8 @@ func TestSuccessesAreKeyedByChannel(t *testing.T) {
 type fakeSplits struct {
 	*AbstractRebalance
 	deliver func(call int, amount uint64) uint64
+	// failure says where call number call failed, and whether it may pass
+	failure func(call int) (rebalance.Side, bool)
 	calls   int
 	asked   []uint64
 	lock    sync.Mutex
@@ -172,12 +174,18 @@ func (f *fakeSplits) EnqueueCandidate(result *rebalance.Result) {
 func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	f.lock.Lock()
 	delivered := f.deliver(f.calls, amount)
+	side, transient := rebalance.SideRoute, false
+	if f.failure != nil {
+		side, transient = f.failure(f.calls)
+	}
 	f.calls++
+	f.launched[candidateId(candidate)] = candidate
 	f.asked = append(f.asked, amount)
 	f.lock.Unlock()
 	result := rebalance.NewResult("failure", amount/1000, candidate.Destination, "02target")
 	result.Requested = amount
 	result.Candidate = candidateId(candidate)
+	result.FailedAt, result.Transient = side, transient
 	if delivered > 0 {
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
@@ -203,7 +211,8 @@ func splitsOn(t *testing.T, candidates int, deliver func(int, uint64) uint64) *f
 	}
 	a := &AbstractRebalance{Node: n, Candidates: q, AmountLock: &sync.Mutex{}, QueueLock: &sync.Mutex{},
 		RebalanceResultChan: make(chan *rebalance.Result, 4), amount: 300000000, splitAmount: 100000000, splits: 2,
-		routes: map[string][]string{}}
+		routes: map[string][]string{}, candidateSide: rebalance.SideOut,
+		launched: map[string]*graph.Channel{}, retried: map[string]bool{}}
 	f := &fakeSplits{AbstractRebalance: a, deliver: deliver}
 	a.RebalanceMethods = f
 	return f
@@ -273,4 +282,55 @@ func TestCandidatesAreRankedByEarlierSplits(t *testing.T) {
 	}
 	assert.Equal(t, "1x1x1", order[len(order)-1], "the candidate that just failed comes last")
 	assert.Len(t, order, 3)
+}
+
+// A split that failed on the target channel counted against its candidate,
+// and the candidate was dropped even when the target only refused for a
+// moment, which in circular-push can end a run early.
+func TestTargetFailuresDoNotBlameTheCandidate(t *testing.T) {
+	// one candidate; its first split fails because the target refused for a moment
+	f := splitsOn(t, 1, func(call int, amount uint64) uint64 {
+		if call == 0 {
+			return 0
+		}
+		return amount
+	})
+	f.failure = func(int) (rebalance.Side, bool) { return rebalance.SideIn, true }
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(300000), result.(*Result).RebalancedAmount, "the candidate was tried again")
+	assert.Equal(t, uint64(0), f.Node.CandidateRecord("1x1x1/"+util.GetDirection("02self", "02peer0")).Failures)
+
+	// only once per run
+	f = splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
+	f.failure = func(int) (rebalance.Side, bool) { return rebalance.SideIn, true }
+	f.FireCandidates()
+	_, _ = f.WaitForResult()
+	assert.Equal(t, 2, len(f.asked))
+}
+
+func TestOnlyTheCandidatesOwnFailuresCount(t *testing.T) {
+	for _, c := range []struct {
+		side    rebalance.Side
+		counted bool
+	}{
+		{rebalance.SideOut, true},   // the candidate's channel (circular-pull)
+		{rebalance.SideRoute, true}, // no route from it
+		{rebalance.SideIn, false},   // the target
+		{rebalance.SideNone, false}, // circular-stop, a timeout
+	} {
+		f := splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
+		side := c.side
+		f.failure = func(int) (rebalance.Side, bool) { return side, false }
+		f.FireCandidates()
+		_, _ = f.WaitForResult()
+		assert.Equal(t, 1, len(f.asked), "not retried: the failure does not pass")
+		failures := f.Node.CandidateRecord("1x1x1/"+util.GetDirection("02self", "02peer0")).Failures
+		if c.counted {
+			assert.Equal(t, uint64(1), failures, "side %d", c.side)
+		} else {
+			assert.Equal(t, uint64(0), failures, "side %d", c.side)
+		}
+	}
 }

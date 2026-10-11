@@ -53,7 +53,7 @@ func (r *Rebalance) checkLiquidity(inChannel, outChannel *glightning.PeerChannel
 func (r *Rebalance) checkFirstHop(route *graph.Route) error {
 	outChannel, err := r.Node.GetPeerChannelFromGraphChannel(r.OutChannel)
 	if err != nil {
-		return err
+		return onOut(err, false)
 	}
 	if spendable := outChannel.SpendableMsat.MSat(); spendable < route.Hops[0].MilliSatoshi {
 		return fmt.Errorf("%w: it can send %d msat, the route needs %d msat including fees",
@@ -68,12 +68,12 @@ func (r *Rebalance) validateLiquidityParameters(out, in *graph.Channel) error {
 	inChannel, err := r.Node.GetPeerChannelFromGraphChannel(in)
 	if err != nil {
 		r.Node.Logln(glightning.Unusual, err)
-		return err
+		return onIn(err, false)
 	}
 	outChannel, err := r.Node.GetPeerChannelFromGraphChannel(out)
 	if err != nil {
 		r.Node.Logln(glightning.Unusual, err)
-		return err
+		return onOut(err, false)
 	}
 
 	if err := r.checkConnections(inChannel, outChannel); err != nil {

@@ -43,6 +43,13 @@ type AbstractRebalance struct {
 	// the last route that worked for it: its next split tries that route
 	// before searching.
 	routes map[string][]string
+	// candidateSide is the side of the route our candidates are on: the out
+	// channel for circular-pull, the in channel for circular-push
+	candidateSide rebalance2.Side
+	// launched holds the candidates fired, by id, and retried those given
+	// another try after the target channel refused for a moment
+	launched map[string]*graph.Channel
+	retried  map[string]bool
 	RebalanceMethods
 }
 
@@ -58,6 +65,8 @@ func (r *AbstractRebalance) Init(amount, maxppm, splitamount, minsplit uint64, s
 	r.minSplit = minsplit
 	r.splits = splits
 	r.routes = make(map[string][]string)
+	r.launched = make(map[string]*graph.Channel)
+	r.retried = make(map[string]bool)
 	r.attempts = attempts
 	r.maxHops = maxhops
 	r.setGenericDefaults()
@@ -69,6 +78,11 @@ func (r *AbstractRebalance) Init(amount, maxppm, splitamount, minsplit uint64, s
 // one of the two, and sends its result on RebalanceResultChan.
 func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uint64) {
 	key := candidate.ShortChannelId
+	r.candidateSide = rebalance2.SideIn
+	if candidate == out {
+		r.candidateSide = rebalance2.SideOut
+	}
+	r.launched[candidateId(candidate)] = candidate
 	r.Node.Logln(glightning.Debug, "Firing candidate: ", key, " for ", amount/1000, " sats, attempts: ", r.attempts)
 	rebalance := rebalance2.NewRebalance(out, in, amount, r.maxPPM, r.attempts, r.maxHops)
 	rebalance.Node = r.Node

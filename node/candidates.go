@@ -43,6 +43,11 @@ func (c *candidateRecords) get(id string) CandidateRecord {
 	return CandidateRecord{}
 }
 
+// CandidateRecord returns how candidate channel id has done.
+func (n *Node) CandidateRecord(id string) CandidateRecord {
+	return n.candidates.get(id)
+}
+
 // RecordCandidate notes the result of a split through candidate channel id.
 func (n *Node) RecordCandidate(id string, success bool, amountMsat, feeMsat uint64) {
 	c := &n.candidates

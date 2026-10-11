@@ -68,6 +68,8 @@ func (r *Rebalance) Run() *Result {
 		exclude = r.Node.Graph.Avoided(time.Now().Unix())
 		// payments made besides the attempts: retries of a route with less
 		extra = 0
+		// the error that ended the run, to tell where it failed
+		lastErr error
 	)
 	exclude[r.Node.Id] = true
 	// Our own peers may be avoided as middle hops of other routes, but here
@@ -102,7 +104,8 @@ func (r *Rebalance) Run() *Result {
 			extra += shrinks
 			r.Amount = requested
 		}
-		if err == util.ErrNoRoute || errors.As(err, &util.ErrRouteTooExpensive{}) {
+		lastErr = err
+		if errors.Is(err, util.ErrNoRoute) || errors.As(err, &util.ErrRouteTooExpensive{}) {
 			r.Node.Logln(glightning.Debug, err)
 			lastError = err.Error()
 		}
@@ -121,14 +124,14 @@ func (r *Rebalance) Run() *Result {
 		// Payment attempt was consumed
 		i++
 
-		if err == util.ErrNoRoute || errors.As(err, &util.ErrRouteTooExpensive{}) {
+		if errors.Is(err, util.ErrNoRoute) || errors.As(err, &util.ErrRouteTooExpensive{}) {
 			lastError = " Unable to find a route with at most " +
 				strconv.Itoa(r.MaxHops) + " hops. " + lastError
 			break
 		}
 
 		// sendpay timeout
-		if err == util.ErrSendPayTimeout {
+		if errors.Is(err, util.ErrSendPayTimeout) {
 			lastError = "rebalancing timed out after " +
 				strconv.Itoa(node.SENDPAY_TIMEOUT) +
 				"s."
@@ -136,7 +139,7 @@ func (r *Rebalance) Run() *Result {
 		}
 
 		// wire fee insufficient. Most likely someone in the route has updated their fees, and gossip didn't reach us yet.
-		if err == util.ErrWireFeeInsufficient {
+		if errors.Is(err, util.ErrWireFeeInsufficient) {
 			lastError = "wire fee insufficient. Most likely someone in the route has updated their fees, and gossip didn't reach us yet."
 			break
 		}
@@ -149,6 +152,7 @@ func (r *Rebalance) Run() *Result {
 
 	failure := NewResult("failure", r.Amount/1000, r.OutChannel.Destination, r.InChannel.Source)
 	failure.Attempts = uint64(i - 1 + extra)
+	failure.FailedAt, failure.Transient = failureSide(lastErr)
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " attempts."
 	failure.Message += lastError
 
