@@ -20,6 +20,9 @@ type Result struct {
 	Candidate  string   `json:"-"` // the candidate channel's id (set by the parallel commands)
 	FailedAt   Side     `json:"-"` // where a failure happened
 	Retry      Retry    `json:"-"` // whether a failure on one of our channels may pass
+	// Precheck: the failure is our copy of a channel's balance being too
+	// low, found before paying; reading the channel again may change it
+	Precheck bool `json:"-"`
 }
 
 func NewResult(status string, amount uint64, src, dst string) *Result {

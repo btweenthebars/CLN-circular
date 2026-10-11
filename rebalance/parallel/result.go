@@ -152,15 +152,13 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 //     refusal had another cause. Each time one more at once is refused, it
 //     waits twice as long to try again, and half as long when one more held.
 //     A candidate refused more than maxBusyRefusals times for no reason the
-//     target explains (not in the first round, nor when given one more at
-//     once) goes to the back of the queue: the target may refuse it alone,
-//     for the fees its route adds to the HTLC, say.
-//   - When the target refused with nothing else in flight, its channels are
-//     read again and the candidate tried once more: the balances the
-//     refusal was based on may have been read while other splits held them.
-//     If it refuses that candidate again, the candidate is left out; if it
-//     then refuses another one alone too, or refuses for good, no more
-//     splits are fired: every candidate would meet the same refusal.
+//     target's limit explains (see targetBusy) goes to the back of the
+//     queue: the target may refuse it alone, for the fees its route adds to
+//     the HTLC, say.
+//   - When the target refused with nothing else in flight, see
+//     targetRefusedAlone: one candidate may be left out, but when it then
+//     refuses another one alone too, or refuses for good, no more splits are
+//     fired: every candidate would meet the same refusal.
 func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 	if result.Candidate == "" {
 		return
@@ -169,7 +167,7 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 		r.Node.RecordCandidate(result.Candidate, true, result.AmountMsat, result.Fee)
 		r.targetRechecked = false
 		r.refusedAlone = ""
-		r.targetSucceeded()
+		r.targetSucceeded(result.Candidate)
 		return
 	}
 	if result.Retry == rebalance.RetryNow && result.FailedAt != rebalance.SideNone && result.FailedAt != rebalance.SideRoute {
@@ -200,44 +198,57 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 }
 
 // targetSucceeded lets the limit on splits at once grow back after a
-// success: by one once as many splits as the limit succeed, times the
-// backoff. A growth that held for as many successes halves the backoff.
-func (r *AbstractRebalance) targetSucceeded() {
+// success of candidate id: by one once as many splits as the limit succeed,
+// times the backoff. A growth held once as many splits fired after it
+// succeed: that halves the backoff.
+func (r *AbstractRebalance) targetSucceeded(id string) {
 	if r.targetCap == 0 {
 		return
 	}
 	r.capSuccesses++
-	if r.capProbing && r.capSuccesses >= r.targetCap {
-		// one more at once was not too many
-		r.capProbing = false
-		if r.capBackoff > 1 {
-			r.capBackoff /= 2
+	if r.capGrown && !r.capHeld && r.firedAt[id] > r.capSetAt {
+		if r.heldSuccesses++; r.heldSuccesses >= r.targetCap {
+			// one more at once was not too many
+			r.capHeld = true
+			if r.capBackoff > 1 {
+				r.capBackoff /= 2
+			}
 		}
 	}
 	if r.targetCap < r.splits && r.capSuccesses >= r.targetCap*r.backoff() {
-		r.targetCap++
-		r.capSuccesses = 0
-		r.capProbing = true
+		r.setTargetCap(r.targetCap + 1)
+		r.capGrown = true
 	}
+}
+
+// setTargetCap changes the limit on splits at once to cap, as of the splits
+// fired so far.
+func (r *AbstractRebalance) setTargetCap(cap int) {
+	r.targetCap = cap
+	r.capSetAt = r.fireSeq
+	r.capSuccesses = 0
+	r.capGrown, r.capHeld, r.heldSuccesses = false, false, 0
 }
 
 // targetBusy handles a busy refusal of candidate id by the target, with
 // others splits still in flight.
 func (r *AbstractRebalance) targetBusy(id string, others int) {
-	// explained: our own splits filled the target in the first round, or one
-	// more at once was too many
-	explained := r.targetCap == 0 || others >= r.targetCap
+	// The target's limit explains it if there was none yet (our own splits
+	// filled the target), if the split was fired before the limit took its
+	// current value, or if it was fired after the limit grew: one more at
+	// once was too many.
+	firedBefore := r.firedAt[id] <= r.capSetAt
+	explained := r.targetCap == 0 || firedBefore
 	if r.targetCap == 0 || others < r.targetCap {
-		if r.capProbing {
+		if r.capGrown && !firedBefore {
 			explained = true
 			if r.capBackoff < maxCapBackoff {
-				// wait longer before trying one more again
+				// wait longer before trying one more again; this also undoes
+				// the halving if the growth was called held too early
 				r.capBackoff = r.backoff() * 2
 			}
 		}
-		r.targetCap = others
-		r.capSuccesses = 0
-		r.capProbing = false
+		r.setTargetCap(others)
 		r.Node.Logf(glightning.Debug, "the target channel takes %d splits at a time", others)
 	}
 	if !explained {
@@ -254,17 +265,24 @@ func (r *AbstractRebalance) targetBusy(id string, others int) {
 }
 
 // targetRefusedAlone handles a busy refusal by the target with nothing else
-// in flight, and reports whether the run can go on. The first since the last
-// success reads the target again and retries the candidate; the next leaves
-// that candidate out; a refusal of another candidate after that stops the
-// run.
+// in flight, and reports whether the run can go on.
+//
+// A refusal by our copy of the target's balance (a precheck) may come from a
+// read taken while other splits held the target: the first since the last
+// success reads the target again and retries the candidate. A refusal by
+// lightningd or a peer would not change with a new read.
+//
+// After that, the target may refuse this candidate alone (for the fees its
+// route adds to the HTLC, say): it is left out, the target read again if it
+// was a precheck, and the next candidate tried. A refusal of another
+// candidate alone after that stops the run.
 func (r *AbstractRebalance) targetRefusedAlone(result *rebalance.Result) bool {
-	if !r.targetRechecked {
+	peer := result.In
+	if result.FailedAt == rebalance.SideOut {
+		peer = result.Out
+	}
+	if result.Precheck && !r.targetRechecked {
 		r.targetRechecked = true
-		peer := result.In
-		if result.FailedAt == rebalance.SideOut {
-			peer = result.Out
-		}
 		if err := r.refreshPeers(peer); err != nil {
 			r.Node.Logln(glightning.Unusual, "unable to read the target channel again: ", err)
 			return false
@@ -273,13 +291,19 @@ func (r *AbstractRebalance) targetRefusedAlone(result *rebalance.Result) bool {
 		r.requeue(result.Candidate, true)
 		return true
 	}
-	if r.refusedAlone == "" || r.refusedAlone == result.Candidate {
-		// the target may refuse this candidate alone
-		r.refusedAlone = result.Candidate
-		r.Node.Logln(glightning.Debug, "the target channel refused candidate ", result.Candidate, " again: trying the others")
-		return true
+	if r.refusedAlone != "" && r.refusedAlone != result.Candidate {
+		return false
 	}
-	return false
+	r.refusedAlone = result.Candidate
+	if result.Precheck {
+		// the next candidate's precheck sees the target as it is now
+		if err := r.refreshPeers(peer); err != nil {
+			r.Node.Logln(glightning.Unusual, "unable to read the target channel again: ", err)
+			return false
+		}
+	}
+	r.Node.Logln(glightning.Debug, "the target channel refused candidate ", result.Candidate, " alone: trying the others")
+	return true
 }
 
 // maxBusyRefusals is how many unexplained busy refusals by the target a

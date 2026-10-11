@@ -74,12 +74,20 @@ func TestRunResultCarriesTheFailureSide(t *testing.T) {
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, SideIn, result.FailedAt)
 	assert.Equal(t, RetryWhenFree, result.Retry, "receivable leaves out HTLCs in flight")
+	assert.True(t, result.Precheck, "found in our copy of the balance, before paying")
+
+	// the in-peer could not send it: not our copy
+	r, route := testRoute(t)
+	err := r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failTemporaryChannelFailure), map[string]bool{})
+	assert.False(t, isPrecheck(err))
+	assert.True(t, isPrecheck(fmt.Errorf("%w: our copy", util.ErrOutgoingChannelDepleted)))
 
 	n, out, in = shortRoute()
 	r = rebalanceOn(n, out, in, 100000000)
 	r.Node.Stopped.Store(true)
 	result = r.Run()
 	assert.Equal(t, SideNone, result.FailedAt)
+	assert.False(t, result.Precheck)
 }
 
 // The in-peer's own fee is the same for every candidate of circular-pull:

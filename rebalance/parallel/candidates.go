@@ -126,6 +126,13 @@ func (r *AbstractRebalance) FireCandidates() {
 		if amount > r.splitAmount {
 			amount = r.splitAmount
 		}
+		// which split this is, to tell what the target's limit was when it
+		// was fired
+		r.fireSeq++
+		if r.firedAt == nil {
+			r.firedAt = make(map[string]int)
+		}
+		r.firedAt[candidateId(candidate)] = r.fireSeq
 		r.Fire(candidate, amount)
 
 		r.InFlightAmount += amount

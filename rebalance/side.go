@@ -80,3 +80,14 @@ func failureSide(err error) (Side, Retry) {
 	}
 	return SideNone, RetryNo
 }
+
+// isPrecheck reports whether err is our copy of one of our channels' balance
+// being too low for the payment, found before paying, rather than a refusal
+// by lightningd or a peer.
+func isPrecheck(err error) bool {
+	var se *sideError
+	if err == nil || errors.As(err, &se) {
+		return false
+	}
+	return errors.Is(err, util.ErrOutgoingChannelDepleted) || errors.Is(err, util.ErrIncomingChannelDepleted)
+}

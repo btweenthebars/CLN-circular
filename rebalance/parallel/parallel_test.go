@@ -160,6 +160,8 @@ type fakeSplits struct {
 	lock    sync.Mutex
 	// successDelay is how long a successful split takes; failures are at once
 	successDelay time.Duration
+	// precheck: failures are our copy of a channel's balance found too low
+	precheck bool
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -189,6 +191,7 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	result.Requested = amount
 	result.Candidate = candidateId(candidate)
 	result.FailedAt, result.Retry = side, retry
+	result.Precheck = f.precheck
 	if delivered > 0 {
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
@@ -295,31 +298,40 @@ func TestCandidatesAreRankedByEarlierSplits(t *testing.T) {
 // A target channel that refused for good, or with nothing else in flight,
 // made every following candidate fail the same way.
 func TestTargetThatTakesNoMoreStopsTheRun(t *testing.T) {
-	f := splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
-	f.splits = 1
+	full := func(precheck bool, refresh func(...string) error) *fakeSplits {
+		f := splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+		f.splits = 1
+		f.precheck = precheck
+		f.refresh = refresh
+		f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
+		f.FireCandidates()
+		_, _ = f.WaitForResult()
+		assert.True(t, f.targetStopped)
+		return f
+	}
 	var refreshed [][]string
-	f.refresh = func(peerIds ...string) error {
+	record := func(peerIds ...string) error {
 		refreshed = append(refreshed, peerIds)
 		return nil
 	}
-	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
-	f.FireCandidates()
-	_, _ = f.WaitForResult()
-	// nothing else was in flight: read again and tried once more; refused
-	// again, the candidate is left out, and when the next one is refused too
-	// the target is full
+
+	// our copy of its balance was too low with nothing else in flight: read
+	// again and tried once more; refused again, the candidate is left out
+	// (the target read again for the next one), and when the next one is
+	// refused too the target is full
+	f := full(true, record)
 	assert.Equal(t, 3, len(f.asked))
-	assert.Equal(t, [][]string{{"02target"}}, refreshed)
-	assert.True(t, f.targetStopped)
+	assert.Equal(t, [][]string{{"02target"}, {"02target"}}, refreshed)
 	assert.Equal(t, uint64(0), f.Node.CandidateRecord(candidateId(f.launched[firstLaunched(f)])).Failures)
 
+	// lightningd or the peer refused: a new read would not change that
+	refreshed = nil
+	f = full(false, record)
+	assert.Equal(t, 2, len(f.asked))
+	assert.Empty(t, refreshed)
+
 	// the target cannot be read again
-	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
-	f.splits = 1
-	f.refresh = func(...string) error { return fmt.Errorf("lightningd is gone") }
-	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
-	f.FireCandidates()
-	_, _ = f.WaitForResult()
+	f = full(true, func(...string) error { return fmt.Errorf("lightningd is gone") })
 	assert.Equal(t, 1, len(f.asked))
 
 	// refused for good
@@ -343,6 +355,7 @@ func TestTargetIsReadAgainBeforeTheRunStops(t *testing.T) {
 		return amount
 	})
 	f.splits = 1
+	f.precheck = true
 	refreshes := 0
 	f.refresh = func(peerIds ...string) error {
 		if len(peerIds) == 1 {
@@ -512,11 +525,22 @@ func TestOnlyTheCandidatesOwnFailuresCount(t *testing.T) {
 	}
 }
 
-// judge feeds judgeCandidate a result for candidate c with n splits in
-// flight, this one included, and reports whether c went back in the queue.
+// judge feeds judgeCandidate a result for candidate c, fired last, with n
+// splits in flight, this one included, and reports whether c went back in
+// the queue.
 func judge(f *fakeSplits, c *graph.Channel, n int, result *rebalance.Result) bool {
+	f.fireSeq++
+	return judgeFired(f, c, n, f.fireSeq, result)
+}
+
+// judgeFired is judge for a split that was the seq-th fired.
+func judgeFired(f *fakeSplits, c *graph.Channel, n, seq int, result *rebalance.Result) bool {
 	f.Candidates.Clear()
 	f.launched[candidateId(c)] = c
+	if f.firedAt == nil {
+		f.firedAt = map[string]int{}
+	}
+	f.firedAt[candidateId(c)] = seq
 	result.Candidate = candidateId(c)
 	f.splitsInFlight = n
 	f.judgeCandidate(result)
@@ -569,6 +593,43 @@ func TestTargetCapWaitsLongerAfterARefusedGrowth(t *testing.T) {
 	assert.Equal(t, 4, f.targetCap)
 }
 
+// A growth was called held after as many successes of any split, including
+// splits fired before it: when refusals take longer than successes, the
+// backoff halved before the refusal came, and the limit crept above what the
+// target takes.
+func TestOnlySplitsFiredAfterAGrowthTellIfItHeld(t *testing.T) {
+	f := splitsOn(t, 1, nil)
+	f.splits = 4
+	c := f.Candidates.At(0)
+	grown := func() {
+		f.targetCap, f.capBackoff, f.fireSeq = 2, 4, 10
+		for f.targetCap == 2 {
+			judgeFired(f, c, 2, 5, success()) // fired long ago
+		}
+		assert.Equal(t, 3, f.targetCap)
+		assert.Equal(t, 10, f.capSetAt)
+	}
+
+	grown()
+	for i := 0; i < 3; i++ {
+		judgeFired(f, c, 3, 9, success()) // fired before it grew
+	}
+	assert.Equal(t, 4, f.capBackoff, "nothing fired since has succeeded")
+	judgeFired(f, c, 3, 11, busy()) // the split fired at 3 at once
+	assert.Equal(t, 2, f.targetCap)
+	assert.Equal(t, 8, f.capBackoff)
+
+	// enough splits fired since succeed: held, but a late refusal of one fired
+	// since undoes it
+	grown()
+	for seq := 11; seq < 14; seq++ {
+		judgeFired(f, c, 3, seq, success())
+	}
+	assert.Equal(t, 2, f.capBackoff, "held")
+	judgeFired(f, c, 3, 14, busy())
+	assert.Equal(t, 4, f.capBackoff, "not held after all")
+}
+
 // A candidate the target refused as busy came back after every growth of
 // the limit, for the whole run, though the target may refuse it alone (for
 // the fees its route adds to the HTLC, say). Refusals the target explains
@@ -577,26 +638,31 @@ func TestCandidateOftenRefusedAsBusyGoesToTheBack(t *testing.T) {
 	f := splitsOn(t, 2, nil)
 	f.splits = 4
 	c, d := f.Candidates.At(0), f.Candidates.At(1)
-	f.launched[candidateId(c)] = c
-	refuse := func(cap, inFlight int, probing bool) bool {
+	// refuse has the target refuse c, the seq-th split fired, with inFlight
+	// splits in flight, when its limit was cap as of the capSetAt-th split
+	refuse := func(cap, capSetAt int, grown bool, seq, inFlight int) bool {
 		f.Candidates.Clear()
 		f.Candidates.PushBack(d)
-		f.targetCap, f.capProbing, f.splitsInFlight = cap, probing, inFlight
+		f.launched[candidateId(c)] = c
+		f.targetCap, f.capSetAt, f.capGrown, f.fireSeq = cap, capSetAt, grown, seq
+		f.firedAt = map[string]int{candidateId(c): seq}
+		f.splitsInFlight = inFlight
 		result := busy()
 		result.Candidate = candidateId(c)
 		f.judgeCandidate(result)
 		return f.Candidates.Front() == c // back in front of the others
 	}
-	assert.True(t, refuse(0, 2, false), "the first round")
+	assert.True(t, refuse(0, 0, false, 4, 4), "the first refusal of the first round")
 	for i := 0; i < 10; i++ {
-		assert.True(t, refuse(3, 3, true), "one more at once")
-		assert.True(t, refuse(1, 3, false), "fired before the limit was lowered")
+		assert.True(t, refuse(3, 4, false, 3, 3), "a later refusal of the first round")
+		assert.True(t, refuse(3, 10, true, 11, 3), "one more at once")
+		assert.True(t, refuse(1, 10, false, 8, 3), "fired before the limit was lowered")
 	}
 	assert.Empty(t, f.busyRefusals)
 	for i := 1; i <= 3; i++ {
-		assert.True(t, refuse(2, 2, false), "refusal %d: the target had been taking 2", i)
+		assert.True(t, refuse(2, 10, false, 11, 2), "refusal %d: the target had been taking 2", i)
 	}
-	assert.False(t, refuse(2, 2, false), "the others first")
+	assert.False(t, refuse(2, 10, false, 11, 2), "the others first")
 	assert.Equal(t, 2, f.Candidates.Len(), "not dropped")
 	assert.False(t, f.targetStopped)
 	assert.Equal(t, uint64(0), f.Node.CandidateRecord(candidateId(c)).Failures, "not counted against it")

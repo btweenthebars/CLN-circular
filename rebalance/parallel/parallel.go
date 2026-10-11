@@ -51,22 +51,32 @@ type AbstractRebalance struct {
 	launched map[string]*graph.Channel
 	retried  map[string]bool
 	// targetCap, if not 0, is how many splits the target channel takes at
-	// once, learned when it refused one, and capSuccesses the splits that
-	// succeeded since it last changed; targetRechecked: the target was read
-	// again after refusing with nothing in flight, and nothing succeeded
-	// since; targetStopped: it takes no more
-	targetCap    int
-	capSuccesses int
-	// capBackoff multiplies the successes needed before the limit grows
-	// (0 counts as 1), doubled each time growing it was refused (capProbing)
-	capBackoff      int
-	capProbing      bool
-	busyRefusals    map[string]int // unexplained busy refusals by the target, by candidate
+	// once, learned when it refused one. capSuccesses counts the splits that
+	// succeeded since it last changed, capSetAt is the number of splits fired
+	// by then, and capGrown says it last grew. heldSuccesses counts the
+	// successes of splits fired since it grew, and capHeld says enough of
+	// them succeeded to call the growth held. capBackoff multiplies the
+	// successes needed before it grows (0 counts as 1).
+	targetCap     int
+	capSuccesses  int
+	capSetAt      int
+	capGrown      bool
+	heldSuccesses int
+	capHeld       bool
+	capBackoff    int
+	// fireSeq counts the splits fired, and firedAt holds, by candidate, the
+	// number of the split in flight for it
+	fireSeq int
+	firedAt map[string]int
+	// busyRefusals counts, by candidate, the busy refusals by the target its
+	// limit does not explain
+	busyRefusals map[string]int
+	// targetRechecked: the target was read again after refusing with nothing
+	// in flight, and nothing succeeded since; refusedAlone: the candidate it
+	// refused alone after that; targetStopped: it takes no more
 	targetRechecked bool
-	// refusedAlone is the candidate the target refused with nothing else in
-	// flight after it was read again, since the last success
-	refusedAlone  string
-	targetStopped bool
+	refusedAlone    string
+	targetStopped   bool
 	// refresh reads our channels with peers again; tests replace
 	// Node.RefreshPeerChannels with it
 	refresh func(peerIds ...string) error
