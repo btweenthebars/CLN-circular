@@ -596,3 +596,23 @@ func TestBusyTargetIsNotProbedAfterEverySuccess(t *testing.T) {
 	// 4, 8 then 16 successes; growing after every 2 refused about 20
 	assert.LessOrEqual(t, len(b.asked)-40, 2+5, "refused splits")
 }
+
+// circular-push left out candidates whose peer charges more than maxppm for
+// its channel to us, though its inbound discounts made it fit.
+func TestPushCandidateFeeCountsInboundDiscounts(t *testing.T) {
+	g := graph.NewGraph()
+	in := graph.NewChannel(&glightning.Channel{Source: "02peer", Destination: "02self", ShortChannelId: "1x1x1",
+		FeePerMillionth: 150, AmountMsat: glightning.AmountFromMSat(10000000000), IsActive: true}, 0, 0)
+	g.AddChannel(in)
+	g.Channels["1x1x1/"+util.GetDirection("02peer", "02self")] = in
+	before := graph.NewChannel(&glightning.Channel{Source: "02a", Destination: "02peer", ShortChannelId: "2x1x1",
+		AmountMsat: glightning.AmountFromMSat(10000000000), IsActive: true}, 0, 0)
+	g.AddChannel(before)
+	g.Channels["2x1x1/"+util.GetDirection("02a", "02peer")] = before
+
+	r := &RebalancePush{AbstractRebalance: abstract()}
+	r.Node.Graph = g
+	assert.False(t, r.inPeerFeeFits(in), "150 ppm, maxppm 100")
+	g.SetInboundFee("2x1x1/"+util.GetDirection("02a", "02peer"), 0, -100)
+	assert.True(t, r.inPeerFeeFits(in), "about 50 ppm after the discount")
+}

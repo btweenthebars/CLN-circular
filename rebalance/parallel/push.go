@@ -73,13 +73,15 @@ func (r *RebalancePush) Call() (jrpc2.Result, error) {
 }
 
 func (r *RebalancePush) IsGoodCandidate(peerChannel *glightning.PeerChannel) bool {
-	// first of all, if the peer charges a higher fee than maxppm towards us, there's no point in trying to use it
+	// first of all, if the peer charges more than maxppm to send to us, even
+	// with the best of its inbound discounts, there's no point in trying to
+	// use it
 	incomingChannel, err := r.Node.GetIncomingChannelFromScid(peerChannel.ShortChannelId)
 	if err != nil {
 		r.Node.Logln(glightning.Unusual, err)
 		return false
 	}
-	if incomingChannel.ComputeFeePPM(r.splitAmount) > r.maxPPM {
+	if !r.inPeerFeeFits(incomingChannel) {
 		return false
 	}
 
@@ -91,6 +93,13 @@ func (r *RebalancePush) IsGoodCandidate(peerChannel *glightning.PeerChannel) boo
 	}
 
 	return outgoingChannel.ComputeFeePPM(r.splitAmount) > r.MinOutPPM
+}
+
+// inPeerFeeFits reports whether what the peer charges to send a split to us
+// over in, with the best of its inbound discounts, is within maxppm. Its fee
+// for in alone used to rule out candidates whose discounts made them fit.
+func (r *RebalancePush) inPeerFeeFits(in *graph.Channel) bool {
+	return r.Node.Graph.LeastForwardFee(in, r.splitAmount) <= graph.MaxFeeForPPM(r.splitAmount, r.maxPPM)
 }
 
 // CanUseChannel checks that the channel keeps at least the fill threshold as
