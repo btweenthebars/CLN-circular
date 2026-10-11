@@ -54,9 +54,10 @@ func TestLearnedRoundTrip(t *testing.T) {
 	assert.JSONEq(t, `{"version":1,"liquidity":{"`+id("1x1x1")+`":{"liquidity":123,"timestamp":`+
 		jsonNumber(now)+`}}}`, string(data))
 
-	beliefs, legacy, err := n.LoadLearned(dir)
+	state, legacy, err := n.LoadLearned(dir)
 	assert.NoError(t, err)
 	assert.False(t, legacy)
+	beliefs := state.Liquidity
 
 	fresh := graphWithChannel("1x1x1", 500000, 0)
 	assert.Equal(t, 1, fresh.ApplyBeliefs(beliefs, now-60))
@@ -82,9 +83,9 @@ func TestCorruptLearnedFileFallsBack(t *testing.T) {
 	assert.NoError(t, n.SaveLearned(dir)) // the first copy is now learned.json.old
 
 	assert.NoError(t, os.WriteFile(filepath.Join(dir, LEARNED_FILE), []byte(`{"version":1,"liq`), 0644))
-	beliefs, _, err := n.LoadLearned(dir)
+	state, _, err := n.LoadLearned(dir)
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(1), beliefs[id("1x1x1")].Liquidity, "loaded the previous copy")
+	assert.Equal(t, uint64(1), state.Liquidity[id("1x1x1")].Liquidity, "loaded the previous copy")
 
 	assert.NoError(t, os.WriteFile(filepath.Join(dir, LEARNED_FILE+".old"), []byte(`not json`), 0644))
 	_, _, err = n.LoadLearned(dir)
@@ -112,8 +113,24 @@ func TestLegacyGraphIsMigrated(t *testing.T) {
 		_, err := os.Stat(filepath.Join(dir, name))
 		assert.True(t, os.IsNotExist(err), name+" is removed")
 	}
-	beliefs, legacyLoaded, err := n.LoadLearned(dir)
+	state, legacyLoaded, err := n.LoadLearned(dir)
 	assert.NoError(t, err)
 	assert.False(t, legacyLoaded)
-	assert.Equal(t, uint64(42), beliefs[id("1x1x1")].Liquidity)
+	assert.Equal(t, uint64(42), state.Liquidity[id("1x1x1")].Liquidity)
+}
+
+// The avoid list survives a restart, without its expired entries.
+func TestAvoidListIsSaved(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().Unix()
+	n := &Node{Graph: graphWithChannel("1x1x1", 500000, 0), dataDir: dir, liquidityRefresh: time.Hour}
+	n.Graph.Avoid("02badnode", now+600)
+	n.Graph.Avoid(id("1x1x1"), now+600)
+	n.Graph.Avoid("02expired", now-1)
+	n.applyLearned()
+
+	restarted := &Node{Graph: graphWithChannel("1x1x1", 500000, 0), dataDir: dir, liquidityRefresh: time.Hour}
+	restarted.loadLearned()
+	restarted.applyLearned()
+	assert.Equal(t, map[string]bool{"02badnode": true, id("1x1x1"): true}, restarted.Graph.Avoided(now))
 }

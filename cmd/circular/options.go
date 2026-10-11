@@ -29,6 +29,13 @@ func registerOptions(p *glightning.Plugin) {
 		log.Fatalln("error registering option circular-liquidity-reset:", err)
 	}
 
+	if err := p.RegisterNewIntOption("circular-liquidity-halflife",
+		"How fast learned liquidity fades toward the default: half the way every this many minutes (0: no fading)",
+		node.DEFAULT_LIQUIDITY_HALF_LIFE); err != nil {
+
+		log.Fatalln("error registering option circular-liquidity-halflife:", err)
+	}
+
 	if err := p.RegisterNewBoolOption("circular-save-stats",
 		"Whether circular should save stats in the database",
 		true); err != nil {

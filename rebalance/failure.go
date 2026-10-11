@@ -4,8 +4,20 @@ import (
 	"circular/graph"
 	"circular/util"
 	"fmt"
+	"time"
 	"github.com/elementsproject/glightning/glightning"
 )
+
+// AVOID_DURATION is how long later rebalances avoid a node or channel that
+// failed a payment for a reason liquidity beliefs cannot express.
+const AVOID_DURATION = 30 * time.Minute
+
+// avoid excludes key for the rest of this run, and from later runs for
+// AVOID_DURATION.
+func (r *Rebalance) avoid(exclude map[string]bool, key string) {
+	exclude[key] = true
+	r.Node.Graph.Avoid(key, time.Now().Add(AVOID_DURATION).Unix())
+}
 
 // errShortOfLiquidity is util.ErrTemporaryFailure for a channel along the route,
 // not one of ours, that could not carry the amount: the same route may carry
@@ -65,7 +77,7 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		}
 	}
 	if k < 0 {
-		exclude[failure.ErringNode] = true
+		r.avoid(exclude, failure.ErringNode)
 		return util.ErrTemporaryFailure
 	}
 	hop := route.Hops[k]
@@ -98,8 +110,8 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName)
 		}
 		if !r.refreshPolicy(hop.Channel, id) {
-			// the update has not reached us yet: avoid the channel for this run
-			exclude[id] = true
+			// the update has not reached us yet: avoid the channel until it does
+			r.avoid(exclude, id)
 		}
 
 	case failChannelDisabled, failPermanentChannelFailure, failUnknownNextPeer:
@@ -112,9 +124,9 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 
 	default:
 		if failure.FailCode&failNodeBit != 0 {
-			exclude[failure.ErringNode] = true
+			r.avoid(exclude, failure.ErringNode)
 		} else {
-			exclude[id] = true
+			r.avoid(exclude, id)
 		}
 	}
 

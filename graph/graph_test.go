@@ -210,3 +210,52 @@ func TestLearnPayment(t *testing.T) {
 	assert.Equal(t, uint64(0), forward.Liquidity)
 	assert.Equal(t, uint64(10000000000), back.Liquidity, "within capacity")
 }
+
+// Beliefs held in full until circular-liquidity-refresh, then vanished.
+// They now fade toward half the capacity.
+func TestDecayLiquidity(t *testing.T) {
+	g := newTestGraph()
+	low := g.channel("1x1x1", "02a", "02b", 0, 0)  // capacity 10,000,000,000 msat
+	high := g.channel("1x1x1", "02b", "02a", 0, 0) // default 5,000,000,000
+	fresh := g.channel("2x1x1", "02a", "02c", 0, 0)
+	never := g.channel("3x1x1", "02a", "02d", 0, 0)
+	hour := int64(3600)
+	now := time.Now().Unix()
+	low.Liquidity, low.Timestamp = 1000000000, now-hour     // learned an hour ago
+	high.Liquidity, high.Timestamp = 9000000000, now-2*hour // two hours ago
+	fresh.Liquidity, fresh.Timestamp = 0, now
+	never.Liquidity = 1 // not learned: Timestamp 0
+
+	assert.Equal(t, 0, g.DecayLiquidity(0), "off")
+	g.DecayLiquidity(time.Hour)
+	assert.InDelta(t, 3000000000, float64(low.Liquidity), 2000000, "half way back after one half-life")
+	assert.InDelta(t, 6000000000, float64(high.Liquidity), 2000000, "three quarters after two")
+	assert.Equal(t, uint64(0), fresh.Liquidity)
+	assert.Equal(t, uint64(1), never.Liquidity)
+
+	// a second pass right after decays only for the time since the first
+	before := low.Liquidity
+	g.DecayLiquidity(time.Hour)
+	assert.InDelta(t, float64(before), float64(low.Liquidity), 2000000)
+	assert.Equal(t, now-hour, low.Timestamp, "decay does not make a belief newer")
+}
+
+func TestAvoidList(t *testing.T) {
+	g := NewGraph()
+	g.Avoid("02node", 200)
+	g.Avoid("02node", 150) // an earlier expiry does not shorten it
+	g.Avoid("1x1x1/0", 120)
+	assert.Equal(t, map[string]bool{"02node": true, "1x1x1/0": true}, g.Avoided(100))
+	assert.Equal(t, map[string]bool{"02node": true}, g.Avoided(120))
+	assert.Equal(t, map[string]int64{"02node": 200}, g.AvoidList())
+	g.Unavoid("02node")
+	assert.Empty(t, g.Avoided(100))
+
+	// a newer channel_update lifts the avoidance of that channel
+	tg := newTestGraph()
+	c := tg.channel("1x1x1", "02a", "02b", 0, 0)
+	id := "1x1x1/" + util.GetDirection("02a", "02b")
+	tg.Avoid(id, 1<<40)
+	tg.ApplyChannelUpdate(&ChannelUpdate{ChannelId: id, Timestamp: c.LastUpdate + 1, MessageFlags: 1, HtlcMaximumMsat: 1})
+	assert.Empty(t, tg.Avoided(0))
+}

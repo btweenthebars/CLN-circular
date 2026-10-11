@@ -150,3 +150,34 @@ func TestKnownRouteIsTriedFirst(t *testing.T) {
 	assert.Equal(t, 1, len(n.paid))
 	assert.Equal(t, id("2x1x1", outP, "02a"), n.paid[0][1])
 }
+
+// A node that failed a payment itself was avoided for that rebalance only;
+// every later split ran into it again.
+func TestNodeFailuresAreAvoidedByLaterRebalances(t *testing.T) {
+	n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+	out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+	in := addChannel(n.Graph, "5x1x1", inP, self, 0)
+	addChannel(n.Graph, "2x1x1", outP, "02bad", 0)
+	addChannel(n.Graph, "3x1x1", "02bad", inP, 0)
+	addChannel(n.Graph, "6x1x1", outP, "02good", 0)
+	addChannel(n.Graph, "7x1x1", "02good", inP, 1000)
+
+	r := rebalanceOn(n, out, in, 100000000)
+	r.pay = func(route *graph.Route) (*graph.PrettyRoute, error) {
+		n.paid = append(n.paid, route.ChannelIds())
+		if route.Hops[2].Source == "02bad" {
+			return nil, &glightning.PaymentError{Data: &glightning.PaymentErrorData{
+				ErringNode: "02bad", ErringChannel: "3x1x1", ErringIndex: 2,
+				FailCode: failNodeBit | 2, FailCodeName: "WIRE_TEMPORARY_NODE_FAILURE"}}
+		}
+		return graph.NewPrettyRoute(route, ""), nil
+	}
+	assert.Equal(t, "failure", r.Run().Status, "one attempt, spent on 02bad")
+
+	n.paid = nil
+	second := rebalanceOn(n, out, in, 100000000)
+	second.pay = r.pay
+	assert.Equal(t, "success", second.Run().Status)
+	assert.Equal(t, 1, len(n.paid))
+	assert.Equal(t, id("6x1x1", outP, "02good"), n.paid[0][1], "the next rebalance went around 02bad")
+}

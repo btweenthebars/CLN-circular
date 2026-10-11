@@ -25,6 +25,8 @@ const (
 type learnedState struct {
 	Version   int                     `json:"version"`
 	Liquidity map[string]graph.Belief `json:"liquidity"`
+	// Avoid lists the nodes and channels rebalances avoid, until when (Unix time)
+	Avoid map[string]int64 `json:"avoid,omitempty"`
 }
 
 // LoadLearned reads what earlier runs learned from dir/learned.json, falling
@@ -32,7 +34,7 @@ type learnedState struct {
 // example after a crash), then to an earlier version's graph.json. It
 // reports whether the beliefs came from graph.json, which RemoveLegacyGraph
 // can then remove. With nothing to read, it returns util.ErrNoGraphToLoad.
-func (n *Node) LoadLearned(dir string) (beliefs map[string]graph.Belief, legacy bool, err error) {
+func (n *Node) LoadLearned(dir string) (state *learnedState, legacy bool, err error) {
 	defer util.TimeTrack(time.Now(), "node.LoadLearned", n.Logf)
 
 	path := filepath.Join(dir, LEARNED_FILE)
@@ -43,7 +45,7 @@ func (n *Node) LoadLearned(dir string) (beliefs map[string]graph.Belief, legacy 
 			continue
 		}
 		n.Logf(glightning.Info, "loaded %d liquidity beliefs from %s", len(state.Liquidity), candidate)
-		return state.Liquidity, false, nil
+		return state, false, nil
 	}
 
 	for _, candidate := range []string{filepath.Join(dir, legacyGraphFile), filepath.Join(dir, legacyGraphFile+".old")} {
@@ -53,7 +55,7 @@ func (n *Node) LoadLearned(dir string) (beliefs map[string]graph.Belief, legacy 
 			continue
 		}
 		n.Logf(glightning.Info, "migrated %d liquidity beliefs from %s", len(beliefs), candidate)
-		return beliefs, true, nil
+		return &learnedState{Version: learnedVersion, Liquidity: beliefs}, true, nil
 	}
 	return nil, false, util.ErrNoGraphToLoad
 }
@@ -132,7 +134,7 @@ func (n *Node) SaveLearned(dir string) error {
 			return err
 		}
 	}
-	data, err := json.Marshal(learnedState{Version: learnedVersion, Liquidity: n.Graph.Beliefs()})
+	data, err := json.Marshal(learnedState{Version: learnedVersion, Liquidity: n.Graph.Beliefs(), Avoid: n.Graph.AvoidList()})
 	if err != nil {
 		return err
 	}

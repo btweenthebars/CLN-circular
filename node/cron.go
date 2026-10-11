@@ -277,6 +277,7 @@ func (n *Node) refreshLiquidity() {
 	defer util.TimeTrack(time.Now(), "node.refreshLiquidity", n.Logf)
 	n.Logln(glightning.Debug, "refreshing liquidity")
 
+	moved := n.Graph.DecayLiquidity(n.liquidityHalfLife)
 	hits := n.Graph.RefreshLiquidity(n.liquidityRefresh)
-	n.Logf(glightning.Info, "liquidity has been reset on %d channels", hits)
+	n.Logf(glightning.Info, "liquidity beliefs: %d faded toward the default, %d reset", moved, hits)
 }

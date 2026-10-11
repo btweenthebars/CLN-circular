@@ -15,6 +15,7 @@ const (
 	CIRCULAR_DIR                     = "circular"
 	DEFAULT_PEER_REFRESH_INTERVAL    = 30  // seconds
 	DEFAULT_LIQUIDITY_RESET_INTERVAL = 300 // minutes
+	DEFAULT_LIQUIDITY_HALF_LIFE      = 60  // minutes
 	DEFAULT_RPC_TIMEOUT              = 60  // seconds
 )
 
@@ -27,6 +28,7 @@ type Node struct {
 	lightning          *glightning.Lightning
 	plugin             *glightning.Plugin
 	liquidityRefresh   time.Duration
+	liquidityHalfLife  time.Duration
 	initLock           *sync.Mutex
 	saveStats          bool
 	PeersLock          *sync.RWMutex
@@ -37,10 +39,10 @@ type Node struct {
 	channelsReadAt     map[string]time.Time        // later reads of one peer's channels, guarded by PeersLock
 	Graph              *graph.Graph
 	DB                 *Store
-	dataDir            string                  // lightning-dir/circular
-	pendingBeliefs     map[string]graph.Belief // read at start, applied after the first graph refresh
-	migrateLegacy      bool                    // pendingBeliefs came from an earlier version's graph.json
-	Stopped            atomic.Bool             // circular-stop: no new rebalances
+	dataDir            string        // lightning-dir/circular
+	pendingBeliefs     *learnedState // read at start, applied after the first graph refresh
+	migrateLegacy      bool          // pendingBeliefs came from an earlier version's graph.json
+	Stopped            atomic.Bool   // circular-stop: no new rebalances
 	gossipStopped      atomic.Bool
 	ActivePayments     map[string]*ActivePayment
 	activePaymentsLock *sync.RWMutex
@@ -126,12 +128,12 @@ func (n *Node) Close() {
 // loadLearned reads what earlier runs learned. The beliefs are applied once
 // the first graph refresh has built the graph from listchannels.
 func (n *Node) loadLearned() {
-	beliefs, legacy, err := n.LoadLearned(n.dataDir)
+	state, legacy, err := n.LoadLearned(n.dataDir)
 	if err != nil {
 		n.Logln(glightning.Info, "no saved liquidity beliefs: starting from the defaults")
 		return
 	}
-	n.pendingBeliefs = beliefs
+	n.pendingBeliefs = state
 	n.migrateLegacy = legacy
 }
 
@@ -140,8 +142,11 @@ func (n *Node) loadLearned() {
 func (n *Node) applyLearned() {
 	if n.pendingBeliefs != nil {
 		since := time.Now().Add(-n.liquidityRefresh).Unix()
-		applied := n.Graph.ApplyBeliefs(n.pendingBeliefs, since)
-		n.Logf(glightning.Info, "applied %d of %d saved liquidity beliefs", applied, len(n.pendingBeliefs))
+		applied := n.Graph.ApplyBeliefs(n.pendingBeliefs.Liquidity, since)
+		n.Logf(glightning.Info, "applied %d of %d saved liquidity beliefs", applied, len(n.pendingBeliefs.Liquidity))
+		for key, until := range n.pendingBeliefs.Avoid {
+			n.Graph.Avoid(key, until)
+		}
 		n.pendingBeliefs = nil
 	}
 	if err := n.SaveLearned(n.dataDir); err != nil {
@@ -161,6 +166,9 @@ func (n *Node) setOptions(lightning *glightning.Lightning, plugin *glightning.Pl
 
 	n.liquidityRefresh = time.Duration(options["circular-liquidity-refresh"].GetValue().(int)) * time.Minute
 	n.Logln(glightning.Debug, "liquidity refresh interval: ", int(n.liquidityRefresh.Minutes()), " minutes")
+
+	n.liquidityHalfLife = time.Duration(options["circular-liquidity-halflife"].GetValue().(int)) * time.Minute
+	n.Logln(glightning.Debug, "liquidity half-life: ", int(n.liquidityHalfLife.Minutes()), " minutes")
 
 	n.saveStats = options["circular-save-stats"].GetValue().(bool)
 	n.Logln(glightning.Debug, "save stats: ", n.saveStats)

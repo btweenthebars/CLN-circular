@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"strconv"
+	"time"
 )
 
 type Rebalance struct {
@@ -62,11 +63,13 @@ func (r *Rebalance) Run() *Result {
 		i         = 1
 		lastError = ""
 		// exclude accumulates failing channels across attempts so the pathfinder
-		// skips them on subsequent tries within the same Run() call.
-		exclude = map[string]bool{r.Node.Id: true}
+		// skips them on subsequent tries within the same Run() call. It starts
+		// with what recent rebalances learned to avoid.
+		exclude = r.Node.Graph.Avoided(time.Now().Unix())
 		// payments made besides the attempts: retries of a route with less
 		extra = 0
 	)
+	exclude[r.Node.Id] = true
 	requested := r.Amount
 	defer func() { r.Amount = requested }()
 

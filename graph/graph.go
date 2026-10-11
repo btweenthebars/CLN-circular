@@ -36,6 +36,9 @@ type Graph struct {
 	channelsLock      *sync.RWMutex
 	aliasesLock       *sync.RWMutex
 	inboundFeesLock   *sync.RWMutex
+	avoid             map[string]int64 // node or channel id -> until (Unix time)
+	avoidLock         *sync.Mutex
+	lastDecay         int64 // Unix time of the last DecayLiquidity, under channelsLock
 }
 
 func NewGraph() *Graph {
@@ -48,6 +51,8 @@ func NewGraph() *Graph {
 		channelsLock:      &sync.RWMutex{},
 		aliasesLock:       &sync.RWMutex{},
 		inboundFeesLock:   &sync.RWMutex{},
+		avoid:             make(map[string]int64),
+		avoidLock:         &sync.Mutex{},
 	}
 }
 
@@ -220,6 +225,8 @@ func (g *Graph) ApplyChannelUpdate(u *ChannelUpdate) bool {
 		updated.HtlcMaximumMilliSatoshis = glightning.AmountFromMSat(u.HtlcMaximumMsat)
 	}
 	g.Channels[u.ChannelId] = NewChannel(&updated, old.Liquidity, old.Timestamp)
+	// a failure blamed on the old policy says nothing about the new one
+	g.Unavoid(u.ChannelId)
 	return true
 }
 
