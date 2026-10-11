@@ -27,6 +27,8 @@ type learnedState struct {
 	Liquidity map[string]graph.Belief `json:"liquidity"`
 	// Avoid lists the nodes and channels rebalances avoid, until when (Unix time)
 	Avoid map[string]int64 `json:"avoid,omitempty"`
+	// Candidates records how our channels did as pull/push candidates
+	Candidates map[string]CandidateRecord `json:"candidates,omitempty"`
 }
 
 // LoadLearned reads what earlier runs learned from dir/learned.json, falling
@@ -134,7 +136,8 @@ func (n *Node) SaveLearned(dir string) error {
 			return err
 		}
 	}
-	data, err := json.Marshal(learnedState{Version: learnedVersion, Liquidity: n.Graph.Beliefs(), Avoid: n.Graph.AvoidList()})
+	data, err := json.Marshal(learnedState{Version: learnedVersion, Liquidity: n.Graph.Beliefs(),
+		Avoid: n.Graph.AvoidList(), Candidates: n.candidateList()})
 	if err != nil {
 		return err
 	}

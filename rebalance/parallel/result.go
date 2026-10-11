@@ -98,6 +98,10 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		rebalanceResult := <-r.RebalanceResultChan
 
 		r.TotalAttempts += rebalanceResult.Attempts
+		if rebalanceResult.Candidate != "" {
+			r.Node.RecordCandidate(rebalanceResult.Candidate, rebalanceResult.Status == "success",
+				rebalanceResult.AmountMsat, rebalanceResult.Fee)
+		}
 
 		if rebalanceResult.Status == "success" {
 			r.Node.Logln(glightning.Info, rebalanceResult.Message)

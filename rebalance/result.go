@@ -17,6 +17,7 @@ type Result struct {
 	AmountMsat uint64   `json:"-"` // what a success delivered, in msat
 	Channels   []string `json:"-"` // a success's route, as channel ids, to send over again
 	Requested  uint64   `json:"-"` // what the caller asked for, in msat (set by the parallel commands)
+	Candidate  string   `json:"-"` // the candidate channel's id (set by the parallel commands)
 }
 
 func NewResult(status string, amount uint64, src, dst string) *Result {

@@ -39,10 +39,11 @@ type Node struct {
 	channelsReadAt     map[string]time.Time        // later reads of one peer's channels, guarded by PeersLock
 	Graph              *graph.Graph
 	DB                 *Store
-	dataDir            string        // lightning-dir/circular
-	pendingBeliefs     *learnedState // read at start, applied after the first graph refresh
-	migrateLegacy      bool          // pendingBeliefs came from an earlier version's graph.json
-	Stopped            atomic.Bool   // circular-stop: no new rebalances
+	dataDir            string           // lightning-dir/circular
+	pendingBeliefs     *learnedState    // read at start, applied after the first graph refresh
+	migrateLegacy      bool             // pendingBeliefs came from an earlier version's graph.json
+	candidates         candidateRecords // how our channels did as pull/push candidates
+	Stopped            atomic.Bool      // circular-stop: no new rebalances
 	gossipStopped      atomic.Bool
 	ActivePayments     map[string]*ActivePayment
 	activePaymentsLock *sync.RWMutex
@@ -147,6 +148,7 @@ func (n *Node) applyLearned() {
 		for key, until := range n.pendingBeliefs.Avoid {
 			n.Graph.Avoid(key, until)
 		}
+		n.restoreCandidates(n.pendingBeliefs.Candidates)
 		n.pendingBeliefs = nil
 	}
 	if err := n.SaveLearned(n.dataDir); err != nil {

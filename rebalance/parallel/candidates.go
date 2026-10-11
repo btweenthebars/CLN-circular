@@ -5,6 +5,7 @@ import (
 	"circular/util"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/gammazero/deque"
+	"sort"
 )
 
 func (r *AbstractRebalance) FindCandidates(exclude string) error {
@@ -15,6 +16,8 @@ func (r *AbstractRebalance) FindCandidates(exclude string) error {
 	r.Node.PeersLock.RUnlock()
 
 	r.Candidates = deque.New[*graph.Channel]()
+	found := make(map[string]*graph.Channel)
+	var ids []string
 	for _, p := range peers {
 		if p.Id == exclude {
 			continue
@@ -30,10 +33,19 @@ func (r *AbstractRebalance) FindCandidates(exclude string) error {
 					continue
 				}
 
-				r.Node.Logln(glightning.Debug, "adding candidate to candidates:", candidate.ShortChannelId)
-				r.Candidates.PushBack(candidate)
+				id := candidateId(candidate)
+				if _, ok := found[id]; !ok {
+					found[id] = candidate
+					ids = append(ids, id)
+				}
 			}
 		}
+	}
+	// best first: by how each did in earlier splits
+	sort.Strings(ids) // a stable starting order: peers come from a map
+	for _, id := range r.Node.RankCandidates(ids) {
+		r.Node.Logln(glightning.Debug, "adding candidate to candidates:", id)
+		r.Candidates.PushBack(found[id])
 	}
 	if r.Candidates.Len() == 0 {
 		return util.ErrNoCandidates

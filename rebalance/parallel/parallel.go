@@ -4,6 +4,7 @@ import (
 	"circular/graph"
 	"circular/node"
 	rebalance2 "circular/rebalance"
+	"circular/util"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/gammazero/deque"
 	"sync"
@@ -64,9 +65,10 @@ func (r *AbstractRebalance) Init(amount, maxppm, splitamount, minsplit uint64, s
 	r.Node.Logln(glightning.Debug, "AbstractRebalance initialized")
 }
 
-// launch runs one split of amount (msat) from out to in, through candidate
-// channel key, and sends its result on RebalanceResultChan.
-func (r *AbstractRebalance) launch(out, in *graph.Channel, key string, amount uint64) {
+// launch runs one split of amount (msat) from out to in, through candidate,
+// one of the two, and sends its result on RebalanceResultChan.
+func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uint64) {
+	key := candidate.ShortChannelId
 	r.Node.Logln(glightning.Debug, "Firing candidate: ", key, " for ", amount/1000, " sats, attempts: ", r.attempts)
 	rebalance := rebalance2.NewRebalance(out, in, amount, r.maxPPM, r.attempts, r.maxHops)
 	rebalance.Node = r.Node
@@ -83,8 +85,14 @@ func (r *AbstractRebalance) launch(out, in *graph.Channel, key string, amount ui
 				r.Node.Logf(glightning.Unusual, "panic in rebalance goroutine: %v", rec)
 			}
 			result.Requested = amount
+			result.Candidate = candidateId(candidate)
 			r.RebalanceResultChan <- result
 		}()
 		result = rebalance.Run()
 	}()
+}
+
+// candidateId is the id ("scid/direction") of a candidate channel.
+func candidateId(c *graph.Channel) string {
+	return c.ShortChannelId + "/" + util.GetDirection(c.Source, c.Destination)
 }

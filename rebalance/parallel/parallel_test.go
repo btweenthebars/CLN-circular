@@ -177,9 +177,11 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	f.lock.Unlock()
 	result := rebalance.NewResult("failure", amount/1000, candidate.Destination, "02target")
 	result.Requested = amount
+	result.Candidate = candidateId(candidate)
 	if delivered > 0 {
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
+		result.Candidate, result.Fee = candidateId(candidate), delivered/100000
 		result.Route = &graph.PrettyRoute{Hops: []graph.PrettyRouteHop{{ShortChannelId: candidate.ShortChannelId}}}
 	}
 	go func() { f.RebalanceResultChan <- result }()
@@ -250,4 +252,25 @@ func TestMinSplitDefaults(t *testing.T) {
 	r = &AbstractRebalance{amount: 400000, splitAmount: 100000, minSplit: 200000}
 	r.setGenericDefaults()
 	assert.Equal(t, r.splitAmount, r.minSplit, "above the split amount: no retries with less")
+}
+
+// Splits record how their candidate did, and the next run tries the
+// candidates that did best first.
+func TestCandidatesAreRankedByEarlierSplits(t *testing.T) {
+	f := splitsOn(t, 3, func(call int, amount uint64) uint64 {
+		if call == 0 {
+			return 0 // the first candidate fails
+		}
+		return amount
+	})
+	f.FireCandidates()
+	_, err := f.WaitForResult()
+	assert.NoError(t, err)
+	assert.NoError(t, f.FindCandidates("02target"))
+	var order []string
+	for f.Candidates.Len() > 0 {
+		order = append(order, f.Candidates.PopFront().ShortChannelId)
+	}
+	assert.Equal(t, "1x1x1", order[len(order)-1], "the candidate that just failed comes last")
+	assert.Len(t, order, 3)
 }

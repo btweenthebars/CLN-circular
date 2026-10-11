@@ -121,7 +121,7 @@ func (r *RebalancePull) CanUseChannel(channel *glightning.PeerChannel) error {
 
 // Fire drains candidate, our out channel, into the target channel.
 func (r *RebalancePull) Fire(candidate *graph.Channel, amount uint64) {
-	r.launch(candidate, r.TargetChannel, candidate.ShortChannelId, amount)
+	r.launch(candidate, r.TargetChannel, candidate, amount)
 }
 
 func (r *RebalancePull) setDefaults() {

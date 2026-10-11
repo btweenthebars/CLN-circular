@@ -4,8 +4,8 @@ import (
 	"circular/graph"
 	"circular/util"
 	"fmt"
-	"time"
 	"github.com/elementsproject/glightning/glightning"
+	"time"
 )
 
 // AVOID_DURATION is how long later rebalances avoid a node or channel that
