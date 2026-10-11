@@ -23,8 +23,8 @@ type CandidateRecord struct {
 	LastSuccess int64  `json:"last_success,omitempty"` // Unix time
 	LastFailure int64  `json:"last_failure,omitempty"`
 	Failing     bool   `json:"failing,omitempty"` // the last result was a failure
-	AmountMsat  uint64 `json:"amount_msat"` // delivered by the successes
-	FeeMsat     uint64 `json:"fee_msat"`    // paid for them
+	AmountMsat  uint64 `json:"amount_msat"`       // delivered by the successes
+	FeeMsat     uint64 `json:"fee_msat"`          // paid for them
 }
 
 // candidateRecords holds the records by channel id ("scid/direction"),

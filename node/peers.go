@@ -178,12 +178,26 @@ func (n *Node) GetIncomingChannelFromScid(scid string) (*graph.Channel, error) {
 	return nil, util.ErrNoIncomingChannel
 }
 
+// OnConnect handles the connect notification. lightningd sends the peer id
+// inside a "connect" object (always since v25.05); the top-level id older
+// versions sent is the fallback. Reading only the top-level one, the
+// notification never matched a peer.
 func (n *Node) OnConnect(c *glightning.ConnectEvent) {
-	n.setConnected(c.PeerId, true)
+	id := c.Conn.PeerId
+	if id == "" {
+		id = c.PeerId
+	}
+	n.setConnected(id, true)
 }
 
+// OnDisconnect handles the disconnect notification, whose peer id is inside a
+// "disconnect" object, as for OnConnect.
 func (n *Node) OnDisconnect(c *glightning.DisconnectEvent) {
-	n.setConnected(c.PeerId, false)
+	id := c.Disconnect.PeerId
+	if id == "" {
+		id = c.PeerId
+	}
+	n.setConnected(id, false)
 }
 
 // setConnected replaces a known peer with a copy that has connected set:
@@ -196,5 +210,10 @@ func (n *Node) setConnected(peerId string, connected bool) {
 		peer := *old
 		peer.Connected = connected
 		n.replacePeer(old, &peer)
+		// a peer refresh whose reads started before this event must not undo it
+		if n.connectedAt == nil {
+			n.connectedAt = make(map[string]time.Time)
+		}
+		n.connectedAt[peerId] = time.Now()
 	}
 }

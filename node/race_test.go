@@ -59,7 +59,7 @@ func TestConcurrentPeerUse(t *testing.T) {
 	run(func(i int) {
 		e := &glightning.ConnectEvent{PeerId: fmt.Sprintf("02peer%d", i%5)}
 		n.OnConnect(e)
-		n.OnDisconnect(&glightning.DisconnectEvent{PeerId: e.PeerId})
+		n.OnDisconnect(&glightning.DisconnectEvent{Disconnect: glightning.Disconnect{PeerId: e.PeerId}})
 	})
 	run(func(i int) {
 		id := fmt.Sprintf("02peer%d", i%5)

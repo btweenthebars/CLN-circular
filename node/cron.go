@@ -110,13 +110,14 @@ func (n *Node) refreshPeers() error {
 	defer util.TimeTrack(time.Now(), "node.refreshPeers", n.Logf)
 	n.Logln(glightning.Debug, "refreshing peers")
 
+	// both reads happen after readAt
+	readAt := time.Now()
 	peers, err := n.lightning.ListPeers()
 	if err != nil {
 		n.Logln(glightning.Unusual, err)
 		return err
 	}
 
-	readAt := time.Now()
 	channelsResp, err := n.lightning.ListPeerChannels("")
 	if err != nil {
 		n.Logln(glightning.Unusual, err)
@@ -153,6 +154,9 @@ func (n *Node) setPeers(peers []*glightning.Peer, channels []*glightning.PeerCha
 			fresh[channel.PeerId] = peer
 		}
 		peer.Channels = append(peer.Channels, channel)
+		// listpeerchannels was read after listpeers: its connection state is
+		// the later one
+		peer.Connected = channel.PeerConnected
 	}
 
 	n.PeersLock.Lock()
@@ -161,6 +165,18 @@ func (n *Node) setPeers(peers []*glightning.Peer, channels []*glightning.PeerCha
 	if !readAt.After(n.peersReadAt) {
 		// a later refresh has already been applied
 		return nil
+	}
+	// a connect or disconnect notification since readAt is newer than this read
+	for id, at := range n.connectedAt {
+		if !at.After(readAt) {
+			delete(n.connectedAt, id)
+			continue
+		}
+		if old, ok := n.Peers[id]; ok && old != nil {
+			if peer, ok := fresh[id]; ok {
+				peer.Connected = old.Connected
+			}
+		}
 	}
 	for id, at := range n.channelsReadAt {
 		if !at.After(readAt) {

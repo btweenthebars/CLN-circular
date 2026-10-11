@@ -3,6 +3,7 @@ package node
 import (
 	"circular/graph"
 	"circular/util"
+	"encoding/json"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 	"sync"
@@ -196,15 +197,15 @@ func TestConnectEventsReplaceThePeer(t *testing.T) {
 	n := &Node{PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{"02peer": old},
 		scidToPeer: map[string]*glightning.Peer{"1x1x1": old}}
 
-	n.OnConnect(&glightning.ConnectEvent{PeerId: "02peer"})
+	n.OnConnect(connectEvent(t, "02peer"))
 	assert.False(t, old.Connected)
 	assert.True(t, n.Peers["02peer"].Connected)
 	assert.Same(t, n.Peers["02peer"], n.scidToPeer["1x1x1"])
 	assert.True(t, n.IsPeerConnected(&glightning.PeerChannel{ShortChannelId: "1x1x1"}))
 
-	n.OnDisconnect(&glightning.DisconnectEvent{PeerId: "02peer"})
+	n.OnDisconnect(disconnectEvent(t, "02peer"))
 	assert.False(t, n.IsPeerConnected(&glightning.PeerChannel{ShortChannelId: "1x1x1"}))
-	n.OnConnect(&glightning.ConnectEvent{PeerId: "02unknown"})
+	n.OnConnect(connectEvent(t, "02unknown"))
 	assert.Len(t, n.Peers, 1)
 }
 
@@ -216,11 +217,65 @@ func TestDisconnectCountsBeforeTheNextRefresh(t *testing.T) {
 	n.setPeers([]*glightning.Peer{{Id: "02peer", Connected: true}}, []*glightning.PeerChannel{channel}, time.Now())
 	assert.True(t, n.IsPeerConnected(channel))
 
-	n.OnDisconnect(&glightning.DisconnectEvent{PeerId: "02peer"})
+	n.OnDisconnect(disconnectEvent(t, "02peer"))
 	assert.False(t, n.IsPeerConnected(channel))
-	n.OnConnect(&glightning.ConnectEvent{PeerId: "02peer"})
+	n.OnConnect(connectEvent(t, "02peer"))
 	assert.True(t, n.IsPeerConnected(channel))
 
 	// a channel whose peer is unknown keeps its own flag
 	assert.True(t, n.IsPeerConnected(&glightning.PeerChannel{ShortChannelId: "9x9x9", PeerConnected: true}))
+}
+
+// connectEvent and disconnectEvent decode notifications as lightningd sends
+// them, with the peer id inside an object named after the notification.
+func connectEvent(t *testing.T, id string) *glightning.ConnectEvent {
+	var e glightning.ConnectEvent
+	assert.NoError(t, json.Unmarshal([]byte(`{"connect":{"id":"`+id+`","direction":"in","address":{"type":"ipv4","address":"10.0.0.1","port":9735}}}`), &e))
+	return &e
+}
+
+func disconnectEvent(t *testing.T, id string) *glightning.DisconnectEvent {
+	var e glightning.DisconnectEvent
+	assert.NoError(t, json.Unmarshal([]byte(`{"disconnect":{"id":"`+id+`"}}`), &e))
+	return &e
+}
+
+func TestConnectEventsUseTheNestedPeerId(t *testing.T) {
+	assert.Equal(t, "", connectEvent(t, "02peer").PeerId, "lightningd leaves the top-level id out")
+	n := &Node{PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{"02peer": {Id: "02peer"}},
+		scidToPeer: map[string]*glightning.Peer{}}
+	n.OnConnect(connectEvent(t, "02peer"))
+	assert.True(t, n.Peers["02peer"].Connected)
+	n.OnDisconnect(disconnectEvent(t, "02peer"))
+	assert.False(t, n.Peers["02peer"].Connected)
+	// older lightningd: the top-level id
+	n.OnConnect(&glightning.ConnectEvent{PeerId: "02peer"})
+	assert.True(t, n.Peers["02peer"].Connected)
+}
+
+// A peer refresh reads listpeers, then listpeerchannels: the later read's
+// connection state wins, and a notification after the reads began wins over
+// both.
+func TestConnectionStateKeepsTheNewest(t *testing.T) {
+	channel := func(connected bool) []*glightning.PeerChannel {
+		return []*glightning.PeerChannel{{PeerId: "02peer", ShortChannelId: "1x1x1", State: "CHANNELD_NORMAL", PeerConnected: connected}}
+	}
+	n := &Node{PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{}, scidToPeer: map[string]*glightning.Peer{}}
+
+	// the peer reconnected between listpeers and listpeerchannels
+	n.setPeers([]*glightning.Peer{{Id: "02peer", Connected: false}}, channel(true), time.Now())
+	assert.True(t, n.Peers["02peer"].Connected)
+
+	// a disconnect arrives while a refresh that began before it is reading
+	readAt := time.Now()
+	time.Sleep(time.Millisecond)
+	n.OnDisconnect(disconnectEvent(t, "02peer"))
+	n.setPeers([]*glightning.Peer{{Id: "02peer", Connected: true}}, channel(true), readAt)
+	assert.False(t, n.Peers["02peer"].Connected, "the refresh did not undo the newer disconnect")
+
+	// a refresh that began after it takes over again
+	time.Sleep(time.Millisecond)
+	n.setPeers([]*glightning.Peer{{Id: "02peer", Connected: true}}, channel(true), time.Now())
+	assert.True(t, n.Peers["02peer"].Connected)
+	assert.Empty(t, n.connectedAt)
 }
