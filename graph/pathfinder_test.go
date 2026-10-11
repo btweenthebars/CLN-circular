@@ -361,6 +361,24 @@ func TestCircularRouteCountsInPeerInboundFee(t *testing.T) {
 	assert.Equal(t, uint64(1), route.Fee())
 }
 
+func TestLeastForwardFeeCountsTheBestInboundDiscount(t *testing.T) {
+	g := newTestGraph()
+	in := g.channel("2x1x1", inP, self, 0, 1500) // 1500 ppm to reach us
+	assert.Equal(t, uint64(1500), g.LeastForwardFee(in, 1000000), "no channel into the in-peer: its own fee")
+
+	g.channel("4x1x1", "02a", inP, 0, 0)
+	g.channel("6x1x1", "02b", inP, 0, 0)
+	assert.Equal(t, uint64(1500), g.LeastForwardFee(in, 1000000))
+
+	g.SetInboundFee("4x1x1/"+util.GetDirection("02a", inP), 0, 100) // a surcharge
+	g.SetInboundFee("6x1x1/"+util.GetDirection("02b", inP), 0, -1000)
+	// as in the search: the inbound fee applies to the amount plus the outbound fee
+	assert.Equal(t, uint64(1500-1001), g.LeastForwardFee(in, 1000000))
+
+	g.SetInboundFee("6x1x1/"+util.GetDirection("02b", inP), -5000, 0)
+	assert.Equal(t, uint64(0), g.LeastForwardFee(in, 1000000), "never below zero")
+}
+
 // A cheap long path to a channel used to hide a shorter, slightly more
 // expensive one, so a route within maxhops came back as "no route".
 func TestCircularRouteHopLimitKeepsShorterPaths(t *testing.T) {

@@ -117,6 +117,39 @@ func MaxFeeForPPM(amount, ppm uint64) uint64 {
 	return (lo - 1) / 1000000
 }
 
+// LeastForwardFee returns the least that c's source charges to forward amount
+// over c, as the route search counts it: its fee for c, with the inbound fee
+// of whichever channel into it makes that lowest. Inbound fees can be
+// negative, so this can be less than its fee for c.
+func (g *Graph) LeastForwardFee(c *Channel, amount uint64) uint64 {
+	g.channelsLock.RLock()
+	g.adjacencyListLock.RLock()
+	g.inboundFeesLock.RLock()
+	defer g.channelsLock.RUnlock()
+	defer g.adjacencyListLock.RUnlock()
+	defer g.inboundFeesLock.RUnlock()
+
+	outboundFee := c.ComputeFee(amount)
+	forwarded := addSaturating(amount, outboundFee)
+	least, found := uint64(math.MaxUint64), false
+	for w, edge := range g.Inbound[c.Source] {
+		for _, scid := range edge {
+			id := scid + "/" + util.GetDirection(w, c.Source)
+			if _, ok := g.Channels[id]; !ok {
+				continue
+			}
+			found = true
+			if fee := nodeFee(outboundFee, g.inboundFee(id, forwarded)); fee < least {
+				least = fee
+			}
+		}
+	}
+	if !found {
+		return outboundFee
+	}
+	return least
+}
+
 func (g *Graph) searchRoute(req searchRequest) (*Route, error) {
 	channels, err := g.search(req)
 	if err != nil {

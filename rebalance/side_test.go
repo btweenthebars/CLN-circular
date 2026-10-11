@@ -91,8 +91,32 @@ func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
 	result := r.Run()
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, SideIn, result.FailedAt)
-	assert.Contains(t, result.Message, "route too expensive")
+	assert.Contains(t, result.Message, "charges at least 5000 ppm to send 100000 sats to us over 5x1x1, more than maxppm 1000")
+	assert.NotContains(t, result.Message, "Unable to find a route", "the in-peer's own fee is not a lack of routes")
 	assert.Empty(t, n.paid)
+}
+
+// The check on the in-peer's fee left out its inbound discounts, which the
+// route search counts: it refused routes the search would have found.
+func TestTargetFeeCheckCountsInboundDiscounts(t *testing.T) {
+	n, out, in := shortRoute()
+	in.Channel.FeePerMillionth = 1500
+	n.SetInboundFee(id("4x1x1", "02b", inP), 0, -1000)
+	r := rebalanceOn(n, out, in, 50000000)
+	result := r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Less(t, result.PPM, uint64(1000))
+
+	// a discount on another channel into the in-peer gives no route here,
+	// but the in-peer's fee is no longer the reason
+	n, out, in = shortRoute()
+	in.Channel.FeePerMillionth = 1500
+	addChannel(n.Graph, "6x1x1", "02c", inP, 0)
+	n.SetInboundFee(id("6x1x1", "02c", inP), 0, -1000)
+	r = rebalanceOn(n, out, in, 50000000)
+	result = r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, SideRoute, result.FailedAt, result.Message)
 }
 
 // A node failure from our own in-peer or out-peer was counted as the route's.

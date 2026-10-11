@@ -5,7 +5,10 @@ import (
 	"circular/node"
 	"circular/util"
 	"errors"
+	"fmt"
 	"github.com/elementsproject/glightning/glightning"
+	"math"
+	"math/bits"
 	"time"
 )
 
@@ -17,10 +20,12 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 
 	r.Node.Logln(glightning.Debug, "looking for a route from ", r.Node.Graph.GetAlias(src), " to ", r.Node.Graph.GetAlias(dst))
 	maxFee := graph.MaxFeeForPPM(r.Amount, r.MaxPPM)
-	if inFee := r.InChannel.ComputeFee(r.Amount); inFee > maxFee {
-		// the in-peer's own fee for our channel is more than maxppm allows: no
-		// route can do, whatever the out channel
-		return nil, onIn(util.NewRouteTooExpensiveError(r.InChannel.ComputeFeePPM(r.Amount), r.MaxPPM), RetryNo)
+	if inFee := r.Node.Graph.LeastForwardFee(r.InChannel, r.Amount); inFee > maxFee {
+		// what the in-peer charges to send to us, with the best of its inbound
+		// discounts, is more than maxppm allows: no route can do, whatever the
+		// out channel
+		return nil, onIn(fmt.Errorf("%s charges at least %d ppm to send %d sats to us over %s, more than maxppm %d",
+			r.Node.Graph.GetAlias(dst), feePPM(inFee, r.Amount), r.Amount/1000, r.InChannel.ShortChannelId, r.MaxPPM), RetryNo)
 	}
 	route, err := r.Node.Graph.GetCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops, maxFee)
 	if err == util.ErrNoRoute {
@@ -39,6 +44,19 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 	}
 
 	return route, nil
+}
+
+// feePPM is fee (msat) in parts per million of amount, rounded down.
+func feePPM(fee, amount uint64) uint64 {
+	if amount == 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(fee, 1000000)
+	if hi >= amount {
+		return math.MaxUint64
+	}
+	ppm, _ := bits.Div64(hi, lo, amount)
+	return ppm
 }
 
 // tryRoute pays route, and learns from the outcome.
