@@ -238,14 +238,17 @@ func (r *AbstractRebalance) isProbe(id string) bool {
 
 // noteFired numbers the split about to be fired for candidate, and makes it
 // the probe of the last growth if it brings the splits in flight up to the
-// new limit. It runs before the split is counted in splitsInFlight.
+// new limit. It runs before the split is counted in splitsInFlight. Splits
+// whose results wait in RebalanceResultChan have already left the target:
+// counting them, a probe found room they had freed and seemed to hold.
 func (r *AbstractRebalance) noteFired(candidate *graph.Channel) {
 	r.fireSeq++
 	if r.firedAt == nil {
 		r.firedAt = make(map[string]int)
 	}
 	r.firedAt[candidateId(candidate)] = r.fireSeq
-	if r.probing && r.probeSeq == 0 && r.splitsInFlight+1 >= r.targetCap {
+	atTarget := r.splitsInFlight - len(r.RebalanceResultChan)
+	if r.probing && r.probeSeq == 0 && atTarget+1 >= r.targetCap {
 		r.probeSeq = r.fireSeq
 	}
 }

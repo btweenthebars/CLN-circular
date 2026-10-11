@@ -857,9 +857,7 @@ func TestSlowRefusalsStillBackOff(t *testing.T) {
 		result, err := b.WaitForResult()
 		assert.NoError(t, err)
 		assert.Equal(t, uint64(15000000), result.(*Result).RebalancedAmount)
-		// about 8 at any speed, rarely up to 20 when a split still on its
-		// way to be refused leaves room for one more; it was 37 when 3
-		// times slower
-		assert.LessOrEqual(t, len(b.asked)-150, 24, "refused splits, refusals %dx slower", slower)
+		// 7 or 8 at any speed; it was 37 when 3 times slower
+		assert.LessOrEqual(t, len(b.asked)-150, 12, "refused splits, refusals %dx slower", slower)
 	}
 }
