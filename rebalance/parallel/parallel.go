@@ -52,18 +52,17 @@ type AbstractRebalance struct {
 	retried  map[string]bool
 	// targetCap, if not 0, is how many splits the target channel takes at
 	// once, learned when it refused one. capSuccesses counts the splits that
-	// succeeded since it last changed, capSetAt is the number of splits fired
-	// by then, and capGrown says it last grew. heldSuccesses counts the
-	// successes of splits fired since it grew, and capHeld says enough of
-	// them succeeded to call the growth held. capBackoff multiplies the
-	// successes needed before it grows (0 counts as 1).
-	targetCap     int
-	capSuccesses  int
-	capSetAt      int
-	capGrown      bool
-	heldSuccesses int
-	capHeld       bool
-	capBackoff    int
+	// succeeded since it last changed, and capSetAt is the number of splits
+	// fired by then. probing says it grew and the growth is not judged yet;
+	// probeSeq is the number of the split that judges it, once fired.
+	// capBackoff multiplies the successes needed before it grows (0 counts
+	// as 1).
+	targetCap    int
+	capSuccesses int
+	capSetAt     int
+	probing      bool
+	probeSeq     int
+	capBackoff   int
 	// fireSeq counts the splits fired, and firedAt holds, by candidate, the
 	// number of the split in flight for it
 	fireSeq int

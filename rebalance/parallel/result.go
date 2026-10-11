@@ -2,6 +2,7 @@ package parallel
 
 import (
 	"bytes"
+	"circular/graph"
 	"circular/rebalance"
 	"encoding/json"
 	"fmt"
@@ -170,6 +171,15 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 		r.targetSucceeded(result.Candidate)
 		return
 	}
+	if r.isProbe(result.Candidate) {
+		// unless the target refused it as busy, the probe tells nothing: the
+		// next split fired up to the limit probes instead
+		defer func() {
+			if r.isProbe(result.Candidate) {
+				r.probeSeq = 0
+			}
+		}()
+	}
 	if result.Retry == rebalance.RetryNow && result.FailedAt != rebalance.SideNone && result.FailedAt != rebalance.SideRoute {
 		if !r.retried[result.Candidate] {
 			r.retried[result.Candidate] = true
@@ -199,25 +209,44 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 
 // targetSucceeded lets the limit on splits at once grow back after a
 // success of candidate id: by one once as many splits as the limit succeed,
-// times the backoff. A growth held once as many splits fired after it
-// succeed: that halves the backoff.
+// times the backoff. A growth is judged by its probe, the split fired up to
+// the new limit: no other growth until that split succeeds, which halves the
+// backoff, or is refused.
 func (r *AbstractRebalance) targetSucceeded(id string) {
 	if r.targetCap == 0 {
 		return
 	}
 	r.capSuccesses++
-	if r.capGrown && !r.capHeld && r.firedAt[id] > r.capSetAt {
-		if r.heldSuccesses++; r.heldSuccesses >= r.targetCap {
-			// one more at once was not too many
-			r.capHeld = true
-			if r.capBackoff > 1 {
-				r.capBackoff /= 2
-			}
+	if r.isProbe(id) {
+		// one more at once was not too many
+		r.probing, r.probeSeq = false, 0
+		if r.capBackoff > 1 {
+			r.capBackoff /= 2
 		}
 	}
-	if r.targetCap < r.splits && r.capSuccesses >= r.targetCap*r.backoff() {
+	if !r.probing && r.targetCap < r.splits && r.capSuccesses >= r.targetCap*r.backoff() {
 		r.setTargetCap(r.targetCap + 1)
-		r.capGrown = true
+		r.probing, r.probeSeq = true, 0
+	}
+}
+
+// isProbe reports whether the split in flight for candidate id is the probe
+// of the last growth.
+func (r *AbstractRebalance) isProbe(id string) bool {
+	return r.probing && r.probeSeq != 0 && r.firedAt[id] == r.probeSeq
+}
+
+// noteFired numbers the split about to be fired for candidate, and makes it
+// the probe of the last growth if it brings the splits in flight up to the
+// new limit. It runs before the split is counted in splitsInFlight.
+func (r *AbstractRebalance) noteFired(candidate *graph.Channel) {
+	r.fireSeq++
+	if r.firedAt == nil {
+		r.firedAt = make(map[string]int)
+	}
+	r.firedAt[candidateId(candidate)] = r.fireSeq
+	if r.probing && r.probeSeq == 0 && r.splitsInFlight+1 >= r.targetCap {
+		r.probeSeq = r.fireSeq
 	}
 }
 
@@ -227,7 +256,6 @@ func (r *AbstractRebalance) setTargetCap(cap int) {
 	r.targetCap = cap
 	r.capSetAt = r.fireSeq
 	r.capSuccesses = 0
-	r.capGrown, r.capHeld, r.heldSuccesses = false, false, 0
 }
 
 // targetBusy handles a busy refusal of candidate id by the target, with
@@ -235,16 +263,15 @@ func (r *AbstractRebalance) setTargetCap(cap int) {
 func (r *AbstractRebalance) targetBusy(id string, others int) {
 	// The target's limit explains it if there was none yet (our own splits
 	// filled the target), if the split was fired before the limit took its
-	// current value, or if it was fired after the limit grew: one more at
-	// once was too many.
-	firedBefore := r.firedAt[id] <= r.capSetAt
-	explained := r.targetCap == 0 || firedBefore
+	// current value, or if the limit grew and has not proved itself yet: one
+	// more at once may be too many.
+	explained := r.targetCap == 0 || r.firedAt[id] <= r.capSetAt || r.probing
 	if r.targetCap == 0 || others < r.targetCap {
-		if r.capGrown && !firedBefore {
-			explained = true
+		if r.probing {
+			// the last growth was one too many: wait longer before trying
+			// one more again
+			r.probing, r.probeSeq = false, 0
 			if r.capBackoff < maxCapBackoff {
-				// wait longer before trying one more again; this also undoes
-				// the halving if the growth was called held too early
 				r.capBackoff = r.backoff() * 2
 			}
 		}

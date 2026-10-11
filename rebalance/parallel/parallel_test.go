@@ -525,15 +525,16 @@ func TestOnlyTheCandidatesOwnFailuresCount(t *testing.T) {
 	}
 }
 
-// judge feeds judgeCandidate a result for candidate c, fired last, with n
-// splits in flight, this one included, and reports whether c went back in
-// the queue.
+// judge fires a split for candidate c with n-1 others in flight, and feeds
+// judgeCandidate its result. It reports whether c went back in the queue.
 func judge(f *fakeSplits, c *graph.Channel, n int, result *rebalance.Result) bool {
-	f.fireSeq++
-	return judgeFired(f, c, n, f.fireSeq, result)
+	f.splitsInFlight = n - 1
+	f.noteFired(c)
+	return judgeFired(f, c, n, f.firedAt[candidateId(c)], result)
 }
 
-// judgeFired is judge for a split that was the seq-th fired.
+// judgeFired feeds judgeCandidate the result of the seq-th split fired, for
+// candidate c, with n splits in flight, this one included.
 func judgeFired(f *fakeSplits, c *graph.Channel, n, seq int, result *rebalance.Result) bool {
 	f.Candidates.Clear()
 	f.launched[candidateId(c)] = c
@@ -581,9 +582,13 @@ func TestTargetCapWaitsLongerAfterARefusedGrowth(t *testing.T) {
 	judge(f, c, 3, busy())
 	assert.Equal(t, 8, growsAfter())
 
-	// a growth that held for as many successes halves the wait
+	// one more at once held: half the wait
 	assert.Equal(t, 3, f.targetCap)
-	assert.Equal(t, 3*2, growsAfter())
+	judge(f, c, 3, success()) // the split fired up to 3 in flight
+	assert.Equal(t, 2, f.capBackoff)
+	assert.Equal(t, 3*2-1, growsAfter())
+	judge(f, c, 4, success())
+	assert.Equal(t, 1, f.capBackoff)
 
 	// it never goes above the splits allowed
 	f.targetCap = 4
@@ -593,41 +598,63 @@ func TestTargetCapWaitsLongerAfterARefusedGrowth(t *testing.T) {
 	assert.Equal(t, 4, f.targetCap)
 }
 
-// A growth was called held after as many successes of any split, including
-// splits fired before it: when refusals take longer than successes, the
-// backoff halved before the refusal came, and the limit crept above what the
-// target takes.
-func TestOnlySplitsFiredAfterAGrowthTellIfItHeld(t *testing.T) {
-	f := splitsOn(t, 1, nil)
+// A growth was judged by the successes of any split, and the limit could
+// grow again before the refusal of the split that tried it came back: when
+// refusals take longer than successes, the backoff never engaged and the
+// limit cycled above what the target takes.
+func TestAGrowthIsJudgedByTheSplitThatTriesIt(t *testing.T) {
+	f := splitsOn(t, 2, nil)
 	f.splits = 4
-	c := f.Candidates.At(0)
-	grown := func() {
-		f.targetCap, f.capBackoff, f.fireSeq = 2, 4, 10
-		for f.targetCap == 2 {
-			judgeFired(f, c, 2, 5, success()) // fired long ago
-		}
-		assert.Equal(t, 3, f.targetCap)
-		assert.Equal(t, 10, f.capSetAt)
+	c, d := f.Candidates.At(0), f.Candidates.At(1)
+	f.targetCap, f.capBackoff = 2, 4
+	for f.targetCap == 2 {
+		judge(f, c, 2, success())
 	}
+	assert.True(t, f.probing)
 
-	grown()
-	for i := 0; i < 3; i++ {
-		judgeFired(f, c, 3, 9, success()) // fired before it grew
+	// the split fired up to 3 in flight tries the growth
+	f.splitsInFlight = 1
+	f.noteFired(c)
+	f.splitsInFlight = 2
+	f.noteFired(d)
+	probe := f.firedAt[candidateId(d)]
+	assert.Equal(t, probe, f.probeSeq)
+
+	// splits fired before it succeed, many times over: no growth, no change
+	for i := 0; i < 20; i++ {
+		judgeFired(f, c, 3, probe-1, success())
 	}
-	assert.Equal(t, 4, f.capBackoff, "nothing fired since has succeeded")
-	judgeFired(f, c, 3, 11, busy()) // the split fired at 3 at once
+	assert.Equal(t, 3, f.targetCap)
+	assert.Equal(t, 4, f.capBackoff)
+
+	// then it is refused: twice the wait
+	judgeFired(f, d, 3, probe, busy())
 	assert.Equal(t, 2, f.targetCap)
 	assert.Equal(t, 8, f.capBackoff)
+	assert.False(t, f.probing)
+	assert.Empty(t, f.busyRefusals, "the growth explains it")
 
-	// enough splits fired since succeed: held, but a late refusal of one fired
-	// since undoes it
-	grown()
-	for seq := 11; seq < 14; seq++ {
-		judgeFired(f, c, 3, seq, success())
+	// a probe that fails on the route tells nothing: the next split fired up
+	// to the limit tries the growth instead
+	f.capBackoff = 1
+	for f.targetCap == 2 {
+		judge(f, c, 2, success())
 	}
-	assert.Equal(t, 2, f.capBackoff, "held")
-	judgeFired(f, c, 3, 14, busy())
-	assert.Equal(t, 4, f.capBackoff, "not held after all")
+	f.splitsInFlight = 2
+	f.noteFired(d)
+	route := &rebalance.Result{Status: "failure", FailedAt: rebalance.SideRoute}
+	judgeFired(f, d, 3, f.probeSeq, route)
+	assert.True(t, f.probing)
+	assert.Equal(t, 0, f.probeSeq)
+	f.splitsInFlight = 2
+	f.noteFired(c)
+	assert.Equal(t, f.firedAt[candidateId(c)], f.probeSeq)
+
+	// so does one retried after a stale fee: the growth is not stuck
+	judgeFired(f, c, 3, f.probeSeq, &rebalance.Result{Status: "failure", FailedAt: rebalance.SideIn, Retry: rebalance.RetryNow})
+	assert.Equal(t, 0, f.probeSeq)
+	judge(f, c, 3, success())
+	assert.False(t, f.probing, "held")
 }
 
 // A candidate the target refused as busy came back after every growth of
@@ -644,7 +671,7 @@ func TestCandidateOftenRefusedAsBusyGoesToTheBack(t *testing.T) {
 		f.Candidates.Clear()
 		f.Candidates.PushBack(d)
 		f.launched[candidateId(c)] = c
-		f.targetCap, f.capSetAt, f.capGrown, f.fireSeq = cap, capSetAt, grown, seq
+		f.targetCap, f.capSetAt, f.probing, f.fireSeq = cap, capSetAt, grown, seq
 		f.firedAt = map[string]int{candidateId(c): seq}
 		f.splitsInFlight = inFlight
 		result := busy()
@@ -680,6 +707,8 @@ type roomyTarget struct {
 	room       map[string]int
 	refused    map[string]bool
 	routeFails map[string]bool
+	// how long an accepted split takes (20ms if 0), and a refused one
+	successTime, refusalTime time.Duration
 }
 
 func (b *roomyTarget) CanUseChannel(c *glightning.PeerChannel) error {
@@ -708,13 +737,19 @@ func (b *roomyTarget) Fire(candidate *graph.Channel, amount uint64) {
 	switch {
 	case refuse:
 		result.FailedAt, result.Retry = rebalance.SideIn, rebalance.RetryWhenFree
-		go func() { b.RebalanceResultChan <- result }()
+		go func() {
+			time.Sleep(b.refusalTime)
+			b.RebalanceResultChan <- result
+		}()
 	case route:
 		result.FailedAt, result.Retry = rebalance.SideRoute, rebalance.RetryNo
 		go func() { b.RebalanceResultChan <- result }()
 	default:
 		go func() {
-			time.Sleep(20 * time.Millisecond)
+			if b.successTime == 0 {
+				b.successTime = 20 * time.Millisecond
+			}
+			time.Sleep(b.successTime)
 			b.lock.Lock()
 			b.accepted--
 			if n, ok := b.room[scid]; ok {
@@ -809,4 +844,22 @@ func TestPushCandidateFeeCountsInboundDiscounts(t *testing.T) {
 	assert.False(t, r.inPeerFeeFits(in))
 	g.SetInboundFee("2x1x1/"+util.GetDirection("02a", "02peer"), 0, -100)
 	assert.True(t, r.inPeerFeeFits(in), "about 50 ppm after the discount")
+}
+
+// In circular-pull a refusal at the last hop can take longer than a success:
+// the limit grew again before the refusal of the split that tried the last
+// growth came back, and a third of the splits were refused.
+func TestSlowRefusalsStillBackOff(t *testing.T) {
+	for _, slower := range []time.Duration{1, 3, 5} {
+		b := roomy(t, 4, 15000000000, 4, 2) // 150 splits
+		b.successTime, b.refusalTime = 4*time.Millisecond, slower*4*time.Millisecond
+		b.FireCandidates()
+		result, err := b.WaitForResult()
+		assert.NoError(t, err)
+		assert.Equal(t, uint64(15000000), result.(*Result).RebalancedAmount)
+		// about 8 at any speed, rarely up to 20 when a split still on its
+		// way to be refused leaves room for one more; it was 37 when 3
+		// times slower
+		assert.LessOrEqual(t, len(b.asked)-150, 24, "refused splits, refusals %dx slower", slower)
+	}
 }
