@@ -20,7 +20,7 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 
 	r.Node.Logln(glightning.Debug, "looking for a route from ", r.Node.Graph.GetAlias(src), " to ", r.Node.Graph.GetAlias(dst))
 	maxFee := graph.MaxFeeForPPM(r.Amount, r.MaxPPM)
-	if inFee := r.Node.Graph.LeastForwardFee(r.InChannel, r.Amount); inFee > maxFee {
+	if inFee := r.Node.Graph.LeastForwardFee(r.InChannel, r.OutChannel, r.Amount); inFee > maxFee {
 		// what the in-peer charges to send to us, with the best of its inbound
 		// discounts, is more than maxppm allows: no route can do, whatever the
 		// out channel

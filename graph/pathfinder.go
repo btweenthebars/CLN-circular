@@ -117,11 +117,13 @@ func MaxFeeForPPM(amount, ppm uint64) uint64 {
 	return (lo - 1) / 1000000
 }
 
-// LeastForwardFee returns the least that c's source charges to forward amount
-// over c, as the route search counts it: its fee for c, with the inbound fee
-// of whichever channel into it makes that lowest. Inbound fees can be
-// negative, so this can be less than its fee for c.
-func (g *Graph) LeastForwardFee(c *Channel, amount uint64) uint64 {
+// LeastForwardFee returns the least that in's source, the in-peer of a
+// rebalance over out and in, charges to forward amount over in to us, as the
+// route search counts it: its fee for in, with the inbound fee of whichever
+// channel into it makes that lowest. Inbound fees can be negative, so this
+// can be less than its fee for in. As in the search, our own channels into
+// the in-peer are left out, but for out when the out-peer is the in-peer.
+func (g *Graph) LeastForwardFee(in, out *Channel, amount uint64) uint64 {
 	g.channelsLock.RLock()
 	g.adjacencyListLock.RLock()
 	g.inboundFeesLock.RLock()
@@ -129,13 +131,18 @@ func (g *Graph) LeastForwardFee(c *Channel, amount uint64) uint64 {
 	defer g.adjacencyListLock.RUnlock()
 	defer g.inboundFeesLock.RUnlock()
 
-	outboundFee := c.ComputeFee(amount)
+	self, peer := in.Destination, in.Source
+	firstHopId := ""
+	if out != nil && out.Source == self && out.Destination == peer {
+		firstHopId = out.ShortChannelId + "/" + util.GetDirection(self, peer)
+	}
+	outboundFee := in.ComputeFee(amount)
 	forwarded := addSaturating(amount, outboundFee)
 	least, found := uint64(math.MaxUint64), false
-	for w, edge := range g.Inbound[c.Source] {
+	for w, edge := range g.Inbound[peer] {
 		for _, scid := range edge {
-			id := scid + "/" + util.GetDirection(w, c.Source)
-			if _, ok := g.Channels[id]; !ok {
+			id := scid + "/" + util.GetDirection(w, peer)
+			if _, ok := g.Channels[id]; !ok || (w == self && id != firstHopId) {
 				continue
 			}
 			found = true

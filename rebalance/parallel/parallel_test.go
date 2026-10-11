@@ -610,9 +610,18 @@ func TestPushCandidateFeeCountsInboundDiscounts(t *testing.T) {
 	g.AddChannel(before)
 	g.Channels["2x1x1/"+util.GetDirection("02a", "02peer")] = before
 
+	ours := graph.NewChannel(&glightning.Channel{Source: "02self", Destination: "02peer", ShortChannelId: "1x1x1",
+		AmountMsat: glightning.AmountFromMSat(10000000000), IsActive: true}, 0, 0)
+	g.AddChannel(ours)
+	g.Channels["1x1x1/"+util.GetDirection("02self", "02peer")] = ours
+
 	r := &RebalancePush{AbstractRebalance: abstract()}
 	r.Node.Graph = g
+	r.TargetChannel = graph.NewChannel(&glightning.Channel{Source: "02self", Destination: "02target", ShortChannelId: "9x1x1"}, 0, 0)
 	assert.False(t, r.inPeerFeeFits(in), "150 ppm, maxppm 100")
+	// a discount on our own channel to the peer: no route of ours arrives on it
+	g.SetInboundFee("1x1x1/"+util.GetDirection("02self", "02peer"), 0, -100)
+	assert.False(t, r.inPeerFeeFits(in))
 	g.SetInboundFee("2x1x1/"+util.GetDirection("02a", "02peer"), 0, -100)
 	assert.True(t, r.inPeerFeeFits(in), "about 50 ppm after the discount")
 }
