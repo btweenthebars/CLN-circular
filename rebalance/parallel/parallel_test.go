@@ -158,6 +158,8 @@ type fakeSplits struct {
 	calls   int
 	asked   []uint64
 	lock    sync.Mutex
+	// successDelay is how long a successful split takes; failures are at once
+	successDelay time.Duration
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -193,7 +195,12 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 		result.Candidate, result.Fee = candidateId(candidate), delivered/100000
 		result.Route = &graph.PrettyRoute{Hops: []graph.PrettyRouteHop{{ShortChannelId: candidate.ShortChannelId}}}
 	}
-	go func() { f.RebalanceResultChan <- result }()
+	go func() {
+		if delivered > 0 {
+			time.Sleep(f.successDelay)
+		}
+		f.RebalanceResultChan <- result
+	}()
 }
 
 func splitsOn(t *testing.T, candidates int, deliver func(int, uint64) uint64) *fakeSplits {
@@ -290,11 +297,108 @@ func TestCandidatesAreRankedByEarlierSplits(t *testing.T) {
 func TestTargetThatTakesNoMoreStopsTheRun(t *testing.T) {
 	f := splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
 	f.splits = 1
+	var refreshed [][]string
+	f.refresh = func(peerIds ...string) error {
+		refreshed = append(refreshed, peerIds)
+		return nil
+	}
 	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
 	f.FireCandidates()
 	_, _ = f.WaitForResult()
-	assert.Equal(t, 1, len(f.asked), "nothing else was in flight: the target is full")
+	assert.Equal(t, 2, len(f.asked), "nothing else was in flight: read again, tried once more, then the target is full")
+	assert.Equal(t, [][]string{{"02target"}}, refreshed)
+	assert.True(t, f.targetStopped)
 	assert.Equal(t, uint64(0), f.Node.CandidateRecord(candidateId(f.launched[firstLaunched(f)])).Failures)
+
+	// the target cannot be read again
+	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	f.refresh = func(...string) error { return fmt.Errorf("lightningd is gone") }
+	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
+	f.FireCandidates()
+	_, _ = f.WaitForResult()
+	assert.Equal(t, 1, len(f.asked))
+
+	// refused for good
+	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	f.refresh = func(...string) error { return nil }
+	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryNo }
+	f.FireCandidates()
+	_, _ = f.WaitForResult()
+	assert.Equal(t, 1, len(f.asked))
+}
+
+// The balances a depleted-target refusal is based on are re-read only after
+// a success, which can be while other splits hold the target: once they
+// failed, the run stopped on balances that were no longer true.
+func TestTargetIsReadAgainBeforeTheRunStops(t *testing.T) {
+	f := splitsOn(t, 3, func(call int, amount uint64) uint64 {
+		if call == 1 {
+			return 0
+		}
+		return amount
+	})
+	f.splits = 1
+	refreshes := 0
+	f.refresh = func(peerIds ...string) error {
+		if len(peerIds) == 1 {
+			refreshes++
+		}
+		return nil
+	}
+	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
+	f.FireCandidates()
+	result, _ := f.WaitForResult()
+	assert.Equal(t, uint64(300000), result.(*Result).RebalancedAmount, "the target had room after all")
+	assert.Equal(t, 1, refreshes)
+	assert.False(t, f.targetStopped)
+}
+
+// A stale-fee failure whose re-read changed nothing came back as RetryNow
+// again; the candidate, already retried, was dropped without a word, and the
+// run never stopped: every candidate sent two payments into the same refusal.
+func TestRepeatedStalePolicyIsJudgedAsAFailure(t *testing.T) {
+	f := splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	f.refresh = func(...string) error { return nil }
+	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryNow }
+	f.FireCandidates()
+	_, _ = f.WaitForResult()
+	assert.Equal(t, 2, len(f.asked), "one more try, then the target's failure stops the run")
+	assert.True(t, f.targetStopped)
+
+	// on the candidate's own side, the second one counts against it
+	f = splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideOut, rebalance.RetryNow }
+	f.FireCandidates()
+	_, _ = f.WaitForResult()
+	assert.Equal(t, 4, len(f.asked))
+	for _, peer := range []string{"02peer0", "02peer1"} {
+		scid := map[string]string{"02peer0": "1x1x1", "02peer1": "2x1x1"}[peer]
+		assert.Equal(t, uint64(1), f.Node.CandidateRecord(scid+"/"+util.GetDirection("02self", peer)).Failures, peer)
+	}
+}
+
+// One refusal by the target lowered how many splits it was given at once for
+// the rest of the run, though in circular-pull our other splits rarely cause
+// it.
+func TestTargetCapGrowsBackWithSuccesses(t *testing.T) {
+	f := splitsOn(t, 3, func(call int, amount uint64) uint64 {
+		if call == 1 {
+			return 0
+		}
+		return amount
+	})
+	f.refresh = func(...string) error { return nil }
+	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
+	f.successDelay = 20 * time.Millisecond // the refusal comes back while the first split is in flight
+	f.FireCandidates()
+	result, _ := f.WaitForResult()
+	assert.Equal(t, uint64(300000), result.(*Result).RebalancedAmount)
+	assert.Equal(t, 2, f.targetCap, "back to the splits allowed")
+	assert.Equal(t, 4, len(f.asked), "one refusal")
 }
 
 // A policy read again after a stale-fee failure gives the candidate one more
@@ -368,12 +472,16 @@ func TestBusyTargetLimitsTheSplitsInFlight(t *testing.T) {
 	b.amount, b.splits = 600000000, 4
 	b.RebalanceResultChan = make(chan *rebalance.Result, 4)
 
+	b.refresh = func(...string) error { return nil }
 	b.FireCandidates()
 	result, err := b.WaitForResult()
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(600000), result.(*Result).RebalancedAmount, "every candidate got its split")
-	assert.Equal(t, 2, b.targetCap)
-	assert.LessOrEqual(t, len(b.asked), 8, "at most the first round over the cap is refused")
+	assert.GreaterOrEqual(t, b.targetCap, 2)
+	assert.LessOrEqual(t, b.targetCap, 3)
+	// the first round over the cap, then one probe each time the cap grows
+	// back after 2 successes
+	assert.LessOrEqual(t, len(b.asked)-6, 2+3, "refused splits")
 }
 
 func TestOnlyTheCandidatesOwnFailuresCount(t *testing.T) {

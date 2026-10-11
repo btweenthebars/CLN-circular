@@ -47,13 +47,21 @@ type AbstractRebalance struct {
 	// channel for circular-pull, the in channel for circular-push
 	candidateSide rebalance2.Side
 	// launched holds the candidates fired, by id, and retried those given
-	// another try after the target channel refused for a moment
+	// another try after a stale policy was read again
 	launched map[string]*graph.Channel
 	retried  map[string]bool
 	// targetCap, if not 0, is how many splits the target channel takes at
-	// once, learned when it refused one; targetStopped: it takes no more
-	targetCap     int
-	targetStopped bool
+	// once, learned when it refused one, and capSuccesses the splits that
+	// succeeded since it last changed; targetRechecked: the target was read
+	// again after refusing with nothing in flight, and nothing succeeded
+	// since; targetStopped: it takes no more
+	targetCap       int
+	capSuccesses    int
+	targetRechecked bool
+	targetStopped   bool
+	// refresh reads our channels with peers again; tests replace
+	// Node.RefreshPeerChannels with it
+	refresh func(peerIds ...string) error
 	RebalanceMethods
 }
 

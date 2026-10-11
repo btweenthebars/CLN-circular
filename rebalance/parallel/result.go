@@ -140,26 +140,43 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 //   - A failure counts against the candidate only if it happened on the
 //     candidate's own channel or along the route; not on the target channel,
 //     and not for a reason on neither, such as circular-stop or a timeout.
-//   - A failure due to a policy just read again (RetryNow) gives the
-//     candidate another try, once per run, and counts against nobody.
+//   - A failure due to a policy just read again and found changed (RetryNow)
+//     gives the candidate another try, once per run, counted against nobody.
+//     A second one is judged like any other failure.
 //   - When the target refused because other splits hold its HTLC slots or
 //     balance (RetryWhenFree), the run keeps at most as many splits in
 //     flight as the target held then, and the candidate gets another try
 //     once one of them finishes. Retrying at once only met the same
-//     refusal: in circular-push every split leaves through the target.
-//   - When the target refused with nothing else in flight, or for good, no
-//     more splits are fired: every candidate would meet the same refusal.
+//     refusal: in circular-push every split leaves through the target. The
+//     limit grows back by one every time that many splits succeed, in case
+//     the refusal had another cause.
+//   - When the target refused with nothing else in flight, its channels are
+//     read again and the candidate tried once more: the balances the
+//     refusal was based on may have been read while other splits held them.
+//     If it refuses again, or for good, no more splits are fired: every
+//     candidate would meet the same refusal.
 func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 	if result.Candidate == "" {
 		return
 	}
 	if result.Status == "success" {
 		r.Node.RecordCandidate(result.Candidate, true, result.AmountMsat, result.Fee)
+		r.targetRechecked = false
+		if r.targetCap > 0 {
+			if r.capSuccesses++; r.capSuccesses >= r.targetCap && r.targetCap < r.splits {
+				r.targetCap++
+				r.capSuccesses = 0
+			}
+		}
 		return
 	}
 	if result.Retry == rebalance.RetryNow && result.FailedAt != rebalance.SideNone && result.FailedAt != rebalance.SideRoute {
-		r.retryCandidate(result.Candidate)
-		return
+		if !r.retried[result.Candidate] {
+			r.retried[result.Candidate] = true
+			r.requeue(result.Candidate)
+			return
+		}
+		// it had its try: judge it as any other failure
 	}
 	switch result.FailedAt {
 	case r.candidateSide, rebalance.SideRoute:
@@ -171,28 +188,51 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 		if result.Retry == rebalance.RetryWhenFree && others > 0 {
 			if r.targetCap == 0 || others < r.targetCap {
 				r.targetCap = others
+				r.capSuccesses = 0
 				r.Node.Logf(glightning.Debug, "the target channel takes %d splits at a time", others)
 			}
-			r.retryCandidate(result.Candidate)
+			r.requeue(result.Candidate)
 			return
+		}
+		if result.Retry == rebalance.RetryWhenFree && !r.targetRechecked {
+			r.targetRechecked = true
+			peer := result.In
+			if result.FailedAt == rebalance.SideOut {
+				peer = result.Out
+			}
+			err := r.refreshPeers(peer)
+			if err == nil {
+				r.Node.Logln(glightning.Debug, "the target channel refused with nothing else in flight: read it again and try once more")
+				r.requeue(result.Candidate)
+				return
+			}
+			r.Node.Logln(glightning.Unusual, "unable to read the target channel again: ", err)
 		}
 		r.targetStopped = true
 		r.Node.Logln(glightning.Info, "the target channel cannot take more for now: firing no more splits. ", result.Message)
 	}
 }
 
-// retryCandidate puts candidate id back at the front of the queue, once per
-// run.
-func (r *AbstractRebalance) retryCandidate(id string) {
+// requeue puts candidate id back at the front of the queue. Each requeue
+// follows a refusal that lowered the target's limit, or a re-read or retry
+// allowed once, so a candidate cannot come back forever.
+func (r *AbstractRebalance) requeue(id string) {
 	candidate, ok := r.launched[id]
-	if !ok || r.retried[id] {
+	if !ok {
 		return
 	}
-	r.retried[id] = true
 	r.QueueLock.Lock()
 	r.Candidates.PushFront(candidate)
 	r.QueueLock.Unlock()
 	r.Node.Logln(glightning.Debug, "candidate ", id, " will be tried again")
+}
+
+// refreshPeers reads our channels with the given peers again.
+func (r *AbstractRebalance) refreshPeers(peerIds ...string) error {
+	if r.refresh != nil {
+		return r.refresh(peerIds...)
+	}
+	return r.Node.RefreshPeerChannels(peerIds...)
 }
 
 func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {
@@ -201,7 +241,7 @@ func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {
 		// next splits see the new balances rather than those of the last peer
 		// refresh. Adjusting the cached balances instead counted a payment
 		// twice when a peer refresh had already seen it.
-		if err := r.Node.RefreshPeerChannels(result.Out, result.In); err != nil {
+		if err := r.refreshPeers(result.Out, result.In); err != nil {
 			r.Node.Logln(glightning.Unusual, "unable to refresh the rebalanced channels: ", err)
 		}
 	}

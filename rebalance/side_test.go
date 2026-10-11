@@ -119,6 +119,61 @@ func TestTargetFeeCheckCountsInboundDiscounts(t *testing.T) {
 	assert.Equal(t, SideRoute, result.FailedAt, result.Message)
 }
 
+// A stale-fee failure from the in-peer was given another try whenever our
+// channels could be read again, even when the fee had not changed: the next
+// try failed the same way.
+func TestStaleInPeerFeeIsRetriedOnlyIfItChanged(t *testing.T) {
+	r, route := testRoute(t)
+	var refreshed []string
+	r.refresh = func(peerIds ...string) error {
+		refreshed = append(refreshed, peerIds...)
+		return nil // nothing changed
+	}
+	err := r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failFeeInsufficient), map[string]bool{})
+	side, retry := failureSide(err)
+	assert.Equal(t, SideIn, side)
+	assert.Equal(t, RetryNo, retry, "the fee did not change")
+	assert.Equal(t, []string{inP}, refreshed)
+
+	r.refresh = func(...string) error {
+		addChannel(r.Node.Graph, "5x1x1", inP, self, 2000) // the new fee
+		return nil
+	}
+	err = r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failFeeInsufficient), map[string]bool{})
+	side, retry = failureSide(err)
+	assert.Equal(t, SideIn, side)
+	assert.Equal(t, RetryNow, retry, "the next try pays the new fee")
+
+	r.refresh = func(...string) error { return errors.New("lightningd is gone") }
+	err = r.learnFromFailure(route, failureAt(inP, "5x1x1", 0, failFeeInsufficient), map[string]bool{})
+	_, retry = failureSide(err)
+	assert.Equal(t, RetryNo, retry)
+}
+
+// A temporary node failure from our in-peer or out-peer ended a parallel run
+// when that peer was on the target's side, as if it were permanent.
+func TestTemporaryNodeFailureOfAPeerMayPass(t *testing.T) {
+	const permanentNodeFailure = 0x4000 | failNodeBit | 2
+	for _, c := range []struct {
+		node, scid string
+		code       int
+		side       Side
+		retry      Retry
+	}{
+		{inP, "5x1x1", failTemporaryNodeFailure, SideIn, RetryWhenFree},
+		{inP, "5x1x1", permanentNodeFailure, SideIn, RetryNo},
+		{outP, "2x1x1", failTemporaryNodeFailure, SideOut, RetryWhenFree},
+		{outP, "2x1x1", permanentNodeFailure, SideOut, RetryNo},
+		{"02a", "3x1x1", failTemporaryNodeFailure, SideRoute, RetryNo},
+	} {
+		r, route := testRoute(t)
+		err := r.learnFromFailure(route, failureAt(c.node, c.scid, 0, c.code), map[string]bool{})
+		side, retry := failureSide(err)
+		assert.Equal(t, c.side, side, "%s 0x%04x", c.node, c.code)
+		assert.Equal(t, c.retry, retry, "%s 0x%04x", c.node, c.code)
+	}
+}
+
 // A node failure from our own in-peer or out-peer was counted as the route's.
 func TestPeerNodeFailuresAreOnOurSide(t *testing.T) {
 	r, route := testRoute(t)

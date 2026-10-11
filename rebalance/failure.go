@@ -38,6 +38,7 @@ var errShortOfLiquidity = fmt.Errorf("%w: a channel on the route could not carry
 // BOLT 4 failure codes that a rebalance reacts to.
 const (
 	failNodeBit                 = 0x2000
+	failTemporaryNodeFailure    = 0x2002
 	failTemporaryChannelFailure = 0x1007
 	failAmountBelowMinimum      = 0x100b
 	failFeeInsufficient         = 0x100c
@@ -116,9 +117,16 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		// Our copy of the channel's policy is out of date.
 		if inChannel {
 			if failure.FailCode == failFeeInsufficient {
-				// our copy of the in-peer's fee is stale: read it again, so that
-				// the next try pays the new fee
-				if err := r.Node.RefreshPeerChannels(r.InChannel.Source); err != nil {
+				// our copy of the in-peer's fee may be stale: read it again, so
+				// that the next try pays the new fee. If it did not change, the
+				// cause is elsewhere (lightningd has not applied the update yet,
+				// or an inbound fee on the channel before it): a try now would
+				// fail the same way.
+				if err := r.refreshPeers(r.InChannel.Source); err != nil {
+					return onIn(util.ErrWireFeeInsufficient, RetryNo)
+				}
+				updated, err := g.GetChannel(id)
+				if err != nil || !policyChanged(hop.Channel, updated) {
 					return onIn(util.ErrWireFeeInsufficient, RetryNo)
 				}
 				return onIn(util.ErrWireFeeInsufficient, RetryNow)
@@ -140,17 +148,19 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		exclude[id] = true
 
 	default:
+		// a temporary node failure from one of our peers may pass
+		retry := retryWhenFreeIf(failure.FailCode == failTemporaryNodeFailure)
 		if inChannel {
 			// the in-peer, or its channel to us, failed it: not the route
 			exclude[failure.ErringNode] = true
 			return onIn(fmt.Errorf("%s failed the payment on our channel %s: %s",
-				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), RetryNo)
+				g.GetAlias(failure.ErringNode), hop.ShortChannelId, failure.FailCodeName), retry)
 		}
 		if k == 1 && failure.FailCode&failNodeBit != 0 {
 			// the out-peer itself failed: not the route
 			exclude[failure.ErringNode] = true
 			return onOut(fmt.Errorf("%s failed the payment: %s",
-				g.GetAlias(failure.ErringNode), failure.FailCodeName), RetryNo)
+				g.GetAlias(failure.ErringNode), failure.FailCodeName), retry)
 		}
 		if failure.FailCode&failNodeBit != 0 {
 			r.avoid(exclude, failure.ErringNode)
@@ -178,6 +188,20 @@ func (r *Rebalance) refreshPolicy(old *graph.Channel, id string) bool {
 	if err != nil {
 		return false
 	}
+	return policyChanged(old, updated)
+}
+
+// refreshPeers reads our channels with the given peers again.
+func (r *Rebalance) refreshPeers(peerIds ...string) error {
+	if r.refresh != nil {
+		return r.refresh(peerIds...)
+	}
+	return r.Node.RefreshPeerChannels(peerIds...)
+}
+
+// policyChanged reports whether a channel's fees, CLTV delta or HTLC limits
+// differ between two reads.
+func policyChanged(old, updated *graph.Channel) bool {
 	return updated.BaseFeeMillisatoshi != old.BaseFeeMillisatoshi ||
 		updated.FeePerMillionth != old.FeePerMillionth ||
 		updated.Delay != old.Delay ||

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,9 @@ type Rebalance struct {
 
 	// pay sends a payment over a route; tests replace payInvoice with it
 	pay func(route *graph.Route) (*graph.PrettyRoute, error)
+	// refresh reads our channels with peers again; tests replace
+	// Node.RefreshPeerChannels with it
+	refresh func(peerIds ...string) error
 }
 
 // maxShrinks bounds how many times a route is retried with less.
@@ -154,7 +158,13 @@ func (r *Rebalance) Run() *Result {
 	failure.Attempts = uint64(i - 1 + extra)
 	failure.FailedAt, failure.Retry = failureSide(lastErr)
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " attempts."
-	failure.Message += lastError
+	if lastError == "" && lastErr != nil {
+		// the attempts ran out: say how the last one failed
+		lastError = "The last one failed: " + lastErr.Error()
+	}
+	if lastError = strings.TrimSpace(lastError); lastError != "" {
+		failure.Message += " " + lastError
+	}
 
 	return failure
 }
