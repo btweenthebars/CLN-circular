@@ -77,16 +77,16 @@ func (n *Node) GetChannelPeerFromScid(scid string) (*glightning.Peer, error) {
 	return nil, util.ErrNoPeerChannel
 }
 
+// IsPeerConnected reports whether the peer of channel is connected. The
+// peer's state follows connect and disconnect events; the channel's own flag
+// is only as fresh as the last peer refresh, so it is used only for a channel
+// whose peer is unknown. Trusting it first kept a peer that had just
+// disconnected looking connected for up to 30 seconds.
 func (n *Node) IsPeerConnected(channel *glightning.PeerChannel) bool {
-	if channel.PeerConnected {
-		return true
+	if peer, err := n.GetChannelPeerFromScid(channel.ShortChannelId); err == nil {
+		return peer.Connected
 	}
-	peer, err := n.GetChannelPeerFromScid(channel.ShortChannelId)
-	if err != nil {
-		return false
-	}
-
-	return peer.Connected
+	return channel.PeerConnected
 }
 
 func (n *Node) ConvertPeerChannelToGraphChannel(channel *glightning.PeerChannel, isOutgoing bool) *graph.Channel {

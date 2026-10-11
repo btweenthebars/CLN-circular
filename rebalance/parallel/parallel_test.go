@@ -29,7 +29,7 @@ func channel(toUs, spendable, receivable uint64) *glightning.PeerChannel {
 }
 
 func abstract() AbstractRebalance {
-	return AbstractRebalance{Node: &node.Node{}, splitAmount: 100000000, maxPPM: 100}
+	return AbstractRebalance{Node: &node.Node{PeersLock: &sync.RWMutex{}}, splitAmount: 100000000, maxPPM: 100}
 }
 
 // The deplete threshold was checked before the split, so a channel just above

@@ -207,3 +207,20 @@ func TestConnectEventsReplaceThePeer(t *testing.T) {
 	n.OnConnect(&glightning.ConnectEvent{PeerId: "02unknown"})
 	assert.Len(t, n.Peers, 1)
 }
+
+// A disconnect event did not count while the channel, read at the last peer
+// refresh, still said its peer was connected.
+func TestDisconnectCountsBeforeTheNextRefresh(t *testing.T) {
+	channel := &glightning.PeerChannel{PeerId: "02peer", ShortChannelId: "1x1x1", State: "CHANNELD_NORMAL", PeerConnected: true}
+	n := &Node{PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{}, scidToPeer: map[string]*glightning.Peer{}}
+	n.setPeers([]*glightning.Peer{{Id: "02peer", Connected: true}}, []*glightning.PeerChannel{channel}, time.Now())
+	assert.True(t, n.IsPeerConnected(channel))
+
+	n.OnDisconnect(&glightning.DisconnectEvent{PeerId: "02peer"})
+	assert.False(t, n.IsPeerConnected(channel))
+	n.OnConnect(&glightning.ConnectEvent{PeerId: "02peer"})
+	assert.True(t, n.IsPeerConnected(channel))
+
+	// a channel whose peer is unknown keeps its own flag
+	assert.True(t, n.IsPeerConnected(&glightning.PeerChannel{ShortChannelId: "9x9x9", PeerConnected: true}))
+}
