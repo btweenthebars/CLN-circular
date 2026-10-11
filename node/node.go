@@ -37,7 +37,10 @@ type Node struct {
 	channelsReadAt     map[string]time.Time        // later reads of one peer's channels, guarded by PeersLock
 	Graph              *graph.Graph
 	DB                 *Store
-	Stopped            atomic.Bool // circular-stop: no new rebalances
+	dataDir            string                  // lightning-dir/circular
+	pendingBeliefs     map[string]graph.Belief // read at start, applied after the first graph refresh
+	migrateLegacy      bool                    // pendingBeliefs came from an earlier version's graph.json
+	Stopped            atomic.Bool             // circular-stop: no new rebalances
 	gossipStopped      atomic.Bool
 	ActivePayments     map[string]*ActivePayment
 	activePaymentsLock *sync.RWMutex
@@ -76,7 +79,9 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 	n.Id = info.Id
 
 	n.Logln(glightning.Debug, "loading from file")
-	n.getGraphFromFile(err, config)
+	n.Graph = graph.NewGraph()
+	n.dataDir = config.LightningDir + "/" + CIRCULAR_DIR
+	n.loadLearned()
 
 	n.Logln(glightning.Debug, "refreshing peers")
 	if err = n.refreshPeers(); err != nil {
@@ -105,6 +110,12 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 func (n *Node) Close() {
 	n.Stopped.Store(true)
 	n.StopGossipParser()
+	if n.Graph != nil && n.dataDir != "" && n.pendingBeliefs == nil {
+		// keep what was learned since the last graph refresh
+		if err := n.SaveLearned(n.dataDir); err != nil {
+			n.Logf(glightning.Unusual, "error saving liquidity beliefs: %+v", err)
+		}
+	}
 	if n.DB != nil {
 		if err := n.DB.Close(); err != nil {
 			n.Logln(glightning.Unusual, "error closing the database: ", err)
@@ -112,13 +123,34 @@ func (n *Node) Close() {
 	}
 }
 
-func (n *Node) getGraphFromFile(err error, config *glightning.Config) {
-	err = n.LoadGraphFromFile(config.LightningDir+"/"+CIRCULAR_DIR, graph.FILE)
+// loadLearned reads what earlier runs learned. The beliefs are applied once
+// the first graph refresh has built the graph from listchannels.
+func (n *Node) loadLearned() {
+	beliefs, legacy, err := n.LoadLearned(n.dataDir)
 	if err != nil {
-		// No saved graph could be read: start from an empty one, which the
-		// graph refresh fills from gossip.
-		n.Logln(glightning.Unusual, err)
-		n.Graph = graph.NewGraph()
+		n.Logln(glightning.Info, "no saved liquidity beliefs: starting from the defaults")
+		return
+	}
+	n.pendingBeliefs = beliefs
+	n.migrateLegacy = legacy
+}
+
+// applyLearned applies the beliefs loadLearned read, once the graph has its
+// channels, and saves what the graph knows.
+func (n *Node) applyLearned() {
+	if n.pendingBeliefs != nil {
+		since := time.Now().Add(-n.liquidityRefresh).Unix()
+		applied := n.Graph.ApplyBeliefs(n.pendingBeliefs, since)
+		n.Logf(glightning.Info, "applied %d of %d saved liquidity beliefs", applied, len(n.pendingBeliefs))
+		n.pendingBeliefs = nil
+	}
+	if err := n.SaveLearned(n.dataDir); err != nil {
+		n.Logf(glightning.Unusual, "error saving liquidity beliefs: %+v", err)
+		return
+	}
+	if n.migrateLegacy {
+		n.RemoveLegacyGraph(n.dataDir)
+		n.migrateLegacy = false
 	}
 }
 

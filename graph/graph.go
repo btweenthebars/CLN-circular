@@ -9,7 +9,6 @@ import (
 )
 
 const (
-	FILE                                = "graph.json"
 	DEFAULT_GRAPH_REFRESH_INTERVAL      = 10      // minutes
 	PRUNING_INTERVAL               uint = 1209600 // 14 days
 )

@@ -48,7 +48,7 @@ This plugin is dynamic, meaning that you can start and stop it via the CLI. For 
 
 The executable that you have just built is called `circular`.
 The startup options are:
-* `circular-graph-refresh` (**minutes**): How often the graph is refreshed. Default is 10.
+* `circular-graph-refresh` (**minutes**): How often the graph is refreshed. Default is 10. At each refresh, what rebalances have learned about channels' liquidity is saved to `circular/learned.json` (a few hundred KB), and loaded at the next start. Earlier versions saved the whole graph to `graph.json` instead; its beliefs are migrated at the first start, then the file is removed.
 * `circular-peer-refresh` (**seconds**): How often the list of peers is refreshed . Default is 30.
 * `circular-liquidity-refresh` (**minutes**): Period of time after which we consider a liquidity belief not valid anymore. Default is 300.
 * `circular-save-stats` (**boolean**): Whether to save stats about the usage of the plugin. Default is true. Save this to false if you are not interested in stats, as this data can grow big if you are running a lot of rebalances. You can delete the stats with the method `circular-delete-stats`.
