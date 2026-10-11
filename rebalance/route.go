@@ -36,18 +36,36 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 	return route, nil
 }
 
-func (r *Rebalance) tryRoute(exclude map[string]bool) (*graph.PrettyRoute, error) {
-	r.Node.Logln(glightning.Debug, "generating route")
-	route, err := r.getRoute(exclude)
-	if err != nil {
-		return nil, err
-	}
+// tryRoute pays route, and learns from the outcome.
+func (r *Rebalance) tryRoute(route *graph.Route, exclude map[string]bool) (*graph.PrettyRoute, error) {
 	if err := r.checkFirstHop(route); err != nil {
 		return nil, err
 	}
 
-	// Pay ourselves through a short-lived invoice, so that lightningd checks the
-	// incoming HTLC (payment secret, amount, CLTV) before releasing the preimage.
+	pay := r.pay
+	if pay == nil {
+		pay = r.payInvoice
+	}
+	prettyRoute, err := pay(route)
+	if err != nil {
+		// Learn from the failure now, so the next attempt avoids what failed.
+		var paymentError *glightning.PaymentError
+		if errors.As(err, &paymentError) && paymentError.Data != nil {
+			return nil, r.learnFromFailure(route, paymentError.Data, exclude)
+		}
+
+		// a timeout, or an RPC error: retrying the same call would not help
+		return nil, err
+	}
+
+	r.learnFromSuccess(route)
+	return prettyRoute, nil
+}
+
+// payInvoice pays route to ourselves through a short-lived invoice, so that
+// lightningd checks the incoming HTLC (payment secret, amount, CLTV) before
+// releasing the preimage.
+func (r *Rebalance) payInvoice(route *graph.Route) (*graph.PrettyRoute, error) {
 	invoice, err := r.Node.CreateRebalanceInvoice(route.Amount)
 	if err != nil {
 		r.Node.Logln(glightning.Unusual, "unable to create rebalance invoice: ", err)
@@ -64,17 +82,8 @@ func (r *Rebalance) tryRoute(exclude map[string]bool) (*graph.PrettyRoute, error
 	r.Node.Logln(glightning.Debug, prettyRoute)
 	r.Node.Logln(glightning.Debug, prettyRoute.Simple())
 
-	_, err = r.Node.SendPay(route, invoice)
-	if err != nil {
-		// Learn from the failure now, so the next attempt avoids what failed.
-		var paymentError *glightning.PaymentError
-		if errors.As(err, &paymentError) && paymentError.Data != nil {
-			return nil, r.learnFromFailure(route, paymentError.Data, exclude)
-		}
-
-		// a timeout, or an RPC error: retrying the same call would not help
+	if _, err := r.Node.SendPay(route, invoice); err != nil {
 		return nil, err
 	}
-
 	return prettyRoute, nil
 }

@@ -93,7 +93,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Result = NewResult(r.amount)
 
 	// while there's something inflight, wait for results
-	for r.InFlightAmount > 0 {
+	for r.splitsInFlight > 0 {
 		r.Node.Logln(glightning.Debug, "Waiting for result, InFlightAmount:", r.InFlightAmount)
 		rebalanceResult := <-r.RebalanceResultChan
 
@@ -145,8 +145,9 @@ func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {
 	r.AmountLock.Lock()
 	defer r.AmountLock.Unlock()
 
-	r.InFlightAmount -= r.splitAmount
+	r.InFlightAmount -= result.Requested
+	r.splitsInFlight--
 	if result.Status == "success" {
-		r.AmountRebalanced += r.splitAmount
+		r.AmountRebalanced += result.AmountMsat
 	}
 }

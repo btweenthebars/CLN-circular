@@ -18,7 +18,22 @@ type Rebalance struct {
 	Attempts   int
 	MaxHops    int
 	Node       *node.Node
+
+	// MinAmount, when above 0 and below Amount, lets a payment that fails for
+	// lack of liquidity along the route try the same route again with half the
+	// amount, down to MinAmount (msat). A success may then deliver less than
+	// Amount.
+	MinAmount uint64
+	// Route, if set, is tried before searching: the channel ids of a route
+	// that worked, as in Result.Channels.
+	Route []string
+
+	// pay sends a payment over a route; tests replace payInvoice with it
+	pay func(route *graph.Route) (*graph.PrettyRoute, error)
 }
+
+// maxShrinks bounds how many times a route is retried with less.
+const maxShrinks = 8
 
 func NewRebalance(outChannel, inChannel *graph.Channel, amount, maxppm uint64, attempts, maxHops int) *Rebalance {
 	return &Rebalance{
@@ -49,13 +64,28 @@ func (r *Rebalance) Run() *Result {
 		// exclude accumulates failing channels across attempts so the pathfinder
 		// skips them on subsequent tries within the same Run() call.
 		exclude = map[string]bool{r.Node.Id: true}
+		// payments made besides the attempts: retries of a route with less
+		extra = 0
 	)
+	requested := r.Amount
+	defer func() { r.Amount = requested }()
+
+	// a route that worked before needs no search
+	known := r.knownRoute()
 	for i <= r.Attempts {
 		r.Node.Logln(glightning.Debug, "===================== ATTEMPT ", i, " =====================")
 
 		// One search returns the route with the fewest hops within maxppm,
 		// and the cheapest of those.
-		result, err := r.runAttempt(exclude)
+		result, sent, err := r.runAttempt(exclude, known)
+		known = nil
+		if errors.Is(err, errShortOfLiquidity) && sent != nil {
+			// the route works, but for less: retry it before searching again
+			var shrinks int
+			result, shrinks, err = r.shrinkOnRoute(sent, exclude, err)
+			extra += shrinks
+			r.Amount = requested
+		}
 		if err == util.ErrNoRoute || errors.As(err, &util.ErrRouteTooExpensive{}) {
 			r.Node.Logln(glightning.Debug, err)
 			lastError = err.Error()
@@ -63,7 +93,7 @@ func (r *Rebalance) Run() *Result {
 
 		// Success
 		if err == nil && result != nil {
-			result.Attempts = uint64(i)
+			result.Attempts = uint64(i + extra)
 			r.Node.Logln(glightning.Info, result.Message)
 			if result.Route != nil {
 				r.Node.Logln(glightning.Info, "\n"+result.Route.String())
@@ -95,51 +125,107 @@ func (r *Rebalance) Run() *Result {
 			break
 		}
 
-		if err != util.ErrTemporaryFailure {
+		if !errors.Is(err, util.ErrTemporaryFailure) {
 			lastError = err.Error()
 			break
 		}
 	}
 
 	failure := NewResult("failure", r.Amount/1000, r.OutChannel.Destination, r.InChannel.Source)
-	failure.Attempts = uint64(i - 1)
+	failure.Attempts = uint64(i - 1 + extra)
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " attempts."
 	failure.Message += lastError
 
 	return failure
 }
 
-func (r *Rebalance) runAttempt(exclude map[string]bool) (*Result, error) {
+// knownRoute prices r.Route for r.Amount, or returns nil if it cannot be
+// used: a channel is gone or disabled, or it now costs more than maxppm.
+func (r *Rebalance) knownRoute() *graph.Route {
+	if len(r.Route) == 0 {
+		return nil
+	}
+	route, err := r.Node.Graph.GetRouteOverChannels(r.Route, r.Amount)
+	if err != nil || route.FeePPM() > r.MaxPPM {
+		r.Node.Logln(glightning.Debug, "the route that worked before cannot be used again: searching")
+		return nil
+	}
+	return route
+}
+
+// shrinkOnRoute retries the route that failed for lack of liquidity with half
+// the amount each time, down to r.MinAmount, while it keeps failing that way.
+// It returns the result of the last payment and the number of payments made,
+// or failed, unchanged, when shrinking is off or the route cannot be used.
+func (r *Rebalance) shrinkOnRoute(sent *graph.Route, exclude map[string]bool, failed error) (*Result, int, error) {
+	if r.MinAmount == 0 || r.MinAmount >= r.Amount {
+		return nil, 0, failed
+	}
+	ids := sent.ChannelIds()
+	amount := r.Amount
+	payments := 0
+	for payments < maxShrinks {
+		amount = amount / 2 / 1000 * 1000 // whole sats
+		if amount < r.MinAmount || amount == 0 {
+			break
+		}
+		route, err := r.Node.Graph.GetRouteOverChannels(ids, amount)
+		if err != nil || route.FeePPM() > r.MaxPPM {
+			break // base fees weigh more on smaller amounts
+		}
+		r.Node.Logf(glightning.Debug, "retrying the same route with %d sats", amount/1000)
+		r.Amount = amount
+		payments++
+		result, _, err := r.runAttempt(exclude, route)
+		if !errors.Is(err, errShortOfLiquidity) {
+			return result, payments, err
+		}
+		failed = err
+	}
+	return nil, payments, failed
+}
+
+// runAttempt sends one payment: over route if it is not nil, otherwise over
+// the route a search finds. It returns the route it sent, if any.
+func (r *Rebalance) runAttempt(exclude map[string]bool, route *graph.Route) (*Result, *graph.Route, error) {
 	if r.Node.Stopped.Load() {
-		return nil, util.ErrCircularStopped
+		return nil, nil, util.ErrCircularStopped
 	}
 
 	if err := r.validateLiquidityParameters(r.OutChannel, r.InChannel); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	route, err := r.tryRoute(exclude)
+	if route == nil {
+		var err error
+		if route, err = r.getRoute(exclude); err != nil {
+			return nil, nil, err
+		}
+	}
+	prettyRoute, err := r.tryRoute(route, exclude)
 	if err != nil {
-		return nil, err
+		return nil, route, err
 	}
 
-	result := NewResult("success", r.Amount/1000,
+	result := NewResult("success", route.Amount/1000,
 		r.OutChannel.Destination, r.InChannel.Source)
+	result.AmountMsat = route.Amount
+	result.Channels = route.ChannelIds()
 
-	result.Fee = route.Fee
-	result.PPM = route.FeePPM
-	result.Route = route
+	result.Fee = prettyRoute.Fee
+	result.PPM = prettyRoute.FeePPM
+	result.Route = prettyRoute
 	result.Message = fmt.Sprintf("successfully rebalanced %d sats from %s to %s at %d ppm. Total fees paid: %.3f sats",
 		result.Amount, r.Node.Graph.GetAlias(r.OutChannel.Destination), r.Node.Graph.GetAlias(r.InChannel.Source),
 		result.PPM, float64(result.Fee)/1000)
 
-	if route.InboundSavingsMSat != 0 {
-		if route.InboundSavingsMSat > 0 {
-			result.Message += fmt.Sprintf(" (saved %d msat / %d ppm due to inbound discounts)", route.InboundSavingsMSat, route.InboundSavingsPPM)
+	if prettyRoute.InboundSavingsMSat != 0 {
+		if prettyRoute.InboundSavingsMSat > 0 {
+			result.Message += fmt.Sprintf(" (saved %d msat / %d ppm due to inbound discounts)", prettyRoute.InboundSavingsMSat, prettyRoute.InboundSavingsPPM)
 		} else {
-			result.Message += fmt.Sprintf(" (extra %d msat / %d ppm due to inbound surcharges)", -route.InboundSavingsMSat, -route.InboundSavingsPPM)
+			result.Message += fmt.Sprintf(" (extra %d msat / %d ppm due to inbound surcharges)", -prettyRoute.InboundSavingsMSat, -prettyRoute.InboundSavingsPPM)
 		}
 	}
 
-	return result, nil
+	return result, nil, nil
 }

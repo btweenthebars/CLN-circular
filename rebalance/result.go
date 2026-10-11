@@ -13,6 +13,10 @@ type Result struct {
 	PPM        uint64             `json:"ppm,omitempty"`
 	Route      *graph.PrettyRoute `json:"route,omitempty"`
 	FormatHint string             `json:"format-hint,omitempty"`
+
+	AmountMsat uint64   `json:"-"` // what a success delivered, in msat
+	Channels   []string `json:"-"` // a success's route, as channel ids, to send over again
+	Requested  uint64   `json:"-"` // what the caller asked for, in msat (set by the parallel commands)
 }
 
 func NewResult(status string, amount uint64, src, dst string) *Result {

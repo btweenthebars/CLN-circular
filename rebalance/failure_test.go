@@ -4,6 +4,7 @@ import (
 	"circular/graph"
 	"circular/node"
 	"circular/util"
+	"errors"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 	"math"
@@ -78,7 +79,8 @@ func TestTemporaryChannelFailureLearnsBounds(t *testing.T) {
 	exclude := map[string]bool{}
 	err := r.learnFromFailure(route, failureAt("02b", "4x1x1", int(id[len(id)-1]-'0'), failTemporaryChannelFailure), exclude)
 
-	assert.Equal(t, util.ErrTemporaryFailure, err)
+	assert.Equal(t, errShortOfLiquidity, err)
+	assert.True(t, errors.Is(err, util.ErrTemporaryFailure), "another attempt can help")
 	assert.True(t, exclude[id])
 	// 02b could not forward what hop 3 carried: 100,000,000 + the in-peer's 1000
 	assert.Equal(t, route.Hops[3].MilliSatoshi-1, liquidity(r, "4x1x1", "02b", inP))

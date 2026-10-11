@@ -22,6 +22,7 @@ type RebalancePull struct {
 	MaxPPM             uint64   `json:"maxppm,omitempty"`
 	Splits             int      `json:"splits,omitempty"`
 	SplitAmount        uint64   `json:"splitamount,omitempty"`
+	MinSplit           uint64   `json:"minsplit,omitempty"`
 	DepleteUpToPercent float64  `json:"depleteuptopercent,omitempty"`
 	DepleteUpToAmount  uint64   `json:"depleteuptoamount,omitempty"`
 	Attempts           int      `json:"attempts,omitempty"`
@@ -42,7 +43,7 @@ func (r *RebalancePull) Call() (jrpc2.Result, error) {
 	if r.InScid == "" {
 		return nil, util.ErrNoRequiredParameter
 	}
-	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.Splits, r.Attempts, r.MaxHops)
+	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
 
 	r.CandidatesList = r.OutList
 	if r.CandidatesList != nil {
@@ -118,19 +119,9 @@ func (r *RebalancePull) CanUseChannel(channel *glightning.PeerChannel) error {
 	return nil
 }
 
-func (r *RebalancePull) Fire(candidate *graph.Channel) {
-	r.Node.Logln(glightning.Debug, "Firing candidate: ", candidate.ShortChannelId, " for attempts: ", r.attempts)
-	rebalance := rebalance2.NewRebalance(candidate, r.TargetChannel, r.splitAmount, r.maxPPM, r.attempts, r.maxHops)
-
-	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				r.Node.Logf(glightning.Unusual, "panic in rebalance goroutine: %v", rec)
-				r.RebalanceResultChan <- rebalance2.NewResult("failure", r.splitAmount/1000, candidate.Destination, r.TargetChannel.Source)
-			}
-		}()
-		r.RebalanceResultChan <- rebalance.Run()
-	}()
+// Fire drains candidate, our out channel, into the target channel.
+func (r *RebalancePull) Fire(candidate *graph.Channel, amount uint64) {
+	r.launch(candidate, r.TargetChannel, candidate.ShortChannelId, amount)
 }
 
 func (r *RebalancePull) setDefaults() {
@@ -170,6 +161,8 @@ func (r *RebalancePull) EnqueueCandidate(result *rebalance2.Result) {
 		r.Node.Logln(glightning.Unusual, err)
 		return
 	}
+
+	r.routes[scid] = result.Channels
 
 	r.QueueLock.Lock()
 	r.Candidates.PushFront(candidate)

@@ -23,6 +23,12 @@ func (r *AbstractRebalance) setGenericDefaults() {
 	if r.splitAmount == 0 {
 		r.splitAmount = DEFAULT_SPLIT_AMOUNT
 	}
+	if r.minSplit == 0 {
+		r.minSplit = r.splitAmount / 4
+	}
+	if r.minSplit > r.splitAmount {
+		r.minSplit = r.splitAmount // no retries with less
+	}
 	if r.maxPPM == 0 {
 		r.maxPPM = rebalance.DEFAULT_MAXPPM
 	}
@@ -39,6 +45,7 @@ func (r *AbstractRebalance) setGenericDefaults() {
 	// convert to msat
 	r.amount *= 1000
 	r.splitAmount *= 1000
+	r.minSplit *= 1000
 }
 
 func (r *AbstractRebalance) validateGenericParameters() error {

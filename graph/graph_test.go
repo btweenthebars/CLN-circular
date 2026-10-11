@@ -154,3 +154,59 @@ func TestRouteFeePPMDoesNotWrap(t *testing.T) {
 	assert.Equal(t, uint64(math.MaxUint64), feePPM(math.MaxUint64, 1))
 	assert.Equal(t, uint64(math.MaxUint64), nodeFee(math.MaxUint64, math.MinInt64))
 }
+
+// A route that worked is priced again with the channels' current policies.
+func TestGetRouteOverChannels(t *testing.T) {
+	g := newTestGraph()
+	g.channel("1x1x1", "02self", "02out", 0, 0)
+	g.channel("2x1x1", "02out", "02in", 1000, 0)
+	g.channel("3x1x1", "02in", "02self", 0, 0)
+	route, err := g.GetCheapestCircularRoute(g.Channels["1x1x1/"+util.GetDirection("02self", "02out")],
+		g.Channels["3x1x1/"+util.GetDirection("02in", "02self")], 1000000, nil, 8)
+	assert.NoError(t, err)
+	ids := route.ChannelIds()
+
+	again, err := g.GetRouteOverChannels(ids, 500000)
+	if assert.NoError(t, err) {
+		assert.Equal(t, ids, again.ChannelIds())
+		assert.Equal(t, uint64(1000), again.Fee())
+		assert.Equal(t, uint64(500000), again.Amount)
+	}
+
+	// a gossip update since then: the new fee applies
+	g.ApplyChannelUpdate(&ChannelUpdate{ChannelId: ids[1], Timestamp: 10, MessageFlags: 1,
+		BaseFeeMsat: 3000, HtlcMaximumMsat: 10000000000})
+	again, err = g.GetRouteOverChannels(ids, 500000)
+	if assert.NoError(t, err) {
+		assert.Equal(t, uint64(3000), again.Fee())
+	}
+
+	// past the channel's HTLC maximum, disabled, gone, or not a path
+	_, err = g.GetRouteOverChannels(ids, 20000000000)
+	assert.Equal(t, util.ErrNoRoute, err)
+	g.ApplyChannelUpdate(&ChannelUpdate{ChannelId: ids[1], Timestamp: 11, ChannelFlags: 2})
+	_, err = g.GetRouteOverChannels(ids, 500000)
+	assert.Equal(t, util.ErrNoRoute, err)
+	_, err = g.GetRouteOverChannels([]string{ids[0], "9x9x9/0", ids[2]}, 500000)
+	assert.Equal(t, util.ErrNoRoute, err)
+	_, err = g.GetRouteOverChannels([]string{ids[0], ids[2]}, 500000)
+	assert.Equal(t, util.ErrNoRoute, err)
+	_, err = g.GetRouteOverChannels(nil, 500000)
+	assert.Equal(t, util.ErrNoRoute, err)
+}
+
+func TestLearnPayment(t *testing.T) {
+	g := newTestGraph()
+	forward := g.channel("1x1x1", "02a", "02b", 0, 0) // 5,000,000,000 of 10,000,000,000 msat
+	back := g.channel("1x1x1", "02b", "02a", 0, 0)
+	id := "1x1x1/" + util.GetDirection("02a", "02b")
+
+	g.LearnPayment(id, 2000000000)
+	assert.Equal(t, uint64(3000000000), forward.Liquidity)
+	assert.Equal(t, uint64(7000000000), back.Liquidity)
+
+	// it forwarded more than we believed it held
+	g.LearnPayment(id, 4000000000)
+	assert.Equal(t, uint64(0), forward.Liquidity)
+	assert.Equal(t, uint64(10000000000), back.Liquidity, "within capacity")
+}

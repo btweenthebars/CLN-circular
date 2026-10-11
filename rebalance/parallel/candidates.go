@@ -98,25 +98,25 @@ func (r *AbstractRebalance) FireCandidates() {
 	r.AmountLock.Lock()
 	defer r.AmountLock.Unlock()
 
-	carryOn := r.AmountRebalanced+r.InFlightAmount < r.amount
-	splitsInFlight := int(r.InFlightAmount / r.splitAmount)
-
 	r.Node.Logln(glightning.Debug, "Firing candidates")
 	r.Node.Logln(glightning.Debug, "AmountRebalanced: ", r.AmountRebalanced, ", InFlightAmount: ", r.InFlightAmount, ", Total amount:", r.amount)
-	r.Node.Logln(glightning.Debug, "Carry on: ", carryOn, ", splits in flight: ", splitsInFlight)
-	for carryOn && splitsInFlight < r.splits {
+	// Splits may deliver less than they ask for, so each asks for what is
+	// left, up to the split amount.
+	for r.AmountRebalanced+r.InFlightAmount < r.amount && r.splitsInFlight < r.splits {
 		candidate, err := r.GetNextCandidate()
 		if err != nil {
 			// no candidate left
 			r.Node.Logln(glightning.Debug, err)
 			break
 		}
-		r.Fire(candidate)
+		amount := r.amount - r.AmountRebalanced - r.InFlightAmount
+		if amount > r.splitAmount {
+			amount = r.splitAmount
+		}
+		r.Fire(candidate, amount)
 
-		r.InFlightAmount += r.splitAmount
-		carryOn = r.AmountRebalanced+r.InFlightAmount < r.amount
-		splitsInFlight = int(r.InFlightAmount / r.splitAmount)
-
-		r.Node.Logln(glightning.Debug, "Carry on: ", carryOn, ", splits in flight: ", splitsInFlight)
+		r.InFlightAmount += amount
+		r.splitsInFlight++
+		r.Node.Logln(glightning.Debug, "splits in flight: ", r.splitsInFlight)
 	}
 }

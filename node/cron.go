@@ -2,6 +2,7 @@ package node
 
 import (
 	"circular/util"
+	"errors"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/robfig/cron/v3"
 	"log"
@@ -216,6 +217,9 @@ func (n *Node) addLocalChannelsToGraph(channels []*glightning.PeerChannel) {
 // the rebalances that follow one that just moved liquidity see the new
 // balances without waiting for the next peer refresh.
 func (n *Node) RefreshPeerChannels(peerIds ...string) error {
+	if n.lightning == nil {
+		return errors.New("not connected to lightningd")
+	}
 	for _, id := range peerIds {
 		readAt := time.Now()
 		resp, err := n.lightning.ListPeerChannels(id)

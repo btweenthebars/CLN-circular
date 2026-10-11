@@ -7,6 +7,11 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 )
 
+// errShortOfLiquidity is util.ErrTemporaryFailure for a channel along the route,
+// not one of ours, that could not carry the amount: the same route may carry
+// less.
+var errShortOfLiquidity = fmt.Errorf("%w: a channel on the route could not carry the amount", util.ErrTemporaryFailure)
+
 // BOLT 4 failure codes that a rebalance reacts to.
 const (
 	failNodeBit                 = 0x2000
@@ -26,8 +31,9 @@ func channelId(c *graph.Channel) string {
 
 // learnFromFailure updates the graph and this run's exclusions from a failed
 // payment, using the amount the route carried on each hop, before the next
-// attempt searches again. It returns the error for Run:
-// util.ErrTemporaryFailure when another attempt can help.
+// attempt searches again. It returns the error for Run: one that is
+// util.ErrTemporaryFailure when another attempt can help, and
+// errShortOfLiquidity when a channel along the route lacked liquidity.
 func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.PaymentErrorData, exclude map[string]bool) error {
 	g := r.Node.Graph
 	r.Node.Logf(glightning.Debug, "payment failed at %s, channel %s/%d: %s (0x%04x)",
@@ -80,6 +86,7 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		}
 		g.LearnUpperBound(id, hop.MilliSatoshi)
 		exclude[id] = true
+		return errShortOfLiquidity
 
 	case failFeeInsufficient, failIncorrectCltvExpiry, failAmountBelowMinimum, failExpiryTooSoon:
 		// Our copy of the channel's policy is out of date.
@@ -112,6 +119,14 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 	}
 
 	return util.ErrTemporaryFailure
+}
+
+// learnFromSuccess records that each channel along the route, other than our
+// own (kept up to date from listpeerchannels), forwarded its hop's amount.
+func (r *Rebalance) learnFromSuccess(route *graph.Route) {
+	for i := 1; i < len(route.Hops)-1; i++ {
+		r.Node.Graph.LearnPayment(channelId(route.Hops[i].Channel), route.Hops[i].MilliSatoshi)
+	}
 }
 
 // refreshPolicy reloads a channel's policy from lightningd, which applies the

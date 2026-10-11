@@ -378,6 +378,31 @@ func (g *Graph) LearnLowerBound(channelId string, amount uint64) {
 	}
 }
 
+// LearnPayment records that channelId forwarded amount, which has now moved
+// to the other side: the channel held at least amount and now holds that
+// much less, and the other direction holds that much more, within capacity.
+func (g *Graph) LearnPayment(channelId string, amount uint64) {
+	g.channelsLock.Lock()
+	defer g.channelsLock.Unlock()
+
+	now := time.Now().Unix()
+	if c, ok := g.Channels[channelId]; ok {
+		if c.Liquidity < amount {
+			c.Liquidity = amount
+		}
+		c.Liquidity -= amount
+		c.Timestamp = now
+	}
+	if c, ok := g.Channels[OppositeChannelId(channelId)]; ok {
+		capacity := c.AmountMsat.MSat()
+		c.Liquidity = addSaturating(c.Liquidity, amount)
+		if c.Liquidity > capacity {
+			c.Liquidity = capacity
+		}
+		c.Timestamp = now
+	}
+}
+
 // MarkUnusable records that channelId cannot forward anything (disabled,
 // closed or unknown to its node) until its liquidity belief is reset. The
 // other direction is left alone.

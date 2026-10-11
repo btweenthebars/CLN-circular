@@ -95,6 +95,7 @@ Optional parameters:
 * `amount`(sats, default=400000) is the **total** amount that you want to rebalance
 * `splits`(default=4) is the maximum number of rebalances that will happen in parallel
 * `splitamount`(sats, default=100000) is the amount that each rebalance will carry
+* `minsplit`(sats, default=`splitamount`/4) is the smallest amount a split may shrink to. When a split fails because a channel along its route lacks liquidity, it retries the same route with half the amount, down to `minsplit`, before searching for another route. Set it to `splitamount` to turn this off.
 * `maxoutppm`(default=50) is the maximum ppm of the outgoing channels that `circular` is allowed to use to rebalance `inscid`. Useful to avoid rebalancing a channel from channels where you can profit
 * `maxppm`(default=10), `attempts`(default=1) and `maxhops`(default=8) are the same as for the `circular` command
 * `outlist` is a JSON array of node ids that you want to use as sources. If this is specified, `maxoutppm` is ignored. An example of how to use this parameter is the following:
@@ -127,6 +128,8 @@ The result of `circular-pull` (and `circular-push`) looks like this:
   }
 }
 ```
+Once a split succeeds, the next split through the same channel first tries the same route again, with current fees, and only searches if that route is no longer usable or now costs more than `maxppm`. Splits that shrank count for what they delivered, and the following splits ask for what is left.
+
 `successes` is keyed by the short channel id of each channel that was used: the outgoing channel drained by `circular-pull`, or the incoming channel filled by `circular-push`. Each entry has the peer's alias (when known) and node id, then the sats rebalanced at each fee rate paid, in ppm.
 
 ### Push liquidity out of a channel to many destinations in parallel
@@ -139,7 +142,7 @@ Required parameters:
 * `outscid`: the Short Channel Id from which you want to push out liquidity.
 
 Optional parameters:
-* `amount`, `splits`, `splitamount`, `maxppm`, `attempts` and `maxhops` are the same as for the `circular-pull` command.
+* `amount`, `splits`, `splitamount`, `minsplit`, `maxppm`, `attempts` and `maxhops` are the same as for the `circular-pull` command.
 * `minoutppm`(default=50) is the minimum ppm charged by your node that a channel has to charge to be selected by `circular-push`. Useful to avoid rebalancing a channel to channels where you can't profit from.
 * `inlist` is a JSON array of node ids that you want to use as destinations. If this is specified, `minoutppm` is ignored. An example of how to use this parameter is the following:
 ```bash

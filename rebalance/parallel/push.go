@@ -22,6 +22,7 @@ type RebalancePush struct {
 	MaxPPM          uint64   `json:"maxppm,omitempty"`
 	Splits          int      `json:"splits,omitempty"`
 	SplitAmount     uint64   `json:"splitamount,omitempty"`
+	MinSplit        uint64   `json:"minsplit,omitempty"`
 	Attempts        int      `json:"attempts,omitempty"`
 	MaxHops         int      `json:"maxhops,omitempty"`
 	FillUpToPercent float64  `json:"filluptopercent,omitempty"`
@@ -42,7 +43,7 @@ func (r *RebalancePush) Call() (jrpc2.Result, error) {
 	if r.OutScid == "" {
 		return nil, util.ErrNoRequiredParameter
 	}
-	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.Splits, r.Attempts, r.MaxHops)
+	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
 
 	r.CandidatesList = r.InList
 	if r.CandidatesList != nil {
@@ -117,19 +118,9 @@ func (r *RebalancePush) CanUseChannel(channel *glightning.PeerChannel) error {
 	return nil
 }
 
-func (r *RebalancePush) Fire(candidate *graph.Channel) {
-	r.Node.Logln(glightning.Debug, "Firing candidate: ", candidate.ShortChannelId, " for attempts: ", r.attempts)
-	rebalance := rebalance2.NewRebalance(r.TargetChannel, candidate, r.splitAmount, r.maxPPM, r.attempts, r.maxHops)
-
-	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				r.Node.Logf(glightning.Unusual, "panic in rebalance goroutine: %v", rec)
-				r.RebalanceResultChan <- rebalance2.NewResult("failure", r.splitAmount/1000, r.TargetChannel.Destination, candidate.Source)
-			}
-		}()
-		r.RebalanceResultChan <- rebalance.Run()
-	}()
+// Fire drains the target channel into candidate, our in channel.
+func (r *RebalancePush) Fire(candidate *graph.Channel, amount uint64) {
+	r.launch(r.TargetChannel, candidate, candidate.ShortChannelId, amount)
 }
 
 func (r *RebalancePush) validateParameters() error {
@@ -169,6 +160,8 @@ func (r *RebalancePush) EnqueueCandidate(result *rebalance2.Result) {
 		r.Node.Logln(glightning.Unusual, err)
 		return
 	}
+
+	r.routes[scid] = result.Channels
 
 	r.QueueLock.Lock()
 	r.Candidates.PushFront(candidate)

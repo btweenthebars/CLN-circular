@@ -6,9 +6,12 @@ import (
 	"circular/rebalance"
 	"circular/util"
 	"encoding/json"
+	"fmt"
 	"github.com/elementsproject/glightning/glightning"
+	"github.com/gammazero/deque"
 	"github.com/stretchr/testify/assert"
 	"math"
+	"sync"
 	"testing"
 )
 
@@ -142,4 +145,109 @@ func TestSuccessesAreKeyedByChannel(t *testing.T) {
 	out, err = json.Marshal(push.Result.Successes)
 	assert.NoError(t, err)
 	assert.Equal(t, `{"1x1x1":{"alias":"BCash_Is_Trash","node_id":"02bcash","3":1,"5":7}}`, string(out))
+}
+
+// fakeSplits stands in for circular-pull: each split delivers what deliver
+// gives it, at most what it asked for.
+type fakeSplits struct {
+	*AbstractRebalance
+	deliver func(call int, amount uint64) uint64
+	calls   int
+	asked   []uint64
+	lock    sync.Mutex
+}
+
+func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
+func (f *fakeSplits) CanUseChannel(*glightning.PeerChannel) error  { return nil }
+func (f *fakeSplits) GetCandidateDirection(string) string          { return "0" }
+func (f *fakeSplits) AddSuccess(result *rebalance.Result) {
+	f.AddSuccessGeneric(result.Route.Hops[0].ShortChannelId, result.Out, result.PPM, result.Amount)
+}
+func (f *fakeSplits) EnqueueCandidate(result *rebalance.Result) {
+	c, _ := f.Node.Graph.GetChannel(result.Route.Hops[0].ShortChannelId + "/0")
+	f.QueueLock.Lock()
+	f.Candidates.PushFront(c)
+	f.QueueLock.Unlock()
+}
+func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
+	f.lock.Lock()
+	delivered := f.deliver(f.calls, amount)
+	f.calls++
+	f.asked = append(f.asked, amount)
+	f.lock.Unlock()
+	result := rebalance.NewResult("failure", amount/1000, candidate.Destination, "02target")
+	result.Requested = amount
+	if delivered > 0 {
+		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
+		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
+		result.Route = &graph.PrettyRoute{Hops: []graph.PrettyRouteHop{{ShortChannelId: candidate.ShortChannelId}}}
+	}
+	go func() { f.RebalanceResultChan <- result }()
+}
+
+func splitsOn(t *testing.T, candidates int, deliver func(int, uint64) uint64) *fakeSplits {
+	g := graph.NewGraph()
+	n := &node.Node{Id: "02self", Graph: g, PeersLock: &sync.RWMutex{}, Peers: map[string]*glightning.Peer{}}
+	q := deque.New[*graph.Channel]()
+	for i := 0; i < candidates; i++ {
+		scid := fmt.Sprintf("%dx1x1", i+1)
+		peer := fmt.Sprintf("02peer%d", i)
+		c := graph.NewChannel(&glightning.Channel{Source: "02self", Destination: peer, ShortChannelId: scid,
+			AmountMsat: glightning.AmountFromMSat(10000000000)}, 0, 0)
+		g.AddChannel(c)
+		g.Channels[scid+"/0"] = c
+		n.Peers[peer] = &glightning.Peer{Id: peer, Channels: []*glightning.PeerChannel{{ShortChannelId: scid}}}
+		q.PushBack(c)
+	}
+	a := &AbstractRebalance{Node: n, Candidates: q, AmountLock: &sync.Mutex{}, QueueLock: &sync.Mutex{},
+		RebalanceResultChan: make(chan *rebalance.Result, 4), amount: 300000000, splitAmount: 100000000, splits: 2,
+		routes: map[string][]string{}}
+	f := &fakeSplits{AbstractRebalance: a, deliver: deliver}
+	a.RebalanceMethods = f
+	return f
+}
+
+// Splits that deliver less than they ask for are counted as what they
+// delivered, and the next splits ask for what is left.
+func TestPartialSplitsAreCountedByWhatTheyDelivered(t *testing.T) {
+	f := splitsOn(t, 2, func(call int, amount uint64) uint64 {
+		if call == 0 {
+			return amount / 2 // the first split is retried with half
+		}
+		return amount
+	})
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	assert.Equal(t, uint64(300000), res.RebalancedAmount)
+	assert.Equal(t, uint64(300000000), f.AmountRebalanced)
+	assert.Equal(t, uint64(0), f.InFlightAmount)
+	assert.Equal(t, 0, f.splitsInFlight)
+	var asked uint64
+	for _, a := range f.asked {
+		asked += a
+		assert.LessOrEqual(t, a, uint64(100000000))
+	}
+	assert.Equal(t, uint64(350000000), asked, "the 50k it did not deliver was asked for again")
+	assert.Equal(t, uint64(50000000), f.asked[len(f.asked)-1], "the last split asks only for what is left")
+}
+
+func TestFailedSplitsStopWhenCandidatesRunOut(t *testing.T) {
+	f := splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(0), result.(*Result).RebalancedAmount)
+	assert.Equal(t, 2, len(f.asked))
+	assert.Equal(t, 0, f.splitsInFlight)
+}
+
+func TestMinSplitDefaults(t *testing.T) {
+	r := &AbstractRebalance{amount: 400000, splitAmount: 100000}
+	r.setGenericDefaults()
+	assert.Equal(t, uint64(25000000), r.minSplit)
+	r = &AbstractRebalance{amount: 400000, splitAmount: 100000, minSplit: 200000}
+	r.setGenericDefaults()
+	assert.Equal(t, r.splitAmount, r.minSplit, "above the split amount: no retries with less")
 }

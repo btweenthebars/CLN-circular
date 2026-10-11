@@ -361,6 +361,51 @@ func (l *label) path() []*Channel {
 	return channels
 }
 
+// GetRouteOverChannels prices a route that delivers amount over the channels
+// with the given ids ("scid/direction", in payment order), with their current
+// policies. Rebalances use it to send again over a route that worked, or to
+// retry one with less. It returns util.ErrNoRoute if a channel is gone or
+// disabled, cannot carry its hop's amount within its HTLC limits, or the
+// route's delay passes MAX_ROUTE_DELAY. Liquidity beliefs are not checked:
+// the route has just shown what it can carry.
+func (g *Graph) GetRouteOverChannels(ids []string, amount uint64) (*Route, error) {
+	if len(ids) == 0 {
+		return nil, util.ErrNoRoute
+	}
+	channels := make([]*Channel, len(ids))
+	g.channelsLock.RLock()
+	for i, id := range ids {
+		channels[i] = g.Channels[id]
+	}
+	g.channelsLock.RUnlock()
+	for i, c := range channels {
+		if c == nil || !c.IsActive || (i > 0 && channels[i-1].Destination != c.Source) {
+			return nil, util.ErrNoRoute
+		}
+	}
+
+	route := newRouteFromChannels(channels[0].Destination, channels[len(channels)-1].Source, amount, channels, g)
+	for _, hop := range route.Hops {
+		if hop.MilliSatoshi == math.MaxUint64 || hop.MilliSatoshi < hop.minHtlcMsat || hop.MilliSatoshi > hop.maxHtlcMsat {
+			return nil, util.ErrNoRoute
+		}
+	}
+	if route.Hops[0].Delay > MAX_ROUTE_DELAY {
+		return nil, util.ErrNoRoute
+	}
+	return route, nil
+}
+
+// ChannelIds returns the ids ("scid/direction") of the route's channels, in
+// payment order.
+func (r *Route) ChannelIds() []string {
+	ids := make([]string, len(r.Hops))
+	for i, hop := range r.Hops {
+		ids[i] = hop.ShortChannelId + "/" + util.GetDirection(hop.Source, hop.Destination)
+	}
+	return ids
+}
+
 // newRouteFromChannels prices a route that delivers amount over channels.
 func newRouteFromChannels(src, dst string, amount uint64, channels []*Channel, g *Graph) *Route {
 	hops := make([]RouteHop, len(channels))
