@@ -207,7 +207,7 @@ func TestLearnPayment(t *testing.T) {
 
 	// it forwarded more than we believed it held
 	g.LearnPayment(id, 4000000000)
-	assert.Equal(t, uint64(0), forward.Liquidity)
+	assert.Equal(t, uint64(1), forward.Liquidity, "used up, but not marked unusable")
 	assert.Equal(t, uint64(10000000000), back.Liquidity, "within capacity")
 }
 
@@ -285,4 +285,14 @@ func TestReviewFollowUps(t *testing.T) {
 	newer.LastUpdate++
 	g.RefreshChannels([]*glightning.Channel{&newer})
 	assert.False(t, g.Avoided(now)[id])
+}
+
+// A channel drained by a payment fades back like any other belief.
+func TestDrainedChannelFadesBack(t *testing.T) {
+	g := newTestGraph()
+	c := g.channel("1x1x1", "02a", "02b", 0, 0)
+	g.LearnPayment("1x1x1/"+util.GetDirection("02a", "02b"), 5000000000)
+	c.Timestamp -= 7200
+	g.DecayLiquidity(time.Hour)
+	assert.InDelta(t, 3750000000, float64(c.Liquidity), 2000000)
 }

@@ -401,6 +401,11 @@ func (g *Graph) LearnPayment(channelId string, amount uint64) {
 			c.Liquidity = amount
 		}
 		c.Liquidity -= amount
+		if c.Liquidity == 0 {
+			// used up, not unusable: 0 is kept for MarkUnusable, which
+			// DecayLiquidity leaves alone
+			c.Liquidity = 1
+		}
 		c.Timestamp = now
 	}
 	if c, ok := g.Channels[OppositeChannelId(channelId)]; ok {

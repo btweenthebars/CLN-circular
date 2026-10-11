@@ -253,3 +253,22 @@ func TestOurPeersAreNotAvoided(t *testing.T) {
 	_ = r.learnFromFailure(route, failureAt("02a", "3x1x1", 0, failNodeBit|2), exclude)
 	assert.Equal(t, map[string]bool{"02a": true}, r.Node.Graph.Avoided(0))
 }
+
+// A peer of ours avoided as the middle hop of another rebalance blocked
+// every rebalance through our channel with it.
+func TestAvoidedPeersStillEndOurRoutes(t *testing.T) {
+	n, out, in := shortRoute()
+	n.liquidity = map[string]uint64{}
+	n.Graph.Avoid(outP, 1<<40)
+	n.Graph.Avoid(inP, 1<<40)
+	r := rebalanceOn(n, out, in, 100000000)
+	assert.Equal(t, "success", r.Run().Status)
+
+	// the known route is checked the same way
+	n.paid = nil
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Route = []string{id("1x1x1", self, outP), id("2x1x1", outP, "02a"), id("3x1x1", "02a", "02b"),
+		id("4x1x1", "02b", inP), id("5x1x1", inP, self)}
+	assert.Equal(t, "success", r.Run().Status)
+	assert.Equal(t, 1, len(n.paid))
+}

@@ -70,6 +70,10 @@ func (r *Rebalance) Run() *Result {
 		extra = 0
 	)
 	exclude[r.Node.Id] = true
+	// Our own peers may be avoided as middle hops of other routes, but here
+	// they are the ends of ours: excluding them would leave no route.
+	delete(exclude, r.OutChannel.Destination)
+	delete(exclude, r.InChannel.Source)
 	requested := r.Amount
 	defer func() { r.Amount = requested }()
 
