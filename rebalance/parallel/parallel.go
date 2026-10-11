@@ -61,9 +61,12 @@ type AbstractRebalance struct {
 	// (0 counts as 1), doubled each time growing it was refused (capProbing)
 	capBackoff      int
 	capProbing      bool
-	busyRefusals    map[string]int // busy refusals by the target, by candidate
+	busyRefusals    map[string]int // unexplained busy refusals by the target, by candidate
 	targetRechecked bool
-	targetStopped   bool
+	// refusedAlone is the candidate the target refused with nothing else in
+	// flight after it was read again, since the last success
+	refusedAlone  string
+	targetStopped bool
 	// refresh reads our channels with peers again; tests replace
 	// Node.RefreshPeerChannels with it
 	refresh func(peerIds ...string) error

@@ -305,7 +305,10 @@ func TestTargetThatTakesNoMoreStopsTheRun(t *testing.T) {
 	f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideIn, rebalance.RetryWhenFree }
 	f.FireCandidates()
 	_, _ = f.WaitForResult()
-	assert.Equal(t, 2, len(f.asked), "nothing else was in flight: read again, tried once more, then the target is full")
+	// nothing else was in flight: read again and tried once more; refused
+	// again, the candidate is left out, and when the next one is refused too
+	// the target is full
+	assert.Equal(t, 3, len(f.asked))
 	assert.Equal(t, [][]string{{"02target"}}, refreshed)
 	assert.True(t, f.targetStopped)
 	assert.Equal(t, uint64(0), f.Node.CandidateRecord(candidateId(f.launched[firstLaunched(f)])).Failures)
@@ -554,9 +557,9 @@ func TestTargetCapWaitsLongerAfterARefusedGrowth(t *testing.T) {
 	judge(f, c, 3, busy())
 	assert.Equal(t, 8, growsAfter())
 
-	// a growth that was not refused keeps the wait, for the larger limit
+	// a growth that held for as many successes halves the wait
 	assert.Equal(t, 3, f.targetCap)
-	assert.Equal(t, 3*4, growsAfter())
+	assert.Equal(t, 3*2, growsAfter())
 
 	// it never goes above the splits allowed
 	f.targetCap = 4
@@ -568,17 +571,133 @@ func TestTargetCapWaitsLongerAfterARefusedGrowth(t *testing.T) {
 
 // A candidate the target refused as busy came back after every growth of
 // the limit, for the whole run, though the target may refuse it alone (for
-// the fees its route adds to the HTLC, say).
-func TestCandidateRefusedAsBusyTooOftenIsLeftOut(t *testing.T) {
+// the fees its route adds to the HTLC, say). Refusals the target explains
+// do not count: those in the first round, and those of one more at once.
+func TestCandidateOftenRefusedAsBusyGoesToTheBack(t *testing.T) {
 	f := splitsOn(t, 2, nil)
-	c := f.Candidates.At(0)
-	var requeued []bool
-	for i := 0; i < 5; i++ {
-		requeued = append(requeued, judge(f, c, 2, busy()))
+	f.splits = 4
+	c, d := f.Candidates.At(0), f.Candidates.At(1)
+	f.launched[candidateId(c)] = c
+	refuse := func(cap, inFlight int, probing bool) bool {
+		f.Candidates.Clear()
+		f.Candidates.PushBack(d)
+		f.targetCap, f.capProbing, f.splitsInFlight = cap, probing, inFlight
+		result := busy()
+		result.Candidate = candidateId(c)
+		f.judgeCandidate(result)
+		return f.Candidates.Front() == c // back in front of the others
 	}
-	assert.Equal(t, []bool{true, true, true, false, false}, requeued)
-	assert.False(t, f.targetStopped, "the other candidates may still fit")
+	assert.True(t, refuse(0, 2, false), "the first round")
+	for i := 0; i < 10; i++ {
+		assert.True(t, refuse(3, 3, true), "one more at once")
+		assert.True(t, refuse(1, 3, false), "fired before the limit was lowered")
+	}
+	assert.Empty(t, f.busyRefusals)
+	for i := 1; i <= 3; i++ {
+		assert.True(t, refuse(2, 2, false), "refusal %d: the target had been taking 2", i)
+	}
+	assert.False(t, refuse(2, 2, false), "the others first")
+	assert.Equal(t, 2, f.Candidates.Len(), "not dropped")
+	assert.False(t, f.targetStopped)
 	assert.Equal(t, uint64(0), f.Node.CandidateRecord(candidateId(c)).Failures, "not counted against it")
+}
+
+// roomyTarget stands in for a run whose target takes capacity splits at a
+// time: refused splits come back at once, accepted ones after a while. Each
+// candidate can take room[scid] splits (any number if absent); the target
+// always refuses those in refused, and the route fails for those in
+// routeFails.
+type roomyTarget struct {
+	*fakeSplits
+	capacity   int
+	accepted   int
+	room       map[string]int
+	refused    map[string]bool
+	routeFails map[string]bool
+}
+
+func (b *roomyTarget) CanUseChannel(c *glightning.PeerChannel) error {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	if n, ok := b.room[c.ShortChannelId]; ok && n <= 0 {
+		return util.ErrChannelDepleted
+	}
+	return nil
+}
+
+func (b *roomyTarget) Fire(candidate *graph.Channel, amount uint64) {
+	scid := candidate.ShortChannelId
+	b.lock.Lock()
+	b.asked = append(b.asked, amount)
+	b.launched[candidateId(candidate)] = candidate
+	refuse := b.refused[scid] || b.accepted >= b.capacity
+	route := !refuse && b.routeFails[scid]
+	if !refuse && !route {
+		b.accepted++
+	}
+	b.lock.Unlock()
+
+	result := rebalance.NewResult("failure", amount/1000, candidate.Destination, "02target")
+	result.Requested, result.Candidate = amount, candidateId(candidate)
+	switch {
+	case refuse:
+		result.FailedAt, result.Retry = rebalance.SideIn, rebalance.RetryWhenFree
+		go func() { b.RebalanceResultChan <- result }()
+	case route:
+		result.FailedAt, result.Retry = rebalance.SideRoute, rebalance.RetryNo
+		go func() { b.RebalanceResultChan <- result }()
+	default:
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			b.lock.Lock()
+			b.accepted--
+			if n, ok := b.room[scid]; ok {
+				b.room[scid] = n - 1
+			}
+			b.lock.Unlock()
+			ok := rebalance.NewResult("success", amount/1000, candidate.Destination, "02target")
+			ok.AmountMsat, ok.Requested, ok.Candidate, ok.PPM = amount, amount, candidateId(candidate), 10
+			ok.Route = &graph.PrettyRoute{Hops: []graph.PrettyRouteHop{{ShortChannelId: scid}}}
+			b.RebalanceResultChan <- ok
+		}()
+	}
+}
+
+func roomy(t *testing.T, candidates int, amount uint64, splits, capacity int) *roomyTarget {
+	b := &roomyTarget{fakeSplits: splitsOn(t, candidates, nil), capacity: capacity,
+		room: map[string]int{}, refused: map[string]bool{}, routeFails: map[string]bool{}}
+	b.RebalanceMethods = b
+	b.amount, b.splits = amount, splits
+	b.RebalanceResultChan = make(chan *rebalance.Result, splits)
+	b.refresh = func(...string) error { return nil }
+	return b
+}
+
+// The busy limit counted the refusals of the first round and of one more at
+// once against the candidate fired second, and dropped it: once the other
+// candidate was full, the run ended at half.
+func TestTargetsOwnRefusalsDoNotDropACandidate(t *testing.T) {
+	b := roomy(t, 2, 1600000000, 2, 1) // 16 splits wanted
+	b.room["1x1x1"], b.room["2x1x1"] = 8, 8
+	b.FireCandidates()
+	result, err := b.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1600000), result.(*Result).RebalancedAmount)
+}
+
+// A candidate the target refuses alone was fired alone, refused, read again,
+// refused again, and the run stopped though other candidates fit.
+func TestCandidateRefusedAloneDoesNotStopTheRun(t *testing.T) {
+	for _, splits := range []int{1, 2} {
+		b := roomy(t, 4, 1200000000, splits, 2)
+		b.refused["1x1x1"] = true    // its route's fees make the HTLC too big
+		b.routeFails["2x1x1"] = true // no route from it
+		b.FireCandidates()
+		result, err := b.WaitForResult()
+		assert.NoError(t, err)
+		assert.Equal(t, uint64(1200000), result.(*Result).RebalancedAmount, "%d splits", splits)
+		assert.False(t, b.targetStopped)
+	}
 }
 
 // A target that takes 2 splits at a time, over a long run.
