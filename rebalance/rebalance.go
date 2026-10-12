@@ -37,15 +37,24 @@ type Rebalance struct {
 	// Node.RefreshPeerChannels with it
 	refresh func(peerIds ...string) error
 
+	// MaxOutPeerFails ends a rebalance once the out-peer has failed to
+	// forward this many of its payments for lack of liquidity: it has little
+	// outbound liquidity left, and each new route would only try another of
+	// its channels. 0 means DEFAULT_MAX_OUT_PEER_FAILS.
+	MaxOutPeerFails int
+
 	// outPeerFailures counts the payments of this run that the out-peer
 	// could not forward for lack of liquidity
 	outPeerFailures int
 }
 
-// maxOutPeerFailures ends a rebalance once the out-peer has failed to
-// forward this many of its payments: it has little outbound liquidity left,
-// and each new route would only try another of its channels.
-const maxOutPeerFailures = 5
+// maxOutPeerFails is r.MaxOutPeerFails, or its default.
+func (r *Rebalance) maxOutPeerFails() int {
+	if r.MaxOutPeerFails <= 0 {
+		return DEFAULT_MAX_OUT_PEER_FAILS
+	}
+	return r.MaxOutPeerFails
+}
 
 func NewRebalance(outChannel, inChannel *graph.Channel, amount, maxppm uint64, attempts, maxHops int) *Rebalance {
 	return &Rebalance{

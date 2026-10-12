@@ -114,7 +114,7 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		if k == 1 {
 			// the out-peer could not forward
 			r.outPeerFailures++
-			if r.outPeerFailures >= maxOutPeerFailures {
+			if r.outPeerFailures >= r.maxOutPeerFails() {
 				// the out channel's peer: in a push, the target's, so no split can pass
 				return onOut(fmt.Errorf("%s could not forward %d payments: it has little outbound liquidity left",
 					g.GetAlias(failure.ErringNode), r.outPeerFailures), RetryNo)

@@ -8,11 +8,12 @@ import (
 )
 
 const (
-	NORMAL           = "CHANNELD_NORMAL"
-	DEFAULT_AMOUNT   = 200000000
-	DEFAULT_MAXPPM   = 10
-	DEFAULT_ATTEMPTS = 1
-	DEFAULT_MAXHOPS  = 8
+	NORMAL                     = "CHANNELD_NORMAL"
+	DEFAULT_AMOUNT             = 200000000
+	DEFAULT_MAXPPM             = 10
+	DEFAULT_ATTEMPTS           = 1
+	DEFAULT_MAX_OUT_PEER_FAILS = 5
+	DEFAULT_MAXHOPS            = 8
 )
 
 func (r *Rebalance) checkConnections(inChannel, outChannel *glightning.PeerChannel) error {

@@ -84,7 +84,8 @@ Required parameters:
 Optional parameters:
 * `amount`(sats, default=200000) is the amount that you want to rebalance
 * `maxppm`(default=10) is the maximum ppm that you are willing to pay
-* `attempts`(default=1) is the number of payment attempts that will be made once a path is found. A rebalance stops early once the peer of the out channel has failed to forward 5 of its payments for lack of liquidity, as it has little outbound liquidity left: `circular-pull` then leaves that channel out for the rest of the run, and `circular-push`, whose every split goes out through that peer, starts no more splits.
+* `attempts`(default=1) is the number of payment attempts that will be made once a path is found.
+* `maxoutpeerfails`(default=5) stops a rebalance early, whatever `attempts` is left, once the peer of the out channel has failed to forward that many of its payments for lack of liquidity, as it has little outbound liquidity left: `circular-pull` then leaves that channel out for the rest of the run, and `circular-push`, whose every split goes out through that peer, starts no more splits. Failures further along the route don't count. Set it above `attempts` to turn it off.
 * `maxhops`(default=8) is the maximum number of hops that a path is allowed to have
 
 ### Pull liquidity into a channel from many sources in parallel
@@ -101,7 +102,7 @@ Optional parameters:
 * `splitamount`(sats, default=100000) is the amount that each rebalance will carry
 * `minsplit`(sats, default=`splitamount`, which turns it off) is the smallest amount a split may shrink to. By default a split always asks for its full amount. With a lower `minsplit`, a split whose route fails because a channel along it lacks liquidity still searches for another route first; only if none is left does it send half the amount over the route that was short, down to `minsplit`, and later searches look for the smaller amount. Each payment with less uses one of the `attempts`, so this also needs `attempts` of 2 or more.
 * `maxoutppm`(default=50) is the maximum ppm of the outgoing channels that `circular` is allowed to use to rebalance `inscid`. Useful to avoid rebalancing a channel from channels where you can profit
-* `maxppm`(default=10), `attempts`(default=1) and `maxhops`(default=8) are the same as for the `circular` command
+* `maxppm`(default=10), `attempts`(default=1), `maxoutpeerfails`(default=5) and `maxhops`(default=8) are the same as for the `circular` command
 * `outlist` is a JSON array of node ids that you want to use as sources. If this is specified, `maxoutppm` is ignored. An example of how to use this parameter is the following:
 ```bash
 cli circular-pull -k inscid=123456x1x1 outlist='["03700917a25f79a3e427fe86e49b5041b583c73dd223cfa9a87cd6be5076b7b7a5", "025614be3600e9899bc044d331ab58a9fe1ccf30e75ae35943cdd11218a0a55dba"]' amount=800000 splitamount=80000 splits=4 maxppm=5000
@@ -150,7 +151,7 @@ Required parameters:
 * `outscid`: the Short Channel Id from which you want to push out liquidity.
 
 Optional parameters:
-* `amount`, `splits`, `splitamount`, `minsplit`, `maxppm`, `attempts` and `maxhops` are the same as for the `circular-pull` command.
+* `amount`, `splits`, `splitamount`, `minsplit`, `maxppm`, `attempts`, `maxoutpeerfails` and `maxhops` are the same as for the `circular-pull` command.
 * `minoutppm`(default=50) is the minimum ppm charged by your node that a channel has to charge to be selected by `circular-push`. Useful to avoid rebalancing a channel to channels where you can't profit from.
 * `inlist` is a JSON array of node ids that you want to use as destinations. If this is specified, `minoutppm` is ignored. An example of how to use this parameter is the following:
 ```bash

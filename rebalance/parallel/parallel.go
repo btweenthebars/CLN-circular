@@ -37,6 +37,7 @@ type AbstractRebalance struct {
 	splitAmount         uint64
 	minSplit            uint64 // msat: a split whose route was short, with no other route left, sends less over it, down to this
 	attempts            int
+	maxOutPeerFails     int // see Rebalance.MaxOutPeerFails
 	maxHops             int
 	splitsInFlight      int
 	// routes holds, for each candidate's short channel id, the channel ids of
@@ -123,6 +124,7 @@ func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uin
 	r.Node.Logln(glightning.Debug, "Firing candidate: ", key, " for ", amount/1000, " sats, attempts: ", r.attempts)
 	rebalance := rebalance2.NewRebalance(out, in, amount, r.maxPPM, r.attempts, r.maxHops)
 	rebalance.Node = r.Node
+	rebalance.MaxOutPeerFails = r.maxOutPeerFails
 	rebalance.MinAmount = r.minSplit
 	if rebalance.MinAmount > amount {
 		rebalance.MinAmount = amount

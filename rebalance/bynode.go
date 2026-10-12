@@ -9,13 +9,15 @@ import (
 )
 
 type RebalanceByNode struct {
-	OutNode  string     `json:"outnode"`
-	InNode   string     `json:"innode"`
-	Amount   uint64     `json:"amount,omitempty"`
-	MaxPPM   uint64     `json:"maxppm,omitempty"`
-	Attempts int        `json:"attempts,omitempty"`
-	MaxHops  int        `json:"maxhops,omitempty"`
-	Node     *node.Node `json:"-"`
+	OutNode  string `json:"outnode"`
+	InNode   string `json:"innode"`
+	Amount   uint64 `json:"amount,omitempty"`
+	MaxPPM   uint64 `json:"maxppm,omitempty"`
+	Attempts int    `json:"attempts,omitempty"`
+	MaxHops  int    `json:"maxhops,omitempty"`
+	// MaxOutPeerFails: see Rebalance.MaxOutPeerFails
+	MaxOutPeerFails int        `json:"maxoutpeerfails,omitempty"`
+	Node            *node.Node `json:"-"`
 }
 
 func (r *RebalanceByNode) Name() string {
@@ -85,6 +87,7 @@ func (r *RebalanceByNode) Call() (jrpc2.Result, error) {
 	}
 
 	rebalance := NewRebalance(outgoingChannel, incomingChannel, r.Amount, r.MaxPPM, r.Attempts, r.MaxHops)
+	rebalance.MaxOutPeerFails = r.MaxOutPeerFails
 
 	err = rebalance.Setup()
 	if err != nil {

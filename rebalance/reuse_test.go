@@ -421,27 +421,48 @@ func TestAvoidedPeersStillEndOurRoutes(t *testing.T) {
 // With attempts=100, a split whose out-peer had no outbound liquidity made
 // about 100 payments, each trying another of the out-peer's channels.
 func TestOutPeerThatCannotForwardEndsTheRebalance(t *testing.T) {
-	n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
-	out := addChannel(n.Graph, "1x1x1", self, outP, 0)
-	in := addChannel(n.Graph, "5x1x1", inP, self, 0)
-	for i := 0; i < 8; i++ {
-		mid := fmt.Sprintf("02m%d", i)
-		addChannel(n.Graph, fmt.Sprintf("2x1x%d", i), outP, mid, uint64(i)) // each dearer than the last
-		addChannel(n.Graph, fmt.Sprintf("3x1x%d", i), mid, inP, 0)
-		n.liquidity[id(fmt.Sprintf("2x1x%d", i), outP, mid)] = 0
+	// the out-peer has 8 ways to the in-peer, none with liquidity
+	deadOutPeer := func() (*network, *graph.Channel, *graph.Channel) {
+		n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+		out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+		in := addChannel(n.Graph, "5x1x1", inP, self, 0)
+		for i := 0; i < 8; i++ {
+			mid := fmt.Sprintf("02m%d", i)
+			addChannel(n.Graph, fmt.Sprintf("2x1x%d", i), outP, mid, uint64(i)) // each dearer than the last
+			addChannel(n.Graph, fmt.Sprintf("3x1x%d", i), mid, inP, 0)
+			n.liquidity[id(fmt.Sprintf("2x1x%d", i), outP, mid)] = 0
+		}
+		return n, out, in
 	}
+	n, out, in := deadOutPeer()
 	r := rebalanceOn(n, out, in, 100000000)
 	r.Attempts = 100
 
 	result := r.Run()
 	assert.Equal(t, "failure", result.Status)
-	assert.Equal(t, maxOutPeerFailures, len(n.paid))
+	assert.Equal(t, DEFAULT_MAX_OUT_PEER_FAILS, len(n.paid))
 	assert.Equal(t, SideOut, result.FailedAt, "the out channel's peer: a pull leaves the candidate out, a push stops")
 	assert.Equal(t, RetryNo, result.Retry)
 	assert.Contains(t, result.Message, "could not forward 5 payments")
 
+	// maxoutpeerfails sets the limit
+	n, out, in = deadOutPeer()
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 100
+	r.MaxOutPeerFails = 2
+	result = r.Run()
+	assert.Equal(t, 2, len(n.paid))
+	assert.Contains(t, result.Message, "could not forward 2 payments")
+
+	n, out, in = deadOutPeer()
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 100
+	r.MaxOutPeerFails = 100
+	assert.Equal(t, "failure", r.Run().Status)
+	assert.Equal(t, 8, len(n.paid), "every channel of the out-peer, then no route")
+
 	// a new rebalance counts from zero
-	n.paid = nil
+	n, out, in = deadOutPeer()
 	r = rebalanceOn(n, out, in, 100000000)
 	r.Attempts = 2
 	assert.Equal(t, "failure", r.Run().Status)
