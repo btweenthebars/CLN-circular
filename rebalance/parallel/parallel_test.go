@@ -265,10 +265,15 @@ func TestFailedSplitsStopWhenCandidatesRunOut(t *testing.T) {
 	assert.Equal(t, 0, f.splitsInFlight)
 }
 
+// Splits sending less over a route that was short (minsplit splitamount/4)
+// filled live logs with halved payments; it is off unless minsplit is set.
 func TestMinSplitDefaults(t *testing.T) {
 	r := &AbstractRebalance{amount: 400000, splitAmount: 100000}
 	r.setGenericDefaults()
-	assert.Equal(t, uint64(25000000), r.minSplit)
+	assert.Equal(t, r.splitAmount, r.minSplit, "by default a split never sends less")
+	r = &AbstractRebalance{amount: 400000, splitAmount: 100000, minSplit: 25000}
+	r.setGenericDefaults()
+	assert.Equal(t, uint64(25000000), r.minSplit, "asked for")
 	r = &AbstractRebalance{amount: 400000, splitAmount: 100000, minSplit: 200000}
 	r.setGenericDefaults()
 	assert.Equal(t, r.splitAmount, r.minSplit, "above the split amount: never sends less")

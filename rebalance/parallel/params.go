@@ -23,10 +23,9 @@ func (r *AbstractRebalance) setGenericDefaults() {
 	if r.splitAmount == 0 {
 		r.splitAmount = DEFAULT_SPLIT_AMOUNT
 	}
-	if r.minSplit == 0 {
-		r.minSplit = r.splitAmount / 4
-	}
-	if r.minSplit > r.splitAmount {
+	if r.minSplit == 0 || r.minSplit > r.splitAmount {
+		// off unless asked for: smaller payments over a route that was short
+		// put more HTLCs on the network for less moved
 		r.minSplit = r.splitAmount // never sends less
 	}
 	if r.maxPPM == 0 {
