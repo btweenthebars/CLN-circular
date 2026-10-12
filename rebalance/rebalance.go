@@ -21,9 +21,10 @@ type Rebalance struct {
 	MaxHops    int
 	Node       *node.Node
 
-	// MinAmount, when above 0 and below Amount, lets a payment that fails for
-	// lack of liquidity along the route try the same route again with half the
-	// amount, down to MinAmount (msat). A success may then deliver less than
+	// MinAmount, when above 0 and below Amount, lets a rebalance whose route
+	// failed for lack of liquidity, and which then finds no other route, send
+	// half the amount over that route, down to MinAmount (msat). Each such
+	// payment is one of the attempts. A success may then deliver less than
 	// Amount.
 	MinAmount uint64
 	// Route, if set, is tried before searching: the channel ids of a route
@@ -36,9 +37,6 @@ type Rebalance struct {
 	// Node.RefreshPeerChannels with it
 	refresh func(peerIds ...string) error
 }
-
-// maxShrinks bounds how many times a route is retried with less.
-const maxShrinks = 8
 
 func NewRebalance(outChannel, inChannel *graph.Channel, amount, maxppm uint64, attempts, maxHops int) *Rebalance {
 	return &Rebalance{
@@ -70,8 +68,13 @@ func (r *Rebalance) Run() *Result {
 		// skips them on subsequent tries within the same Run() call. It starts
 		// with what recent rebalances learned to avoid.
 		exclude = r.Node.Graph.Avoided(time.Now().Unix())
-		// payments made besides the attempts: retries of a route with less
+		// payments made besides the attempts: known routes that failed
 		extra = 0
+		// the last route that failed for lack of liquidity: sent again with
+		// less once no other route is found
+		short *graph.Route
+		// the channels this run excluded because short ran out on them
+		shortIds []string
 		// the error that ended the run, to tell where it failed
 		lastErr error
 	)
@@ -102,11 +105,22 @@ func (r *Rebalance) Run() *Result {
 			continue
 		}
 		if errors.Is(err, errShortOfLiquidity) && sent != nil {
-			// the route works, but for less: retry it before searching again
-			var shrinks int
-			result, shrinks, err = r.shrinkOnRoute(sent, exclude, err)
-			extra += shrinks
-			r.Amount = requested
+			// the route works, but for less: other routes are searched first
+			short, shortIds = sent, excludedChannels(sent, exclude)
+		}
+		if short != nil && (errors.Is(err, util.ErrNoRoute) || errors.As(err, &util.ErrRouteTooExpensive{})) {
+			// no other route: this attempt sends less over the short one, and
+			// later attempts search for the smaller amount
+			if shrunk, ok := r.shrink(short, exclude, shortIds); ok {
+				r.Node.Logf(glightning.Debug, "no other route: retrying the route that was short with %d sats", r.Amount/1000)
+				result, sent, err = r.runAttempt(exclude, shrunk)
+				if errors.Is(err, errShortOfLiquidity) && sent != nil {
+					shortIds = append(shortIds, excludedChannels(sent, exclude)...)
+				} else {
+					// it failed for another reason: the route is not tried again
+					short = nil
+				}
+			}
 		}
 		lastErr = err
 		if errors.Is(err, util.ErrNoRoute) || errors.As(err, &util.ErrRouteTooExpensive{}) {
@@ -154,6 +168,7 @@ func (r *Rebalance) Run() *Result {
 		}
 	}
 
+	r.Amount = requested
 	failure := NewResult("failure", r.Amount/1000, r.OutChannel.Destination, r.InChannel.Source)
 	failure.Attempts = uint64(i - 1 + extra)
 	failure.FailedAt, failure.Retry = failureSide(lastErr)
@@ -187,36 +202,57 @@ func (r *Rebalance) knownRoute(exclude map[string]bool) *graph.Route {
 	return route
 }
 
-// shrinkOnRoute retries the route that failed for lack of liquidity with half
-// the amount each time, down to r.MinAmount, while it keeps failing that way.
-// It returns the result of the last payment and the number of payments made,
-// or failed, unchanged, when shrinking is off or the route cannot be used.
-func (r *Rebalance) shrinkOnRoute(sent *graph.Route, exclude map[string]bool, failed error) (*Result, int, error) {
-	if r.MinAmount == 0 || r.MinAmount >= r.Amount {
-		return nil, 0, failed
+// excludedChannels returns the channels of route that exclude holds: right
+// after a payment over it failed for lack of liquidity, the channel that ran
+// short.
+func excludedChannels(route *graph.Route, exclude map[string]bool) []string {
+	var ids []string
+	for _, id := range route.ChannelIds() {
+		if exclude[id] {
+			ids = append(ids, id)
+		}
 	}
-	ids := sent.ChannelIds()
-	amount := r.Amount
-	payments := 0
-	for payments < maxShrinks {
-		amount = amount / 2 / 1000 * 1000 // whole sats
-		if amount < r.MinAmount || amount == 0 {
-			break
-		}
-		route, err := r.Node.Graph.GetRouteOverChannels(ids, amount)
-		if err != nil || route.FeePPM() > r.MaxPPM {
-			break // base fees weigh more on smaller amounts
-		}
-		r.Node.Logf(glightning.Debug, "retrying the same route with %d sats", amount/1000)
-		r.Amount = amount
-		payments++
-		result, _, err := r.runAttempt(exclude, route)
-		if !errors.Is(err, errShortOfLiquidity) {
-			return result, payments, err
-		}
-		failed = err
+	return ids
+}
+
+// shrink halves r.Amount, in whole sats, and prices route for it. It returns
+// false, leaving r.Amount as it was, when shrinking is off, the half is below
+// r.MinAmount, or the route can no longer be used: a channel is gone or
+// disabled, it costs more than maxppm for less (base fees weigh more on
+// smaller amounts), or what was learned since it ran short rules it out. Its
+// channels in shortIds were excluded only for being short of the larger
+// amounts, so the graph's beliefs about them decide.
+func (r *Rebalance) shrink(route *graph.Route, exclude map[string]bool, shortIds []string) (*graph.Route, bool) {
+	if r.MinAmount == 0 {
+		return nil, false
 	}
-	return nil, payments, failed
+	amount := r.Amount / 2 / 1000 * 1000
+	if amount < r.MinAmount || amount == 0 {
+		r.Node.Logf(glightning.Debug, "the route that was short is not tried with %d sats: below the minimum of %d sats", amount/1000, r.MinAmount/1000)
+		return nil, false
+	}
+	shrunk, err := r.Node.Graph.GetRouteOverChannels(route.ChannelIds(), amount)
+	if err != nil {
+		r.Node.Logln(glightning.Debug, "the route that was short cannot be used again: ", err)
+		return nil, false
+	}
+	if shrunk.Fee() > graph.MaxFeeForPPM(amount, r.MaxPPM) {
+		r.Node.Logf(glightning.Debug, "the route that was short charges %d msat for %d sats, more than maxppm %d allows", shrunk.Fee(), amount/1000, r.MaxPPM)
+		return nil, false
+	}
+	others := make(map[string]bool, len(exclude))
+	for id := range exclude {
+		others[id] = true
+	}
+	for _, id := range shortIds {
+		delete(others, id)
+	}
+	if !r.Node.Graph.CanCarry(shrunk, others) {
+		r.Node.Logf(glightning.Debug, "the route that was short is not tried with %d sats: what was learned since rules it out", amount/1000)
+		return nil, false
+	}
+	r.Amount = amount
+	return shrunk, true
 }
 
 // runAttempt sends one payment: over route if it is not nil, otherwise over

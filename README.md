@@ -99,7 +99,7 @@ Optional parameters:
 * `amount`(sats, default=400000) is the **total** amount that you want to rebalance
 * `splits`(default=4) is the maximum number of rebalances that will happen in parallel
 * `splitamount`(sats, default=100000) is the amount that each rebalance will carry
-* `minsplit`(sats, default=`splitamount`/4) is the smallest amount a split may shrink to. When a split fails because a channel along its route lacks liquidity, it retries the same route with half the amount, down to `minsplit`, before searching for another route. Set it to `splitamount` to turn this off.
+* `minsplit`(sats, default=`splitamount`/4) is the smallest amount a split may shrink to. When a split fails because a channel along its route lacks liquidity, it searches for another route first. Only if none is left does it send half the amount over the route that was short, down to `minsplit`; later searches then look for the smaller amount. Each payment with less uses one of the `attempts`, so with the default `attempts=1` a split never shrinks. Set `minsplit` to `splitamount` to turn this off.
 * `maxoutppm`(default=50) is the maximum ppm of the outgoing channels that `circular` is allowed to use to rebalance `inscid`. Useful to avoid rebalancing a channel from channels where you can profit
 * `maxppm`(default=10), `attempts`(default=1) and `maxhops`(default=8) are the same as for the `circular` command
 * `outlist` is a JSON array of node ids that you want to use as sources. If this is specified, `maxoutppm` is ignored. An example of how to use this parameter is the following:

@@ -35,7 +35,7 @@ type AbstractRebalance struct {
 	maxPPM              uint64
 	splits              int
 	splitAmount         uint64
-	minSplit            uint64 // msat: a split short of liquidity retries its route with less, down to this
+	minSplit            uint64 // msat: a split whose route was short, with no other route left, sends less over it, down to this
 	attempts            int
 	maxHops             int
 	splitsInFlight      int

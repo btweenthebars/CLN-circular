@@ -27,7 +27,7 @@ func (r *AbstractRebalance) setGenericDefaults() {
 		r.minSplit = r.splitAmount / 4
 	}
 	if r.minSplit > r.splitAmount {
-		r.minSplit = r.splitAmount // no retries with less
+		r.minSplit = r.splitAmount // never sends less
 	}
 	if r.maxPPM == 0 {
 		r.maxPPM = rebalance.DEFAULT_MAXPPM

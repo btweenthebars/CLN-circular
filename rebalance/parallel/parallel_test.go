@@ -271,7 +271,7 @@ func TestMinSplitDefaults(t *testing.T) {
 	assert.Equal(t, uint64(25000000), r.minSplit)
 	r = &AbstractRebalance{amount: 400000, splitAmount: 100000, minSplit: 200000}
 	r.setGenericDefaults()
-	assert.Equal(t, r.splitAmount, r.minSplit, "above the split amount: no retries with less")
+	assert.Equal(t, r.splitAmount, r.minSplit, "above the split amount: never sends less")
 }
 
 // Splits record how their candidate did, and the next run tries the

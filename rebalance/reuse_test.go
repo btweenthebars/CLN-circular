@@ -67,32 +67,90 @@ func shortRoute() (*network, *graph.Channel, *graph.Channel) {
 	return n, out, in
 }
 
-// A split that failed for lack of liquidity used to drop its route and
-// search again, though the route could carry part of the amount.
-func TestSplitShortOfLiquidityRetriesItsRouteWithLess(t *testing.T) {
+// A route that failed for lack of liquidity was retried at once with half
+// the amount, sending up to three payments in one attempt, though another
+// route could have carried all of it. Now other routes are searched first,
+// and the short route gets less only once none is left, as one of the
+// attempts.
+func TestShortRouteGetsLessOnlyWhenNoOtherRouteIsLeft(t *testing.T) {
 	n, out, in := shortRoute()
 	r := rebalanceOn(n, out, in, 100000000)
 	r.MinAmount = 25000000
+	r.Attempts = 2
 
 	result := r.Run()
 	assert.Equal(t, "success", result.Status, result.Message)
 	assert.Equal(t, uint64(50000), result.Amount)
 	assert.Equal(t, uint64(50000000), result.AmountMsat)
-	assert.Equal(t, uint64(2), result.Attempts, "the failed payment and the retry")
-	assert.Equal(t, 2, len(n.paid))
-	assert.Equal(t, n.paid[0], n.paid[1], "the same route, with half the amount")
-	assert.Equal(t, n.paid[1], result.Channels)
+	assert.Equal(t, uint64(2), result.Attempts, "the failed payment and the one with less")
+	if assert.Equal(t, 2, len(n.paid)) {
+		assert.Equal(t, n.paid[0], n.paid[1], "the same route, with half the amount")
+		assert.Equal(t, n.paid[1], result.Channels)
+	}
 	assert.Equal(t, uint64(100000000), r.Amount, "the rebalance keeps the amount asked for")
 
 	// the graph learns that 02a -> 02b held less than 100k, then forwarded 50k
 	c, _ := n.GetChannel(id("3x1x1", "02a", "02b"))
 	assert.Less(t, c.Liquidity, uint64(50000000))
 
+	// sending less is an attempt: with one, the rebalance stops after the first payment
+	n, out, in = shortRoute()
+	r = rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	result = r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, 1, len(n.paid))
+	assert.Equal(t, uint64(1), result.Attempts)
+	assert.Equal(t, uint64(100000), result.Amount, "a failure reports the amount asked for")
+
 	// without a minimum, a rebalance delivers all of its amount or nothing
 	n, out, in = shortRoute()
 	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 3
 	assert.Equal(t, "failure", r.Run().Status)
-	assert.Equal(t, 1, len(n.paid))
+	assert.Equal(t, 1, len(n.paid), "no other route, and no shrinking")
+}
+
+// Another route that can carry the whole amount is tried before the short
+// one gets less.
+func TestOtherRoutesComeBeforeSendingLess(t *testing.T) {
+	n, out, in := shortRoute()
+	addChannel(n.Graph, "8x1x1", outP, "02c", 1) // a second way, 1 msat dearer: outpeer -> 02c -> 02b
+	addChannel(n.Graph, "9x1x1", "02c", "02b", 0)
+	r := rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	r.Attempts = 2
+
+	result := r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Equal(t, uint64(100000), result.Amount, "all of it, over the other route")
+	if assert.Equal(t, 2, len(n.paid)) {
+		assert.Equal(t, id("2x1x1", outP, "02a"), n.paid[0][1])
+		assert.Equal(t, id("8x1x1", outP, "02c"), n.paid[1][1])
+	}
+}
+
+// After the short route got less and was short again, the next attempt
+// searches for the smaller amount, which a route too small for the whole
+// amount may carry.
+func TestLaterAttemptsSearchForTheSmallerAmount(t *testing.T) {
+	n, out, in := shortRoute()
+	n.liquidity[id("3x1x1", "02a", "02b")] = 30000000
+	addChannel(n.Graph, "8x1x1", outP, "02c", 1)
+	addChannel(n.Graph, "9x1x1", "02c", "02b", 0)
+	n.LearnUpperBound(id("9x1x1", "02c", "02b"), 60000000) // known to hold less than 60k
+	r := rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	r.Attempts = 3
+
+	result := r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Equal(t, uint64(50000), result.Amount)
+	assert.Equal(t, uint64(3), result.Attempts)
+	if assert.Equal(t, 3, len(n.paid)) {
+		assert.Equal(t, n.paid[0], n.paid[1], "100k, then 50k over the short route")
+		assert.Equal(t, id("8x1x1", outP, "02c"), n.paid[2][1], "then 50k over the route that holds it")
+	}
 }
 
 func TestSplitStopsShrinkingAtTheMinimum(t *testing.T) {
@@ -100,19 +158,104 @@ func TestSplitStopsShrinkingAtTheMinimum(t *testing.T) {
 	n.liquidity[id("3x1x1", "02a", "02b")] = 20000000 // less than any allowed amount
 	r := rebalanceOn(n, out, in, 100000000)
 	r.MinAmount = 25000000
+	r.Attempts = 10
 
 	result := r.Run()
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, 3, len(n.paid), "100k, 50k, then 25k: the last allowed")
+	assert.Equal(t, uint64(4), result.Attempts, "and a search that found nothing, as before")
 
 	n, out, in = shortRoute()
 	n.liquidity[id("3x1x1", "02a", "02b")] = 30000000
 	r = rebalanceOn(n, out, in, 100000000)
 	r.MinAmount = 25000000
+	r.Attempts = 10
 	result = r.Run()
 	assert.Equal(t, "success", result.Status)
 	assert.Equal(t, uint64(25000), result.Amount)
 	assert.Equal(t, 3, len(n.paid))
+	assert.Equal(t, uint64(3), result.Attempts)
+
+	// each payment with less is one of the attempts
+	n, out, in = shortRoute()
+	n.liquidity[id("3x1x1", "02a", "02b")] = 30000000
+	r = rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	r.Attempts = 2
+	result = r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, 2, len(n.paid), "100k, then 50k: no attempt left for 25k")
+	assert.Equal(t, uint64(2), result.Attempts)
+}
+
+// A payment with less that fails for another reason does not get the short
+// route tried again.
+func TestShortRouteIsDroppedWhenItFailsOtherwise(t *testing.T) {
+	n, out, in := shortRoute()
+	r := rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 10000000
+	r.Attempts = 5
+	r.pay = func(route *graph.Route) (*graph.PrettyRoute, error) {
+		if route.Amount < 100000000 {
+			n.paid = append(n.paid, route.ChannelIds())
+			return nil, &glightning.PaymentError{Data: &glightning.PaymentErrorData{
+				ErringNode: "02a", ErringChannel: "3x1x1", ErringIndex: 2,
+				FailCode: failNodeBit | 2, FailCodeName: "WIRE_TEMPORARY_NODE_FAILURE"}}
+		}
+		return n.pay(route)
+	}
+	result := r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, 2, len(n.paid), "100k short, 50k failed at 02a: no 25k")
+	assert.Equal(t, uint64(3), result.Attempts, "the last search found nothing")
+}
+
+// The short route got less without checking what the searches and payments
+// in between had learned: here 02a, on it, failed another payment itself.
+func TestShortRouteRespectsWhatWasLearnedSince(t *testing.T) {
+	n, out, in := shortRoute()
+	addChannel(n.Graph, "8x1x1", "02a", "02c", 1) // a second way: 02a -> 02c -> 02b
+	addChannel(n.Graph, "9x1x1", "02c", "02b", 0)
+	r := rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	r.Attempts = 3
+	r.pay = func(route *graph.Route) (*graph.PrettyRoute, error) {
+		if route.Hops[2].ShortChannelId == "8x1x1" {
+			n.paid = append(n.paid, route.ChannelIds())
+			return nil, &glightning.PaymentError{Data: &glightning.PaymentErrorData{
+				ErringNode: "02a", ErringChannel: "8x1x1", ErringIndex: 2,
+				FailCode: failNodeBit | 2, FailCodeName: "WIRE_TEMPORARY_NODE_FAILURE"}}
+		}
+		return n.pay(route)
+	}
+	result := r.Run()
+	assert.Equal(t, "failure", result.Status)
+	if assert.Equal(t, 2, len(n.paid), "100k over 02a -> 02b, then 02a failed the other route: nothing more through 02a") {
+		assert.Equal(t, id("3x1x1", "02a", "02b"), n.paid[0][2])
+		assert.Equal(t, id("8x1x1", "02a", "02c"), n.paid[1][2])
+	}
+
+	// what a payment with less learned about the short channel itself still lets it shrink further
+	n, out, in = shortRoute()
+	n.liquidity[id("3x1x1", "02a", "02b")] = 30000000
+	r = rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	r.Attempts = 3
+	result = r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Equal(t, uint64(25000), result.Amount)
+
+	// a payment with less that runs short on another channel of the route
+	// leaves both excluded for others, not for the route itself
+	n, out, in = shortRoute()
+	n.liquidity[id("4x1x1", "02b", inP)] = 40000000
+	r = rebalanceOn(n, out, in, 100000000)
+	r.MinAmount = 25000000
+	r.Attempts = 3
+	result = r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Equal(t, uint64(25000), result.Amount)
+	assert.Equal(t, 3, len(n.paid), "100k short at 02a, 50k short at 02b, then 25k")
 }
 
 // A route that worked is tried again before any search.
@@ -186,16 +329,17 @@ func TestNodeFailuresAreAvoidedByLaterRebalances(t *testing.T) {
 // with attempts=1 no search ran.
 func TestKnownRouteIsCheckedAgainstWhatTheGraphLearned(t *testing.T) {
 	n, out, in := shortRoute()
-	addChannel(n.Graph, "8x1x1", outP, "02c", 1) // a second way, 1 msat dearer: outpeer -> 02c -> 02b
-	addChannel(n.Graph, "9x1x1", "02c", "02b", 0)
 	r := rebalanceOn(n, out, in, 100000000)
 	r.MinAmount = 25000000
+	r.Attempts = 2
 	first := r.Run()
 	if first.Status != "success" {
 		t.Fatal(first.Message)
 	}
 	assert.Equal(t, uint64(50000), first.Amount, "through 02a, shrunk")
 	assert.Contains(t, first.Channels, id("3x1x1", "02a", "02b"))
+	addChannel(n.Graph, "8x1x1", outP, "02c", 1) // a second way, 1 msat dearer: outpeer -> 02c -> 02b
+	addChannel(n.Graph, "9x1x1", "02c", "02b", 0)
 
 	// 02a -> 02b is now believed nearly empty: the next split searches
 	n.paid = nil
