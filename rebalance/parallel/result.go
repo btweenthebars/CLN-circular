@@ -9,6 +9,7 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/elementsproject/glightning/jrpc2"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -114,7 +115,8 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		} else {
 			r.Node.Logf(glightning.Debug, "Failed rebalance attempt: %s", rebalanceResult.Message)
 			if rebalanceResult.Message != "" {
-				r.Result.LastError = rebalanceResult.Message
+				// one split's failure, not the run's: say which
+				r.Result.LastError = r.splitName(rebalanceResult) + ": " + rebalanceResult.Message
 			}
 		}
 
@@ -128,9 +130,26 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	// rebalance is over
 	r.Result.Attempts = r.TotalAttempts
 	r.Result.Time = fmt.Sprintf("%.3fs", float64(time.Since(start).Milliseconds())/1000)
-	r.Node.Logf(glightning.Info, "Parallel rebalance finished. Total attempts: %d, time: %s, amount rebalanced: %d sats",
+	r.Node.Logf(glightning.Info, "Parallel rebalance finished. Total payments: %d, time: %s, amount rebalanced: %d sats",
 		r.Result.Attempts, r.Result.Time, r.Result.RebalancedAmount)
 	return r.Result, nil
+}
+
+// splitName names the split behind result by its candidate channel and that
+// channel's peer, as in "last failed split, via 123x1x1 (alias)".
+func (r *AbstractRebalance) splitName(result *rebalance.Result) string {
+	peer := result.In
+	if r.candidateSide == rebalance.SideOut {
+		peer = result.Out
+	}
+	scid := result.Candidate
+	if i := strings.IndexByte(scid, '/'); i >= 0 {
+		scid = scid[:i]
+	}
+	if scid == "" {
+		return "last failed split"
+	}
+	return fmt.Sprintf("last failed split, via %s (%s)", scid, r.Node.Graph.GetAlias(peer))
 }
 
 // judgeCandidate records how the split's candidate did, and adapts the run

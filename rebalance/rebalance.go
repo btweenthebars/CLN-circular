@@ -37,23 +37,27 @@ type Rebalance struct {
 	// Node.RefreshPeerChannels with it
 	refresh func(peerIds ...string) error
 
-	// MaxOutPeerFails ends a rebalance once the out-peer has failed to
-	// forward this many of its payments for lack of liquidity: it has little
-	// outbound liquidity left, and each new route would only try another of
-	// its channels. 0 means DEFAULT_MAX_OUT_PEER_FAILS.
-	MaxOutPeerFails int
+	// MaxNodeFails bounds how many of a rebalance's payments one node may
+	// fail to forward for lack of liquidity: each failure only rules out the
+	// channel that failed, and a drained node with many channels would
+	// otherwise take one payment per channel. The rest of the rebalance
+	// routes around such a node, and ends if it is the out-peer, which every
+	// route goes through. 0 means DEFAULT_MAX_NODE_FAILS.
+	MaxNodeFails int
 
-	// outPeerFailures counts the payments of this run that the out-peer
-	// could not forward for lack of liquidity
-	outPeerFailures int
+	// nodeFailures counts, per node, the payments of this run that it could
+	// not forward for lack of liquidity
+	nodeFailures map[string]int
+	// payments counts the payments this run sent
+	payments int
 }
 
-// maxOutPeerFails is r.MaxOutPeerFails, or its default.
-func (r *Rebalance) maxOutPeerFails() int {
-	if r.MaxOutPeerFails <= 0 {
-		return DEFAULT_MAX_OUT_PEER_FAILS
+// maxNodeFails is r.MaxNodeFails, or its default.
+func (r *Rebalance) maxNodeFails() int {
+	if r.MaxNodeFails <= 0 {
+		return DEFAULT_MAX_NODE_FAILS
 	}
-	return r.MaxOutPeerFails
+	return r.MaxNodeFails
 }
 
 func NewRebalance(outChannel, inChannel *graph.Channel, amount, maxppm uint64, attempts, maxHops int) *Rebalance {
@@ -86,8 +90,6 @@ func (r *Rebalance) Run() *Result {
 		// skips them on subsequent tries within the same Run() call. It starts
 		// with what recent rebalances learned to avoid.
 		exclude = r.Node.Graph.Avoided(time.Now().Unix())
-		// payments made besides the attempts: known routes that failed
-		extra = 0
 		// the last route that failed for lack of liquidity: sent again with
 		// less once no other route is found
 		short *graph.Route
@@ -103,7 +105,8 @@ func (r *Rebalance) Run() *Result {
 	delete(exclude, r.InChannel.Source)
 	requested := r.Amount
 	defer func() { r.Amount = requested }()
-	r.outPeerFailures = 0
+	r.nodeFailures = map[string]int{}
+	r.payments = 0
 
 	// a route that worked before needs no search
 	known := r.knownRoute(exclude)
@@ -120,7 +123,6 @@ func (r *Rebalance) Run() *Result {
 			// excluded. Search in the same attempt, without shrinking a route
 			// that was not searched for.
 			r.Node.Logln(glightning.Debug, "the route that worked before failed: searching")
-			extra++
 			continue
 		}
 		if errors.Is(err, errShortOfLiquidity) && sent != nil {
@@ -149,7 +151,7 @@ func (r *Rebalance) Run() *Result {
 
 		// Success
 		if err == nil && result != nil {
-			result.Attempts = uint64(i + extra)
+			result.Attempts = uint64(r.payments)
 			r.Node.Logln(glightning.Info, result.Message)
 			if result.Route != nil {
 				r.Node.Logln(glightning.Info, "\n"+result.Route.String())
@@ -189,10 +191,10 @@ func (r *Rebalance) Run() *Result {
 
 	r.Amount = requested
 	failure := NewResult("failure", r.Amount/1000, r.OutChannel.Destination, r.InChannel.Source)
-	failure.Attempts = uint64(i - 1 + extra)
+	failure.Attempts = uint64(r.payments)
 	failure.FailedAt, failure.Retry = failureSide(lastErr)
 	failure.Precheck = isPrecheck(lastErr)
-	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " attempts."
+	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " payments."
 	if lastError == "" && lastErr != nil {
 		// the attempts ran out: say how the last one failed
 		lastError = "The last one failed: " + lastErr.Error()

@@ -27,7 +27,7 @@ type RebalancePull struct {
 	DepleteUpToAmount  uint64   `json:"depleteuptoamount,omitempty"`
 	Attempts           int      `json:"attempts,omitempty"`
 	MaxHops            int      `json:"maxhops,omitempty"`
-	MaxOutPeerFails    int      `json:"maxoutpeerfails,omitempty"`
+	MaxNodeFails       int      `json:"maxnodefails,omitempty"`
 	AbstractRebalance
 }
 
@@ -45,7 +45,7 @@ func (r *RebalancePull) Call() (jrpc2.Result, error) {
 		return nil, util.ErrNoRequiredParameter
 	}
 	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
-	r.maxOutPeerFails = r.MaxOutPeerFails
+	r.maxNodeFails = r.MaxNodeFails
 
 	r.CandidatesList = r.OutList
 	if r.CandidatesList != nil {

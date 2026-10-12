@@ -111,14 +111,21 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		}
 		g.LearnUpperBound(id, hop.MilliSatoshi)
 		exclude[id] = true
-		if k == 1 {
-			// the out-peer could not forward
-			r.outPeerFailures++
-			if r.outPeerFailures >= r.maxOutPeerFails() {
-				// the out channel's peer: in a push, the target's, so no split can pass
+		if r.nodeFailures == nil {
+			r.nodeFailures = map[string]int{}
+		}
+		r.nodeFailures[failure.ErringNode]++
+		if n := r.nodeFailures[failure.ErringNode]; n >= r.maxNodeFails() {
+			if k == 1 {
+				// the out channel's peer, on every route: in a push, the
+				// target's, so no split can pass
 				return onOut(fmt.Errorf("%s could not forward %d payments: it has little outbound liquidity left",
-					g.GetAlias(failure.ErringNode), r.outPeerFailures), RetryNo)
+					g.GetAlias(failure.ErringNode), n), RetryNo)
 			}
+			// only for this rebalance: its liquidity may come back
+			r.Node.Logf(glightning.Debug, "%s could not forward %d payments: routing around it for the rest of this rebalance",
+				g.GetAlias(failure.ErringNode), n)
+			exclude[failure.ErringNode] = true
 		}
 		return errShortOfLiquidity
 

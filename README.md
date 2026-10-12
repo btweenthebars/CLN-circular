@@ -84,8 +84,8 @@ Required parameters:
 Optional parameters:
 * `amount`(sats, default=200000) is the amount that you want to rebalance
 * `maxppm`(default=10) is the maximum ppm that you are willing to pay
-* `attempts`(default=1) is the number of payment attempts that will be made once a path is found.
-* `maxoutpeerfails`(default=5) stops a rebalance early, whatever `attempts` is left, once the peer of the out channel has failed to forward that many of its payments for lack of liquidity, as it has little outbound liquidity left: `circular-pull` then leaves that channel out for the rest of the run, and `circular-push`, whose every split goes out through that peer, starts no more splits. Failures further along the route don't count. Set it above `attempts` to turn it off.
+* `attempts`(default=1) is the number of payments that may be made once a path is found (one more in the parallel commands when a split's reused route fails). The `attempts` a rebalance reports are the payments it made; searches that found no route are not counted.
+* `maxnodefails`(default=5) is how many of a rebalance's payments one node may fail to forward for lack of liquidity. Each failure only rules out the channel that failed, so a drained node with many channels would otherwise cost one payment per channel. After that many, the rest of the rebalance routes around the node; if it is the peer of the out channel, which every route goes through, the rebalance stops: `circular-pull` then leaves that channel out for the rest of the run, and `circular-push`, whose every split goes out through that peer, starts no more splits. Set it above `attempts` + 1 to turn it off.
 * `maxhops`(default=8) is the maximum number of hops that a path is allowed to have
 
 ### Pull liquidity into a channel from many sources in parallel
@@ -102,7 +102,7 @@ Optional parameters:
 * `splitamount`(sats, default=100000) is the amount that each rebalance will carry
 * `minsplit`(sats, default=`splitamount`, which turns it off) is the smallest amount a split may shrink to. By default a split always asks for its full amount. With a lower `minsplit`, a split whose route fails because a channel along it lacks liquidity still searches for another route first; only if none is left does it send half the amount over the route that was short, down to `minsplit`, and later searches look for the smaller amount. Each payment with less uses one of the `attempts`, so this also needs `attempts` of 2 or more.
 * `maxoutppm`(default=50) is the maximum ppm of the outgoing channels that `circular` is allowed to use to rebalance `inscid`. Useful to avoid rebalancing a channel from channels where you can profit
-* `maxppm`(default=10), `attempts`(default=1), `maxoutpeerfails`(default=5) and `maxhops`(default=8) are the same as for the `circular` command
+* `maxppm`(default=10), `attempts`(default=1), `maxnodefails`(default=5) and `maxhops`(default=8) are the same as for the `circular` command
 * `outlist` is a JSON array of node ids that you want to use as sources. If this is specified, `maxoutppm` is ignored. An example of how to use this parameter is the following:
 ```bash
 cli circular-pull -k inscid=123456x1x1 outlist='["03700917a25f79a3e427fe86e49b5041b583c73dd223cfa9a87cd6be5076b7b7a5", "025614be3600e9899bc044d331ab58a9fe1ccf30e75ae35943cdd11218a0a55dba"]' amount=800000 splitamount=80000 splits=4 maxppm=5000
@@ -133,6 +133,8 @@ The result of `circular-pull` (and `circular-push`) looks like this:
   }
 }
 ```
+`attempts` is the total of payments the splits made. `last_error`, when present, is the last failed split's message, prefixed with that split's channel and peer (`last failed split, via 123456x1x0 (alias): ...`); its count of payments is that split's alone.
+
 Candidates are tried best first, by how they did in earlier splits (kept across runs in `learned.json`): a channel that failed in the last 30 minutes, and hasn't succeeded since, goes last; the others by success rate, then by the fee rate their splits paid. Channels never tried count as an even chance.
 
 A failed split counts against its candidate only if it failed on the candidate's channel or along the route. If the target channel refuses a split because the other splits hold its HTLC slots or balance, the run keeps no more splits in flight than the target took, and the refused candidate is tried again once one finishes. That limit grows back by one once as many splits succeed, in case the refusal had another cause; each time growing it is refused, the run waits twice as long before trying again, and half as long once a growth holds. A candidate the target refuses as busy more than 3 times, beyond what the target's limit explains, is tried after the others. If the target refuses with nothing else in flight because our copy of its balance is too low, its channel is read again from lightningd and the split tried once more, since that copy may have been read while other splits held it. If it refuses that candidate again, or lightningd or the peer refused it, the candidate is left out for the run, as the target may refuse it alone (for the fees its route adds); if it then refuses another candidate alone too, or refuses for good (disabled, disconnected, its own fee above `maxppm` even with its inbound discounts), no more splits are started. A stale-fee failure on a channel of ours gets one more try, only if reading the channel again shows a new fee.
@@ -151,7 +153,7 @@ Required parameters:
 * `outscid`: the Short Channel Id from which you want to push out liquidity.
 
 Optional parameters:
-* `amount`, `splits`, `splitamount`, `minsplit`, `maxppm`, `attempts`, `maxoutpeerfails` and `maxhops` are the same as for the `circular-pull` command.
+* `amount`, `splits`, `splitamount`, `minsplit`, `maxppm`, `attempts`, `maxnodefails` and `maxhops` are the same as for the `circular-pull` command.
 * `minoutppm`(default=50) is the minimum ppm charged by your node that a channel has to charge to be selected by `circular-push`. Useful to avoid rebalancing a channel to channels where you can't profit from.
 * `inlist` is a JSON array of node ids that you want to use as destinations. If this is specified, `minoutppm` is ignored. An example of how to use this parameter is the following:
 ```bash

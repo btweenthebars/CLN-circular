@@ -162,6 +162,8 @@ type fakeSplits struct {
 	successDelay time.Duration
 	// precheck: failures are our copy of a channel's balance found too low
 	precheck bool
+	// message is a failed split's message
+	message string
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -192,6 +194,7 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	result.Candidate = candidateId(candidate)
 	result.FailedAt, result.Retry = side, retry
 	result.Precheck = f.precheck
+	result.Message = f.message
 	if delivered > 0 {
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
@@ -865,4 +868,15 @@ func TestSlowRefusalsStillBackOff(t *testing.T) {
 		// 7 or 8 at any speed; it was 37 when 3 times slower
 		assert.LessOrEqual(t, len(b.asked)-150, 12, "refused splits, refusals %dx slower", slower)
 	}
+}
+
+// last_error read as the run's failure, though it is the last failed split's.
+func TestLastErrorNamesTheSplit(t *testing.T) {
+	f := splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.message = "rebalance failed after 8 payments. no route"
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	lastError := result.(*Result).LastError
+	assert.Regexp(t, `^last failed split, via [12]x1x1 \(02peer[01]\): rebalance failed after 8 payments\. no route$`, lastError)
 }

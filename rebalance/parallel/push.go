@@ -27,7 +27,7 @@ type RebalancePush struct {
 	MaxHops         int      `json:"maxhops,omitempty"`
 	FillUpToPercent float64  `json:"filluptopercent,omitempty"`
 	FillUpToAmount  uint64   `json:"filluptoamount,omitempty"`
-	MaxOutPeerFails int      `json:"maxoutpeerfails,omitempty"`
+	MaxNodeFails    int      `json:"maxnodefails,omitempty"`
 	AbstractRebalance
 }
 
@@ -45,7 +45,7 @@ func (r *RebalancePush) Call() (jrpc2.Result, error) {
 		return nil, util.ErrNoRequiredParameter
 	}
 	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
-	r.maxOutPeerFails = r.MaxOutPeerFails
+	r.maxNodeFails = r.MaxNodeFails
 
 	r.CandidatesList = r.InList
 	if r.CandidatesList != nil {

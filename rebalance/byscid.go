@@ -13,9 +13,9 @@ type RebalanceByScid struct {
 	MaxPPM   uint64 `json:"maxppm,omitempty"`
 	Attempts int    `json:"attempts,omitempty"`
 	MaxHops  int    `json:"maxhops,omitempty"`
-	// MaxOutPeerFails: see Rebalance.MaxOutPeerFails
-	MaxOutPeerFails int        `json:"maxoutpeerfails,omitempty"`
-	Node            *node.Node `json:"-"`
+	// MaxNodeFails: see Rebalance.MaxNodeFails
+	MaxNodeFails int        `json:"maxnodefails,omitempty"`
+	Node         *node.Node `json:"-"`
 }
 
 func (r *RebalanceByScid) Name() string {
@@ -43,7 +43,7 @@ func (r *RebalanceByScid) Call() (jrpc2.Result, error) {
 	}
 
 	rebalance := NewRebalance(outgoingChannel, incomingChannel, r.Amount, r.MaxPPM, r.Attempts, r.MaxHops)
-	rebalance.MaxOutPeerFails = r.MaxOutPeerFails
+	rebalance.MaxNodeFails = r.MaxNodeFails
 
 	err = rebalance.Setup()
 	if err != nil {

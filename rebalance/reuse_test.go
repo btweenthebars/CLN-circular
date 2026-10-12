@@ -164,7 +164,7 @@ func TestSplitStopsShrinkingAtTheMinimum(t *testing.T) {
 	result := r.Run()
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, 3, len(n.paid), "100k, 50k, then 25k: the last allowed")
-	assert.Equal(t, uint64(4), result.Attempts, "and a search that found nothing, as before")
+	assert.Equal(t, uint64(3), result.Attempts, "payments: the search that found nothing is not one")
 
 	n, out, in = shortRoute()
 	n.liquidity[id("3x1x1", "02a", "02b")] = 30000000
@@ -208,7 +208,7 @@ func TestShortRouteIsDroppedWhenItFailsOtherwise(t *testing.T) {
 	result := r.Run()
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, 2, len(n.paid), "100k short, 50k failed at 02a: no 25k")
-	assert.Equal(t, uint64(3), result.Attempts, "the last search found nothing")
+	assert.Equal(t, uint64(2), result.Attempts, "payments only")
 }
 
 // The short route got less without checking what the searches and payments
@@ -440,16 +440,16 @@ func TestOutPeerThatCannotForwardEndsTheRebalance(t *testing.T) {
 
 	result := r.Run()
 	assert.Equal(t, "failure", result.Status)
-	assert.Equal(t, DEFAULT_MAX_OUT_PEER_FAILS, len(n.paid))
+	assert.Equal(t, DEFAULT_MAX_NODE_FAILS, len(n.paid))
 	assert.Equal(t, SideOut, result.FailedAt, "the out channel's peer: a pull leaves the candidate out, a push stops")
 	assert.Equal(t, RetryNo, result.Retry)
 	assert.Contains(t, result.Message, "could not forward 5 payments")
 
-	// maxoutpeerfails sets the limit
+	// maxnodefails sets the limit
 	n, out, in = deadOutPeer()
 	r = rebalanceOn(n, out, in, 100000000)
 	r.Attempts = 100
-	r.MaxOutPeerFails = 2
+	r.MaxNodeFails = 2
 	result = r.Run()
 	assert.Equal(t, 2, len(n.paid))
 	assert.Contains(t, result.Message, "could not forward 2 payments")
@@ -457,7 +457,7 @@ func TestOutPeerThatCannotForwardEndsTheRebalance(t *testing.T) {
 	n, out, in = deadOutPeer()
 	r = rebalanceOn(n, out, in, 100000000)
 	r.Attempts = 100
-	r.MaxOutPeerFails = 100
+	r.MaxNodeFails = 100
 	assert.Equal(t, "failure", r.Run().Status)
 	assert.Equal(t, 8, len(n.paid), "every channel of the out-peer, then no route")
 
@@ -469,24 +469,58 @@ func TestOutPeerThatCannotForwardEndsTheRebalance(t *testing.T) {
 	assert.Equal(t, 2, len(n.paid))
 }
 
-// Failures further along the route do not count against the out-peer.
-func TestFailuresBeyondTheOutPeerDoNotEndTheRebalance(t *testing.T) {
-	n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
-	out := addChannel(n.Graph, "1x1x1", self, outP, 0)
-	in := addChannel(n.Graph, "5x1x1", inP, self, 0)
-	addChannel(n.Graph, "2x1x1", outP, "02a", 0)
-	for i := 0; i < 8; i++ {
-		mid := fmt.Sprintf("02m%d", i)
-		addChannel(n.Graph, fmt.Sprintf("3x1x%d", i), "02a", mid, uint64(i))
-		addChannel(n.Graph, fmt.Sprintf("4x1x%d", i), mid, inP, 0)
-		if i < 7 {
-			n.liquidity[id(fmt.Sprintf("3x1x%d", i), "02a", mid)] = 0
+// A node past the out-peer that cannot forward was tried once per channel:
+// after maxnodefails failures the rest of the rebalance routes around it.
+func TestADrainedNodeIsRoutedAround(t *testing.T) {
+	drained := func(dead int) (*network, *graph.Channel, *graph.Channel) {
+		n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+		out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+		in := addChannel(n.Graph, "5x1x1", inP, self, 0)
+		addChannel(n.Graph, "2x1x1", outP, "02a", 0)
+		for i := 0; i < 8; i++ {
+			mid := fmt.Sprintf("02m%d", i)
+			addChannel(n.Graph, fmt.Sprintf("3x1x%d", i), "02a", mid, uint64(i))
+			addChannel(n.Graph, fmt.Sprintf("4x1x%d", i), mid, inP, 0)
+			if i < dead {
+				n.liquidity[id(fmt.Sprintf("3x1x%d", i), "02a", mid)] = 0
+			}
 		}
+		// a longer way around 02a: routes with fewer hops are tried first
+		addChannel(n.Graph, "6x1x1", outP, "02b", 0)
+		addChannel(n.Graph, "7x1x1", "02b", "02c", 0)
+		addChannel(n.Graph, "8x1x1", "02c", "02d", 0)
+		addChannel(n.Graph, "9x1x1", "02d", inP, 0)
+		return n, out, in
 	}
+
+	// 02a fails 5 times: the 6th payment goes around it
+	n, out, in := drained(8)
 	r := rebalanceOn(n, out, in, 100000000)
 	r.Attempts = 100
-
 	result := r.Run()
 	assert.Equal(t, "success", result.Status, result.Message)
-	assert.Equal(t, 8, len(n.paid), "02a failed 7 times, then the last route worked")
+	assert.Equal(t, DEFAULT_MAX_NODE_FAILS+1, len(n.paid))
+	assert.Equal(t, id("6x1x1", outP, "02b"), n.paid[len(n.paid)-1][1])
+	assert.Equal(t, uint64(DEFAULT_MAX_NODE_FAILS+1), result.Attempts)
+
+	// fewer failures than the limit: 02a's next channel works
+	n, out, in = drained(DEFAULT_MAX_NODE_FAILS - 1)
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 100
+	result = r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Equal(t, DEFAULT_MAX_NODE_FAILS, len(n.paid))
+	assert.Equal(t, id("2x1x1", outP, "02a"), n.paid[len(n.paid)-1][1])
+
+	// maxnodefails sets the limit
+	n, out, in = drained(8)
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 100
+	r.MaxNodeFails = 2
+	assert.Equal(t, "success", r.Run().Status)
+	assert.Equal(t, 3, len(n.paid))
+
+	// only for this rebalance: 02a is not on the avoid list
+	_, avoided := n.Avoided(0)["02a"]
+	assert.False(t, avoided)
 }
