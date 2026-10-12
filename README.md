@@ -84,7 +84,7 @@ Required parameters:
 Optional parameters:
 * `amount`(sats, default=200000) is the amount that you want to rebalance
 * `maxppm`(default=10) is the maximum ppm that you are willing to pay
-* `attempts`(default=1) is the number of payment attempts that will be made once a path is found
+* `attempts`(default=1) is the number of payment attempts that will be made once a path is found. A rebalance stops early once the peer of the out channel has failed to forward 5 of its payments for lack of liquidity, as it has little outbound liquidity left: `circular-pull` then leaves that channel out for the rest of the run, and `circular-push`, whose every split goes out through that peer, starts no more splits.
 * `maxhops`(default=8) is the maximum number of hops that a path is allowed to have
 
 ### Pull liquidity into a channel from many sources in parallel

@@ -4,6 +4,7 @@ import (
 	"circular/graph"
 	"circular/node"
 	"circular/util"
+	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 	"sync"
@@ -415,4 +416,56 @@ func TestAvoidedPeersStillEndOurRoutes(t *testing.T) {
 		id("4x1x1", "02b", inP), id("5x1x1", inP, self)}
 	assert.Equal(t, "success", r.Run().Status)
 	assert.Equal(t, 1, len(n.paid))
+}
+
+// With attempts=100, a split whose out-peer had no outbound liquidity made
+// about 100 payments, each trying another of the out-peer's channels.
+func TestOutPeerThatCannotForwardEndsTheRebalance(t *testing.T) {
+	n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+	out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+	in := addChannel(n.Graph, "5x1x1", inP, self, 0)
+	for i := 0; i < 8; i++ {
+		mid := fmt.Sprintf("02m%d", i)
+		addChannel(n.Graph, fmt.Sprintf("2x1x%d", i), outP, mid, uint64(i)) // each dearer than the last
+		addChannel(n.Graph, fmt.Sprintf("3x1x%d", i), mid, inP, 0)
+		n.liquidity[id(fmt.Sprintf("2x1x%d", i), outP, mid)] = 0
+	}
+	r := rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 100
+
+	result := r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, maxOutPeerFailures, len(n.paid))
+	assert.Equal(t, SideOut, result.FailedAt, "the out channel's peer: a pull leaves the candidate out, a push stops")
+	assert.Equal(t, RetryNo, result.Retry)
+	assert.Contains(t, result.Message, "could not forward 5 payments")
+
+	// a new rebalance counts from zero
+	n.paid = nil
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 2
+	assert.Equal(t, "failure", r.Run().Status)
+	assert.Equal(t, 2, len(n.paid))
+}
+
+// Failures further along the route do not count against the out-peer.
+func TestFailuresBeyondTheOutPeerDoNotEndTheRebalance(t *testing.T) {
+	n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+	out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+	in := addChannel(n.Graph, "5x1x1", inP, self, 0)
+	addChannel(n.Graph, "2x1x1", outP, "02a", 0)
+	for i := 0; i < 8; i++ {
+		mid := fmt.Sprintf("02m%d", i)
+		addChannel(n.Graph, fmt.Sprintf("3x1x%d", i), "02a", mid, uint64(i))
+		addChannel(n.Graph, fmt.Sprintf("4x1x%d", i), mid, inP, 0)
+		if i < 7 {
+			n.liquidity[id(fmt.Sprintf("3x1x%d", i), "02a", mid)] = 0
+		}
+	}
+	r := rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 100
+
+	result := r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Equal(t, 8, len(n.paid), "02a failed 7 times, then the last route worked")
 }

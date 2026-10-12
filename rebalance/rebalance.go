@@ -36,7 +36,16 @@ type Rebalance struct {
 	// refresh reads our channels with peers again; tests replace
 	// Node.RefreshPeerChannels with it
 	refresh func(peerIds ...string) error
+
+	// outPeerFailures counts the payments of this run that the out-peer
+	// could not forward for lack of liquidity
+	outPeerFailures int
 }
+
+// maxOutPeerFailures ends a rebalance once the out-peer has failed to
+// forward this many of its payments: it has little outbound liquidity left,
+// and each new route would only try another of its channels.
+const maxOutPeerFailures = 5
 
 func NewRebalance(outChannel, inChannel *graph.Channel, amount, maxppm uint64, attempts, maxHops int) *Rebalance {
 	return &Rebalance{
@@ -85,6 +94,7 @@ func (r *Rebalance) Run() *Result {
 	delete(exclude, r.InChannel.Source)
 	requested := r.Amount
 	defer func() { r.Amount = requested }()
+	r.outPeerFailures = 0
 
 	// a route that worked before needs no search
 	known := r.knownRoute(exclude)
