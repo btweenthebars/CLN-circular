@@ -217,6 +217,8 @@ type fakeSplits struct {
 	fee func(call int, delivered uint64) uint64
 	// failedNodes gives, for a call, the payments each node failed
 	failedNodes func(call int) map[string]int
+	// failureDelay gives how long a failing call takes (default none)
+	failureDelay func(call int) time.Duration
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -271,10 +273,14 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 		result.FailedNodes = failed
 		result.Route = &graph.PrettyRoute{Hops: []graph.PrettyRouteHop{{ShortChannelId: candidate.ShortChannelId}}}
 	}
+	delay := f.successDelay
+	if delivered == 0 && f.failureDelay != nil {
+		delay = f.failureDelay(f.calls - 1)
+	} else if delivered == 0 {
+		delay = 0
+	}
 	go func() {
-		if delivered > 0 {
-			time.Sleep(f.successDelay)
-		}
+		time.Sleep(delay)
 		f.RebalanceResultChan <- result
 	}()
 }
@@ -1367,4 +1373,41 @@ func TestSetMaxTime(t *testing.T) {
 	assert.Equal(t, time.Duration(0), a.maxTime)
 	a.setMaxTime(-1)
 	assert.Equal(t, time.Duration(0), a.maxTime)
+}
+
+// A stop that came later took over stopped: a fail streak reached by the
+// splits a time limit ended, or a time limit reached while circular-stop
+// was letting the splits in flight finish.
+func TestTheFirstStopSaysWhy(t *testing.T) {
+	// the time limit, then a split in flight takes the streak over its limit
+	f := splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	f.payments = 200
+	f.maxFailStreak = 300
+	f.maxTime = 50 * time.Millisecond
+	f.failureDelay = func(call int) time.Duration {
+		if call == 1 {
+			return 300 * time.Millisecond
+		}
+		return 0
+	}
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(f.asked))
+	assert.Contains(t, result.(*Result).Stopped, "time limit")
+
+	// circular-stop, then the time limit while the split in flight finishes
+	f = splitsOn(t, 2, func(call int, _ uint64) uint64 {
+		f.Node.Stopped.Store(true)
+		return 0
+	})
+	f.maxTime = 50 * time.Millisecond
+	f.failureDelay = func(int) time.Duration { return 300 * time.Millisecond }
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(f.asked))
+	assert.True(t, f.timeStopped)
+	assert.Equal(t, "circular was stopped (circular-stop): firing no more splits", result.(*Result).Stopped)
 }

@@ -218,15 +218,19 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Result.Attempts = r.TotalAttempts
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
-	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" && !r.targetStopped && !r.streakStopped && !r.timeStopped {
-		if r.heldByStop {
-			// its splits ended at their next payment, and no more were fired
+	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" {
+		switch {
+		case r.heldByStop:
+			// circular-stop came first: its splits ended at their next
+			// payment, and no more were fired
 			r.Result.Stopped = "circular was stopped (circular-stop): firing no more splits"
-		} else {
+		case !r.targetStopped && !r.streakStopped && !r.timeStopped:
 			// nothing stopped it: no candidate was left to fire
 			r.Result.Stopped = r.ranOut()
 		}
-		r.Node.Logln(glightning.Info, r.Result.Stopped)
+		if r.Result.Stopped != "" {
+			r.Node.Logln(glightning.Info, r.Result.Stopped)
+		}
 	}
 	if r.AmountRebalanced >= r.amount {
 		// the splits in flight when it stopped still reached the target
@@ -261,9 +265,18 @@ func (r *AbstractRebalance) countFailStreak(result *rebalance.Result) {
 	}
 	r.streakStopped = true
 	r.halt.Store(true)
-	r.Result.Stopped = fmt.Sprintf("%d payments failed in a row without a split succeeding (maxfailstreak %d): firing no more splits",
-		r.failStreak, limit)
-	r.Node.Logln(glightning.Info, r.Result.Stopped)
+	r.noteStop(fmt.Sprintf("%d payments failed in a row without a split succeeding (maxfailstreak %d): firing no more splits",
+		r.failStreak, limit))
+}
+
+// noteStop logs why the run stopped firing splits, and keeps it in
+// Result.Stopped unless an earlier stop is there, or circular-stop held it
+// back first (said at the end of the run).
+func (r *AbstractRebalance) noteStop(why string) {
+	r.Node.Logln(glightning.Info, why)
+	if r.Result != nil && r.Result.Stopped == "" && !r.heldByStop {
+		r.Result.Stopped = why
+	}
 }
 
 // splitName names the split behind result by its candidate channel and that
@@ -354,10 +367,7 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 		}
 		r.targetStopped = true
 		r.halt.Store(true)
-		r.Node.Logln(glightning.Info, "the target channel cannot take more for now: firing no more splits. ", result.Message)
-		if r.Result != nil && r.Result.Stopped == "" {
-			r.Result.Stopped = "the target channel cannot take more for now: firing no more splits. " + result.Message
-		}
+		r.noteStop("the target channel cannot take more for now: firing no more splits. " + result.Message)
 	}
 }
 
@@ -724,11 +734,7 @@ func (r *AbstractRebalance) timeUp() {
 	}
 	r.timeStopped = true
 	r.halt.Store(true)
-	stopped := fmt.Sprintf("the run reached its time limit (maxtime %.0fs): firing no more splits", r.maxTime.Seconds())
-	r.Node.Logln(glightning.Info, stopped)
-	if r.Result.Stopped == "" {
-		r.Result.Stopped = stopped
-	}
+	r.noteStop(fmt.Sprintf("the run reached its time limit (maxtime %.0fs): firing no more splits", r.maxTime.Seconds()))
 }
 
 // progress says how the run is going: for example
