@@ -211,6 +211,8 @@ type fakeSplits struct {
 	cheapest func(call int) uint64
 	// fee gives a successful call's fee for what it delivered (default 10 ppm)
 	fee func(call int, delivered uint64) uint64
+	// failedNodes gives, for a call, the payments each node failed
+	failedNodes func(call int) map[string]int
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -250,8 +252,11 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 		result.Halted = true
 		result.Message = "rebalance failed after 1 payments. the run stopped: no more payments for this split"
 	}
+	if f.failedNodes != nil {
+		result.FailedNodes = f.failedNodes(f.calls - 1)
+	}
 	if delivered > 0 {
-		cheapest := result.CheapestPPM
+		cheapest, failed := result.CheapestPPM, result.FailedNodes
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
 		result.Candidate, result.Fee = candidateId(candidate), delivered/100000
@@ -259,6 +264,7 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 			result.Fee = f.fee(f.calls-1, delivered)
 		}
 		result.CheapestPPM = cheapest
+		result.FailedNodes = failed
 		result.Route = &graph.PrettyRoute{Hops: []graph.PrettyRouteHop{{ShortChannelId: candidate.ShortChannelId}}}
 	}
 	go func() {
@@ -1047,4 +1053,57 @@ func TestAvgPPM(t *testing.T) {
 	assert.Equal(t, uint64(756), avgPPM(483943, 640136000))
 	// 200 BTC in fees on 1,000 BTC: fee*1e6 does not fit in 64 bits
 	assert.Equal(t, uint64(200000), avgPPM(20000000000000, 100000000000000))
+}
+
+// The result lists the nodes that failed the most payments, over every
+// split, whether it succeeded, failed or was ended by the run's stop.
+func TestWorstNodes(t *testing.T) {
+	f := splitsOn(t, 3, func(call int, amount uint64) uint64 {
+		if call == 0 {
+			return amount
+		}
+		return 0
+	})
+	f.splits = 1
+	f.Node.Graph.Aliases["02n1"], f.Node.Graph.Aliases["02n6"] = "One", "Six"
+	f.halted = func(call int) bool { return call == 2 }
+	f.failedNodes = func(call int) map[string]int {
+		switch call {
+		case 0: // succeeded after these
+			return map[string]int{"02n1": 3, "02n2": 1, "02n7": 1}
+		case 1:
+			return map[string]int{"02n1": 2, "02n3": 2, "02n4": 2}
+		case 2: // halted
+			return map[string]int{"02n5": 2, "02n6": 4}
+		}
+		return nil
+	}
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	worst := result.(*Result).WorstNodes
+	ids := []string{}
+	for _, n := range worst {
+		ids = append(ids, n.NodeId)
+	}
+	assert.Equal(t, []string{"02n1", "02n6", "02n3", "02n4", "02n5"}, ids, "most first, then by id; at most 5")
+	if assert.Equal(t, WORST_NODES, len(worst)) {
+		assert.Equal(t, 5, worst[0].FailedPayments)
+		assert.Equal(t, "One", worst[0].Alias)
+		assert.Equal(t, "Six", worst[1].Alias)
+		assert.Empty(t, worst[2].Alias)
+	}
+	out, err := json.Marshal(worst[0])
+	assert.NoError(t, err)
+	assert.Equal(t, `{"alias":"One","node_id":"02n1","failed_payments":5}`, string(out))
+
+	// no failures, no list
+	f = splitsOn(t, 1, func(_ int, amount uint64) uint64 { return amount })
+	f.amount = 100000000
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	out, err = json.Marshal(result)
+	assert.NoError(t, err)
+	assert.NotContains(t, string(out), "worst_nodes")
 }

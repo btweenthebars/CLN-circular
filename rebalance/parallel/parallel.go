@@ -51,7 +51,10 @@ type AbstractRebalance struct {
 	// riskPPM: see Rebalance.RiskPPM
 	riskPPM int
 	// movedMsat is what the successful splits delivered, for Result.AvgPPM
-	movedMsat      uint64
+	movedMsat uint64
+	// failedAt counts, per node, the payments of every split it failed, for
+	// Result.WorstNodes
+	failedAt       map[string]int
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of

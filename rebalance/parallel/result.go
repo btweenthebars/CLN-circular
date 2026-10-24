@@ -90,6 +90,10 @@ type Result struct {
 	// splits that failed because every route cost more than maxppm: the
 	// maxppm their search would have needed
 	CheapestPPMOverMax uint64 `json:"cheapest_ppm_over_max,omitempty"`
+	// WorstNodes are the nodes that failed the most of the run's payments,
+	// most first, at most WORST_NODES of them; failures on our own channels
+	// are not counted
+	WorstNodes []*FailingNode `json:"worst_nodes,omitempty"`
 	// Stopped says why the run fired no more splits, when it did not reach
 	// its target: the target channel took no more, or too many payments
 	// failed in a row (maxfailstreak). Running out of candidates leaves it
@@ -154,6 +158,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		rebalanceResult := <-r.RebalanceResultChan
 
 		r.TotalAttempts += rebalanceResult.Attempts
+		r.countFailedNodes(rebalanceResult)
 		r.countFailStreak(rebalanceResult)
 		r.judgeCandidate(rebalanceResult)
 
@@ -196,6 +201,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	// rebalance is over
 	r.Result.Attempts = r.TotalAttempts
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
+	r.Result.WorstNodes = r.worstNodes()
 	if r.AmountRebalanced >= r.amount {
 		// the splits in flight when it stopped still reached the target
 		r.Result.Stopped = ""
@@ -535,4 +541,52 @@ func avgPPM(fee, moved uint64) uint64 {
 	}
 	ppm, _ := bits.Div64(hi, lo, moved)
 	return ppm
+}
+
+// WORST_NODES is how many nodes Result.WorstNodes lists.
+const WORST_NODES = 5
+
+// FailingNode is a node that failed some of a run's payments.
+type FailingNode struct {
+	Alias          string `json:"alias,omitempty"`
+	NodeId         string `json:"node_id"`
+	FailedPayments int    `json:"failed_payments"`
+}
+
+// countFailedNodes adds up, per node, the payments a split's node failed,
+// whatever the split's outcome.
+func (r *AbstractRebalance) countFailedNodes(result *rebalance.Result) {
+	for id, n := range result.FailedNodes {
+		if r.failedAt == nil {
+			r.failedAt = map[string]int{}
+		}
+		r.failedAt[id] += n
+	}
+}
+
+// worstNodes lists the WORST_NODES nodes that failed the most payments, most
+// first, then by node id.
+func (r *AbstractRebalance) worstNodes() []*FailingNode {
+	nodes := make([]*FailingNode, 0, len(r.failedAt))
+	for id, n := range r.failedAt {
+		nodes = append(nodes, &FailingNode{NodeId: id, FailedPayments: n})
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].FailedPayments != nodes[j].FailedPayments {
+			return nodes[i].FailedPayments > nodes[j].FailedPayments
+		}
+		return nodes[i].NodeId < nodes[j].NodeId
+	})
+	if len(nodes) > WORST_NODES {
+		nodes = nodes[:WORST_NODES]
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+	r.Node.Graph.LockAliases()
+	for _, node := range nodes {
+		node.Alias = r.Node.Graph.Aliases[node.NodeId]
+	}
+	r.Node.Graph.UnlockAliases()
+	return nodes
 }

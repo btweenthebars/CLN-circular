@@ -58,6 +58,9 @@ type Rebalance struct {
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity
 	nodeFailures map[string]int
+	// failedAt counts, per node, the payments of this run it failed, for
+	// whatever reason, other than on our own channels (Result.FailedNodes)
+	failedAt map[string]int
 	// payments counts the payments this run sent
 	payments int
 }
@@ -127,6 +130,7 @@ func (r *Rebalance) Run() *Result {
 	requested := r.Amount
 	defer func() { r.Amount = requested }()
 	r.nodeFailures = map[string]int{}
+	r.failedAt = map[string]int{}
 	r.payments = 0
 
 	// a route that worked before needs no search
@@ -173,6 +177,7 @@ func (r *Rebalance) Run() *Result {
 		// Success
 		if err == nil && result != nil {
 			result.Attempts = uint64(r.payments)
+			result.FailedNodes = r.failedAt
 			r.Node.Logln(glightning.Info, result.Message)
 			if result.Route != nil {
 				r.Node.Logln(glightning.Info, "\n"+result.Route.String())
@@ -213,6 +218,7 @@ func (r *Rebalance) Run() *Result {
 	r.Amount = requested
 	failure := NewResult("failure", r.Amount/1000, r.OutChannel.Destination, r.InChannel.Source)
 	failure.Attempts = uint64(r.payments)
+	failure.FailedNodes = r.failedAt
 	failure.FailedAt, failure.Retry = failureSide(lastErr)
 	failure.Precheck = isPrecheck(lastErr)
 	failure.Halted = errors.Is(lastErr, errRunStopped)

@@ -582,3 +582,42 @@ func TestRiskPPMPerRebalance(t *testing.T) {
 	assert.Equal(t, likely, route(200, 0), "the node's rate")
 	assert.Equal(t, cheap, route(200, -1), "below 0: off for this rebalance")
 }
+
+// A run said which nodes failed its payments only in the log. Each split
+// now counts them, by node, whatever its outcome; a failure on our own in
+// channel is about our channel, not the node.
+func TestFailuresAreCountedByNode(t *testing.T) {
+	network := func() (*network, *graph.Channel, *graph.Channel) {
+		n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+		out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+		in := addChannel(n.Graph, "9x1x1", inP, self, 0)
+		addChannel(n.Graph, "2x1x1", outP, "02a", 0)
+		addChannel(n.Graph, "3x1x1", "02a", inP, 0)
+		addChannel(n.Graph, "4x1x1", outP, "02b", 1)
+		addChannel(n.Graph, "5x1x1", "02b", inP, 0)
+		addChannel(n.Graph, "6x1x1", outP, "02c", 2)
+		addChannel(n.Graph, "7x1x1", "02c", inP, 0)
+		return n, out, in
+	}
+
+	// 02a cannot forward, then the out-peer cannot send to 02b; 02c works
+	n, out, in := network()
+	n.liquidity[id("3x1x1", "02a", inP)] = 0
+	n.liquidity[id("4x1x1", outP, "02b")] = 0
+	r := rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 3
+	result := r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Equal(t, 3, len(n.paid))
+	assert.Equal(t, map[string]int{"02a": 1, outP: 1}, result.FailedNodes)
+
+	// the in-peer cannot send to us over our channel: not its failure
+	n, out, in = network()
+	n.liquidity[id("9x1x1", inP, self)] = 0
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 3
+	result = r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, 1, len(n.paid))
+	assert.Empty(t, result.FailedNodes)
+}

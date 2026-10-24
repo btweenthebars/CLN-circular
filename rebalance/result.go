@@ -29,6 +29,9 @@ type Result struct {
 	// CheapestPPM: the rate of the cheapest route found, when every route
 	// cost more than maxppm
 	CheapestPPM uint64 `json:"-"`
+	// FailedNodes counts, per node, the payments it failed, leaving out
+	// failures on our own channels
+	FailedNodes map[string]int `json:"-"`
 }
 
 func NewResult(status string, amount uint64, src, dst string) *Result {

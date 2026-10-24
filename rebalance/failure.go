@@ -96,6 +96,14 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 	hop := route.Hops[k]
 	id := channelId(hop.Channel)
 	inChannel := k == len(route.Hops)-1 // the in-peer's channel to us
+	if !inChannel {
+		// for the run's worst nodes: a failure on our in channel is about
+		// our channel, not the node
+		if r.failedAt == nil {
+			r.failedAt = map[string]int{}
+		}
+		r.failedAt[failure.ErringNode]++
+	}
 
 	// The channels before it carried the payment, so they hold at least that much.
 	// Our own channel (hop 0) is kept up to date from listpeerchannels instead.
