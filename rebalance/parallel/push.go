@@ -187,4 +187,5 @@ func (r *RebalancePush) AddSuccess(result *rebalance2.Result) {
 		scid = result.Route.Hops[len(result.Route.Hops)-1].ShortChannelId
 	}
 	r.AddSuccessGeneric(scid, result.In, result.PPM, result.Amount)
+	r.addInvolving(scid, result.In, result.Route)
 }

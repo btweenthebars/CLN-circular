@@ -14,14 +14,18 @@ import (
 )
 
 // Success is what one candidate channel moved: the peer's alias and node id,
-// and for each fee rate paid (ppm), the sats rebalanced at that rate. It is
-// written as one flat JSON object:
+// for each fee rate paid (ppm), the sats rebalanced at that rate, and the
+// other nodes its successful routes went through. It is written as one flat
+// JSON object:
 //
-//	{"alias": "Bcash", "node_id": "02...", "756": 640136}
+//	{"alias": "Bcash", "node_id": "02...", "756": 640136, "involving": ["03...", "02..."]}
 type Success struct {
 	Alias  string
 	NodeId string
 	ByPPM  map[uint64]uint64
+	// Involving: the nodes of the successful routes, in the order first
+	// seen, without our node and the candidate's peer
+	Involving []string
 }
 
 // MarshalJSON writes the alias and node id first, then the rates in
@@ -51,6 +55,14 @@ func (s *Success) MarshalJSON() ([]byte, error) {
 	sort.Slice(ppms, func(i, j int) bool { return ppms[i] < ppms[j] })
 	for _, ppm := range ppms {
 		fmt.Fprintf(&buf, `,"%d":%d`, ppm, s.ByPPM[ppm])
+	}
+	if len(s.Involving) > 0 {
+		involving, err := json.Marshal(s.Involving)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteString(`,"involving":`)
+		buf.Write(involving)
 	}
 	buf.WriteByte('}')
 	return buf.Bytes(), nil
@@ -88,6 +100,30 @@ func (r *AbstractRebalance) AddSuccessGeneric(scid, nodeId string, ppm, amount u
 		r.Result.Successes[scid] = success
 	}
 	success.ByPPM[ppm] += amount
+}
+
+// addInvolving adds to candidate channel scid's success the nodes route
+// went through, other than ours and peer, the candidate's.
+func (r *AbstractRebalance) addInvolving(scid, peer string, route *graph.PrettyRoute) {
+	success, ok := r.Result.Successes[scid]
+	if !ok || route == nil {
+		return
+	}
+	for _, hop := range route.Hops {
+		if hop.Id == "" || hop.Id == r.Node.Id || hop.Id == peer || contains(success.Involving, hop.Id) {
+			continue
+		}
+		success.Involving = append(success.Involving, hop.Id)
+	}
+}
+
+func contains(ids []string, id string) bool {
+	for _, i := range ids {
+		if i == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {

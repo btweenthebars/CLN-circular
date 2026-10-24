@@ -148,6 +148,40 @@ func TestSuccessesAreKeyedByChannel(t *testing.T) {
 	assert.Equal(t, `{"1x1x1":{"alias":"BCash_Is_Trash","node_id":"02bcash","3":1,"5":7}}`, string(out))
 }
 
+// A success said which channel moved how much at which rate, but not which
+// nodes its routes went through.
+func TestSuccessesListTheNodesTheyWentThrough(t *testing.T) {
+	g := graph.NewGraph()
+	g.Aliases["02bcash"] = "BCash_Is_Trash"
+	// hops name the node each leaves from: us, the out-peer, ..., the in-peer
+	route := func(nodes ...string) *graph.PrettyRoute {
+		r := &graph.PrettyRoute{}
+		for i, n := range nodes {
+			r.Hops = append(r.Hops, graph.PrettyRouteHop{Id: n, ShortChannelId: fmt.Sprintf("%dx1x1", i+1)})
+		}
+		return r
+	}
+	success := func(out, in string, ppm uint64, r *graph.PrettyRoute) *rebalance.Result {
+		return &rebalance.Result{Status: "success", Out: out, In: in, PPM: ppm, Amount: 100, Route: r}
+	}
+
+	pull := &RebalancePull{AbstractRebalance: AbstractRebalance{Node: &node.Node{Id: "02self", Graph: g}, Result: NewResult(0)}}
+	pull.AddSuccess(success("02bcash", "02in", 229, route("02self", "02bcash", "02a", "02b", "02in")))
+	pull.AddSuccess(success("02bcash", "02in", 250, route("02self", "02bcash", "02c", "02a", "02in")))
+	out, err := json.Marshal(pull.Result.Successes)
+	assert.NoError(t, err)
+	assert.Equal(t, `{"1x1x1":{"alias":"BCash_Is_Trash","node_id":"02bcash","229":100,"250":100,`+
+		`"involving":["02a","02b","02in","02c"]}}`, string(out),
+		"after the rates; each node once, in the order first seen; not us nor the channel's peer")
+
+	// circular-push: the candidate's peer is the in-peer
+	push := &RebalancePush{AbstractRebalance: AbstractRebalance{Node: &node.Node{Id: "02self", Graph: g}, Result: NewResult(0)}}
+	push.AddSuccess(success("02out", "02bcash", 5, route("02self", "02out", "02a", "02bcash")))
+	out, err = json.Marshal(push.Result.Successes)
+	assert.NoError(t, err)
+	assert.Equal(t, `{"4x1x1":{"alias":"BCash_Is_Trash","node_id":"02bcash","5":100,"involving":["02out","02a"]}}`, string(out))
+}
+
 // fakeSplits stands in for circular-pull: each split delivers what deliver
 // gives it, at most what it asked for.
 type fakeSplits struct {

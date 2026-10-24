@@ -128,12 +128,13 @@ The result of `circular-pull` (and `circular-push`) looks like this:
     "123456x1x0": {
       "alias": "BCash_Is_Trash",
       "node_id": "02...",
-      "756": 640136
+      "756": 640136,
+      "involving": ["03...", "02..."]
     }
   }
 }
 ```
-`attempts` is the total of payments the splits made. `last_error`, when present, is the last failed split's message, prefixed with that split's channel and peer (`last failed split, via 123456x1x0 (alias): ...`); its count of payments is that split's alone.
+Each entry in `successes` is a candidate channel: its peer, the sats moved at each fee rate (ppm), and under `involving` the other nodes its successful routes went through, each once, in the order first seen (without your node and that peer; the target channel's peer is in every entry). `attempts` is the total of payments the splits made. `last_error`, when present, is the last failed split's message, prefixed with that split's channel and peer (`last failed split, via 123456x1x0 (alias): ...`); its count of payments is that split's alone.
 
 Candidates are tried best first, by how they did in earlier splits (kept across runs in `learned.json`): a channel that failed in the last 30 minutes, and hasn't succeeded since, goes last; the others by success rate, then by the fee rate their splits paid. Channels never tried count as an even chance.
 
