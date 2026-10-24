@@ -180,6 +180,7 @@ func (g *Graph) refreshChannels(channelList []*glightning.Channel, listed map[st
 			continue
 		} else {
 			channel = NewChannel(c, existing.Liquidity, existing.Timestamp)
+			channel.Upper = existing.Upper
 			if c.LastUpdate > existing.LastUpdate {
 				// a failure blamed on the old policy says nothing about the new one
 				g.Unavoid(channelId)
@@ -229,6 +230,7 @@ func (g *Graph) ApplyChannelUpdate(u *ChannelUpdate) bool {
 		updated.HtlcMaximumMilliSatoshis = glightning.AmountFromMSat(u.HtlcMaximumMsat)
 	}
 	g.Channels[u.ChannelId] = NewChannel(&updated, old.Liquidity, old.Timestamp)
+	g.Channels[u.ChannelId].Upper = old.Upper
 	// a failure blamed on the old policy says nothing about the new one
 	g.Unavoid(u.ChannelId)
 	return true
@@ -338,7 +340,8 @@ func OppositeChannelId(channelId string) string {
 
 // LearnUpperBound records that channelId failed to forward amount for lack of
 // liquidity: it holds less than amount, so the other direction holds at least
-// the rest of the capacity. Beliefs are only ever tightened.
+// the rest of the capacity. Beliefs are only ever tightened. The failing
+// direction's belief becomes a bound (Channel.Upper), not an estimate.
 func (g *Graph) LearnUpperBound(channelId string, amount uint64) {
 	if amount == 0 {
 		return
@@ -350,6 +353,7 @@ func (g *Graph) LearnUpperBound(channelId string, amount uint64) {
 	if c, ok := g.Channels[channelId]; ok {
 		if c.Liquidity >= amount {
 			c.Liquidity = amount - 1
+			c.Upper = true
 		}
 		c.Timestamp = now
 	}
@@ -357,6 +361,7 @@ func (g *Graph) LearnUpperBound(channelId string, amount uint64) {
 		capacity := c.AmountMsat.MSat()
 		if capacity > amount && c.Liquidity < capacity-amount {
 			c.Liquidity = capacity - amount
+			c.Upper = false
 		}
 		c.Timestamp = now
 	}
@@ -372,6 +377,7 @@ func (g *Graph) LearnLowerBound(channelId string, amount uint64) {
 	if c, ok := g.Channels[channelId]; ok {
 		if c.Liquidity < amount {
 			c.Liquidity = amount
+			c.Upper = false
 		}
 		c.Timestamp = now
 	}
@@ -382,7 +388,9 @@ func (g *Graph) LearnLowerBound(channelId string, amount uint64) {
 			rest = capacity - amount
 		}
 		if c.Liquidity > rest {
+			// it holds at most the rest
 			c.Liquidity = rest
+			c.Upper = true
 		}
 		c.Timestamp = now
 	}
@@ -398,7 +406,9 @@ func (g *Graph) LearnPayment(channelId string, amount uint64) {
 	now := time.Now().Unix()
 	if c, ok := g.Channels[channelId]; ok {
 		if c.Liquidity < amount {
+			// it held more than a bound said
 			c.Liquidity = amount
+			c.Upper = false
 		}
 		c.Liquidity -= amount
 		if c.Liquidity == 0 {
@@ -427,6 +437,7 @@ func (g *Graph) MarkUnusable(channelId string) {
 
 	if c, ok := g.Channels[channelId]; ok {
 		c.Liquidity = 0
+		c.Upper = false
 		c.Timestamp = time.Now().Unix()
 	}
 }

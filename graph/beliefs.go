@@ -10,12 +10,13 @@ import (
 type Belief struct {
 	Liquidity uint64 `json:"liquidity"`
 	Timestamp int64  `json:"timestamp"`
+	Upper     bool   `json:"upper,omitempty"` // Liquidity is a bound from a failure
 }
 
 // learned reports whether c's belief came from a payment, not from the
 // default of half the capacity.
 func (c *Channel) learned() bool {
-	return c.Timestamp != 0 && c.Liquidity != c.AmountMsat.MSat()/2
+	return c.Timestamp != 0 && (c.Upper || c.Liquidity != c.AmountMsat.MSat()/2)
 }
 
 // Beliefs returns what the graph has learned, by channel id. It is small
@@ -27,7 +28,7 @@ func (g *Graph) Beliefs() map[string]Belief {
 	beliefs := make(map[string]Belief)
 	for id, c := range g.Channels {
 		if c.learned() {
-			beliefs[id] = Belief{Liquidity: c.Liquidity, Timestamp: c.Timestamp}
+			beliefs[id] = Belief{Liquidity: c.Liquidity, Timestamp: c.Timestamp, Upper: c.Upper}
 		}
 	}
 	return beliefs
@@ -49,14 +50,17 @@ func (g *Graph) ApplyBeliefs(beliefs map[string]Belief, since int64) int {
 		}
 		c.Liquidity = b.Liquidity
 		c.Timestamp = b.Timestamp
+		c.Upper = b.Upper
 		applied++
 	}
 	return applied
 }
 
 // DecayLiquidity moves each learned belief toward the default, half the
-// capacity, halving its distance from it every halfLife. Beliefs of 0 are
-// left alone. What a payment
+// capacity, halving its distance from it every halfLife. A bound from a
+// failure (Channel.Upper) loosens toward the capacity instead, since "at
+// most the capacity" says nothing, and becomes the default once it gets
+// there. Beliefs of 0 are left alone. What a payment
 // showed fades as balances change, instead of holding in full until
 // circular-liquidity-refresh and then vanishing at once. It returns how many
 // beliefs it moved. A halfLife of 0 turns it off.
@@ -85,11 +89,20 @@ func (g *Graph) DecayLiquidity(halfLife time.Duration) int {
 		def := c.AmountMsat.MSat() / 2
 		// a channel found unusable (disabled, closed, unknown to its node)
 		// stays so until the hard reset or a newer policy
-		if elapsed <= 0 || c.Liquidity == def || c.Liquidity == 0 {
+		if elapsed <= 0 || (c.Liquidity == def && !c.Upper) || c.Liquidity == 0 {
 			continue
 		}
 		keep := math.Pow(0.5, float64(elapsed)/halfLife.Seconds())
-		if c.Liquidity > def {
+		if c.Upper {
+			capacity := c.AmountMsat.MSat()
+			if c.Liquidity < capacity {
+				c.Liquidity = capacity - uint64(float64(capacity-c.Liquidity)*keep)
+			}
+			if c.Liquidity >= capacity || capacity-c.Liquidity <= capacity/1024 {
+				// as good as no bound: back to the default
+				c.Liquidity, c.Upper = def, false
+			}
+		} else if c.Liquidity > def {
 			c.Liquidity = def + uint64(float64(c.Liquidity-def)*keep)
 		} else {
 			c.Liquidity = def - uint64(float64(def-c.Liquidity)*keep)

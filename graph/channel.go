@@ -16,8 +16,11 @@ type Channel struct {
 	*glightning.Channel `json:"channel"`
 	Liquidity           uint64 `json:"liquidity"`
 	Timestamp           int64  `json:"timestamp"`
-	maxHtlcMsat         uint64
-	minHtlcMsat         uint64
+	// Upper: a failed payment showed the channel holds at most Liquidity, so
+	// it is a bound rather than an estimate (see SuccessChance)
+	Upper       bool `json:"upper,omitempty"`
+	maxHtlcMsat uint64
+	minHtlcMsat uint64
 }
 
 func NewChannel(channel *glightning.Channel, liquidity uint64, timestamp int64) *Channel {
@@ -92,8 +95,14 @@ func (c *Channel) GetDirection() uint32 {
 }
 
 func (c *Channel) CanForward(amount uint64) bool {
+	limit := c.Liquidity
+	if c.Upper && limit > c.AmountMsat.MSat()/2 {
+		// a bound loosening after a failure never admits more than a
+		// channel nothing is known about
+		limit = c.AmountMsat.MSat() / 2
+	}
 	return c.IsActive &&
-		c.Liquidity >= amount &&
+		limit >= amount &&
 		c.maxHtlcMsat >= amount &&
 		c.minHtlcMsat <= amount
 }
@@ -101,8 +110,9 @@ func (c *Channel) CanForward(amount uint64) bool {
 // SuccessChance is the chance that c can forward amount, taking its
 // liquidity belief as the middle of an even spread of balances: over the whole
 // capacity for the default belief (half of it), narrower once payments have
-// moved the belief toward empty or full. It is 0 for a channel believed
-// unusable.
+// moved the belief toward empty or full. After a failure (Upper), the belief
+// is a bound: any balance up to it is as likely. It is 0 for a channel
+// believed unusable.
 func (c *Channel) SuccessChance(amount uint64) float64 {
 	capacity := c.AmountMsat.MSat()
 	liquidity := c.Liquidity
@@ -111,6 +121,12 @@ func (c *Channel) SuccessChance(amount uint64) float64 {
 	}
 	if liquidity == 0 || capacity == 0 {
 		return 0
+	}
+	if c.Upper && c.learned() {
+		if amount > liquidity {
+			return 0
+		}
+		return float64(liquidity+1-amount) / float64(liquidity+1)
 	}
 	low, high := uint64(0), 2*liquidity
 	if liquidity > capacity/2 {
@@ -127,5 +143,6 @@ func (c *Channel) SuccessChance(amount uint64) float64 {
 
 func (c *Channel) ResetLiquidity() {
 	c.Liquidity = c.AmountMsat.MSat() / 2
+	c.Upper = false
 	c.Timestamp = time.Now().Unix()
 }

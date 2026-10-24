@@ -3,6 +3,7 @@ package graph
 import (
 	"circular/util"
 	"testing"
+	"time"
 
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
@@ -88,12 +89,12 @@ func TestLikelyRouteMayTakeMoreHops(t *testing.T) {
 	assert.Equal(t, []string{"1x1x1", "3x1x1", "2x1x1"}, scids(route), "0: the fewest hops")
 
 	// a route the graph learned holds little is avoided, not only excluded
-	// (a payment of 105k sats failed there: about 105k is believed, spread
-	// from 0 to 210k)
+	// (a payment of 105k sats failed there: it holds less, any balance under
+	// 105k as likely)
 	g.LearnUpperBound("4x1x1/"+util.GetDirection(outP, "02a"), 105000000)
 	route, err = g.GetLikelyCircularRoute(out, in, amount, nil, 8, MaxFeeForPPM(amount, 10), 200)
 	assert.NoError(t, err)
-	assert.Equal(t, []string{"1x1x1", "3x1x1", "2x1x1"}, scids(route), "about 0.52 against 0.55 now")
+	assert.Equal(t, []string{"1x1x1", "3x1x1", "2x1x1"}, scids(route), "about 0.05 against 0.55 now")
 }
 
 // Labels were kept by cost alone: one cheap in cost but dear in fees hid,
@@ -115,4 +116,72 @@ func TestLikelyRouteKeepsLabelsWithinTheFeeLimit(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []string{"1x1x1", "3x1x1", "5x1x1", "6x1x1", "2x1x1"}, scids(route),
 		"30 ppm and two channels at 0.7, within 100 ppm, over two at 0.52")
+}
+
+// A failure made the belief an estimate just under the failed amount, read
+// as the middle of the possible balances: about an even chance for slightly
+// smaller amounts, though the channel had just shown it holds less.
+func TestAFailureMakesABound(t *testing.T) {
+	g := newTestGraph()
+	g.channel("1x1x1", "02a", "02b", 0, 0) // 10M sats
+	back := g.channel("1x1x1", "02b", "02a", 0, 0)
+	id := "1x1x1/" + util.GetDirection("02a", "02b")
+	forward := g.Channels[id]
+
+	g.LearnUpperBound(id, 1000000000) // 1M sats failed
+	assert.True(t, forward.Upper)
+	assert.False(t, back.Upper, "the other direction holds at least the rest: no bound")
+	assert.InDelta(t, 0.1, forward.SuccessChance(900000000), 0.001, "any balance under 1M as likely")
+	assert.InDelta(t, 0.9, forward.SuccessChance(100000000), 0.001)
+
+	// it is kept across a restart and a new policy
+	saved := g.Beliefs()
+	assert.True(t, saved[id].Upper)
+	fresh := newTestGraph()
+	fresh.channel("1x1x1", "02a", "02b", 0, 0)
+	assert.Equal(t, 1, fresh.ApplyBeliefs(map[string]Belief{id: saved[id]}, 0))
+	assert.True(t, fresh.Channels[id].Upper)
+	g.ApplyChannelUpdate(&ChannelUpdate{ChannelId: id, Timestamp: 10, FeePPM: 5})
+	assert.True(t, g.Channels[id].Upper, "a new fee says nothing about the balance")
+	forward = g.Channels[id]
+
+	// a payment it carried, more than the bound, ends it
+	g.LearnLowerBound(id, 2000000000)
+	assert.False(t, forward.Upper)
+	assert.True(t, g.Channels["1x1x1/"+util.GetDirection("02b", "02a")].Upper, "the other direction now holds at most the rest")
+
+}
+
+// A bound faded toward half the capacity like an estimate: one above it got
+// tighter, which nobody had learned, and the flag outlived it.
+func TestABoundLoosensTowardTheCapacity(t *testing.T) {
+	g := newTestGraph()
+	low := g.channel("1x1x1", "02a", "02b", 0, 0) // 10M sats
+	high := g.channel("2x1x1", "02a", "02c", 0, 0)
+	half := g.channel("3x1x1", "02a", "02d", 0, 0)
+	hour := int64(3600)
+	now := time.Now().Unix()
+	low.Liquidity, low.Upper, low.Timestamp = 1000000000, true, now-hour // under 1M, an hour ago
+	high.Liquidity, high.Upper, high.Timestamp = 8000000000, true, now-hour
+	half.Liquidity, half.Upper, half.Timestamp = 5000000000, true, now-hour
+	assert.True(t, half.learned(), "a bound at half the capacity is still a bound")
+
+	g.DecayLiquidity(time.Hour)
+	assert.InDelta(t, 5500000000, float64(low.Liquidity), 2000000, "half way to the capacity")
+	assert.InDelta(t, 9000000000, float64(high.Liquidity), 2000000, "looser, not tighter")
+	assert.InDelta(t, 7500000000, float64(half.Liquidity), 2000000)
+	for _, c := range []*Channel{low, high, half} {
+		assert.True(t, c.Upper)
+		assert.Greater(t, c.SuccessChance(4000000000), 0.2)
+	}
+	assert.Less(t, low.SuccessChance(4000000000), 0.6, "still below an unknown channel's")
+	assert.True(t, low.CanForward(5000000000))
+	assert.False(t, low.CanForward(5200000000), "no more than an unknown channel would take")
+
+	// at the capacity it is no bound: the default, and an unknown channel
+	low.Timestamp, g.lastDecay = now-20*hour, 0
+	g.DecayLiquidity(time.Hour)
+	assert.False(t, low.Upper)
+	assert.Equal(t, low.AmountMsat.MSat()/2, low.Liquidity)
+	assert.InDelta(t, 0.6, low.SuccessChance(4000000000), 1e-9)
 }
