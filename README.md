@@ -6,6 +6,7 @@ It features a custom edge-based backwards Dijkstra pathfinding algorithm that ac
 
 ## Features
 * **bLIP-18 Inbound Fee Aware**: Parses gossip TLV type 55555 for inbound fees, computing exact net fees (`max(0, outbound + inbound)`) to discover routes with negative fee discounts.
+* **Success-Aware Routes**: Weighs each route's fees against its chance of success, from what circular knows of each channel's liquidity, so it prefers routes likely to carry the payment over slightly cheaper ones that are not (`circular-risk-ppm`).
 * **Failure-Informed Pathfinding**: Automatically excludes failing channels across retry attempts, bypassing bottlenecks without getting stuck on dead routes.
 * **Parallel Multi-Channel Rebalancing**: Simultaneously pull into or push out of target channels across multiple peers (`circular-pull` and `circular-push`).
 * **In-Flight Payment Tracking**: Real-time visibility into active parallel rebalancing operations via `circular-active`.
@@ -54,6 +55,7 @@ The startup options are:
 * `circular-liquidity-refresh` (**minutes**): Period of time after which we consider a liquidity belief not valid anymore. Default is 300.
 * `circular-liquidity-halflife` (**minutes**): How fast a liquidity belief fades back toward the default (half the capacity): half of the way every this many minutes. Default is 60; 0 turns fading off, so beliefs hold in full until `circular-liquidity-refresh`.
 
+* `circular-risk-ppm` (**ppm**): How much a route's chance of success weighs against its fees. Default is 200; 0 (or less) chooses routes as before: the fewest hops within `maxppm`, then the cheapest. Each channel between your two peers gets a chance of carrying the payment: circular takes what it believes the channel holds (half its capacity until payments teach it otherwise) as the middle of an even spread of possible balances. The search then takes the route with the least fees plus, for each channel, -ln(its chance) times this many ppm of the amount: a channel with an even chance adds about 0.69 × 200 = 139 ppm, one with a 99% chance about 2 ppm. `maxppm` still bounds the fees themselves. If no route fits this way, the search falls back to the one used with 0, so it never finds fewer routes. Higher values favour likely routes more. With it on, the number of hops is no longer kept to the least: a route may use up to `maxhops` channels when the extra ones are likely to carry the payment, so set `maxhops` to the longest route you accept. Right after a payment fails on a channel, its belief drops to just below that amount and is read as the middle of the spread, so circular still gives it about an even chance for slightly smaller amounts until other payments tell it more; the run that saw the failure leaves the channel out anyway.
 * `circular-save-stats` (**boolean**): Whether to save stats about the usage of the plugin. Default is true. Save this to false if you are not interested in stats, as this data can grow big if you are running a lot of rebalances. You can delete the stats with the method `circular-delete-stats`.
 
 Some failures say nothing about liquidity, so circular avoids what caused them in every rebalance for the next 30 minutes, not only in the one that hit them: a node that failed the payment itself, an erring node that was not on the route, a channel whose fee or CLTV error persists after refreshing its policy, and channels failing with other codes. A newer channel_update, from gossip or listchannels, lifts a channel early. Your own peers are only avoided for the rebalance that hit them. The list is saved in `learned.json`. A channel found disabled or closed is not faded back by `circular-liquidity-halflife`; it waits for the hard reset or a newer policy.
@@ -208,7 +210,7 @@ lightning-cli circular-quote -k inscid=123456x1x1 splitamount=20000 maxppm=500 m
   ]
 }
 ```
-`estimate` is a rough chance that the route can carry the payment. For each channel between your two peers that no payment has told circular about (`guessed_hops`), it assumes any balance up to the channel's capacity is as likely as any other; channels whose liquidity was learned count as able to carry it, since the search only takes them if they can. It is a guide for comparing routes, not a promise. A quote reflects what circular knows at that moment: what earlier payments taught it and the nodes it is avoiding.
+`estimate` is a rough chance that the route can carry the payment: the product of each channel's chance, as `circular-risk-ppm` describes. `guessed_hops` counts the channels no payment has told circular about, for which any balance up to the capacity is taken as equally likely. It is a guide for comparing routes, not a promise. A quote reflects what circular knows at that moment: what earlier payments taught it and the nodes it is avoiding.
 
 ### Get stats about the usage of the plugin
 ```bash

@@ -18,6 +18,14 @@ import (
 // hop limit. A label is dropped only when another label on the same channel is
 // at least as cheap and at most as long.
 //
+// With a risk rate (riskPPM), a label also carries a cost: its fees plus, for
+// each channel between our peers, -ln(the chance it can carry its amount)
+// times riskPPM ppm of that amount (see Channel.SuccessChance). The search
+// returns the route of least cost whose fees stay within the limit, so a
+// slightly dearer route through channels likely to hold the amount wins over
+// a cheaper one through channels unlikely to. Without one, the cost is the
+// fees.
+//
 // Peers refuse an HTLC that expires more than 2016 blocks ahead, so labels
 // whose CLTV delay passes MAX_ROUTE_DELAY are dropped: every route returned is
 // within it. Labels are not compared on delay, which keeps the search fast,
@@ -32,6 +40,7 @@ type label struct {
 	id      string // "scid/direction", empty for our own channels
 	hops    int    // channels from this one to the end of the route, inclusive
 	fee     uint64 // fees charged by the nodes after this channel
+	cost    uint64 // fee plus the uncertainty cost of the channels from this one on
 	amount  uint64 // amount carried by this channel
 	delay   uint   // CLTV delay of the HTLC over this channel, in blocks
 	next    *label // the following channel, towards the receiver
@@ -46,6 +55,7 @@ type searchRequest struct {
 	maxHops  int      // channels in the whole route, firstHop and lastHop included
 	maxFee   uint64   // total fees allowed
 	exclude  map[string]bool
+	riskPPM  uint64 // what each unit of -ln(chance) costs, in ppm of a channel's amount; 0: fees only
 }
 
 // GetRoute finds the cheapest route from src, which pays, to dst, which
@@ -87,6 +97,54 @@ func (g *Graph) GetCircularRoute(out, in *Channel, amount uint64, exclude map[st
 		}
 	}
 	return nil, util.ErrNoRoute
+}
+
+// GetLikelyCircularRoute is GetCircularRoute weighing each route's fees
+// against its chance of success: it returns the route of least fees plus
+// uncertainty cost (see searchRequest.riskPPM), at most maxHops channels,
+// whose fees stay within maxFee. Routes through channels likely to hold the
+// amount win over slightly cheaper ones that are not, and a long route pays
+// for each channel it adds. If it finds none, or riskPPM is 0, it returns
+// what GetCircularRoute does, so it never finds fewer routes.
+func (g *Graph) GetLikelyCircularRoute(out, in *Channel, amount uint64, exclude map[string]bool, maxHops int, maxFee, riskPPM uint64) (*Route, error) {
+	if riskPPM > 0 {
+		route, err := g.searchRoute(searchRequest{
+			src:      out.Destination,
+			dst:      in.Source,
+			firstHop: out,
+			lastHop:  in,
+			amount:   amount,
+			maxHops:  maxHops,
+			maxFee:   maxFee,
+			exclude:  exclude,
+			riskPPM:  riskPPM,
+		})
+		if err != util.ErrNoRoute {
+			return route, err
+		}
+		// the least costly labels may have hidden one within maxFee
+	}
+	return g.GetCircularRoute(out, in, amount, exclude, maxHops, maxFee)
+}
+
+// uncertaintyCost is what the search adds for sending amount over channel:
+// -ln(the chance it can) times riskPPM ppm of amount, in msat.
+func uncertaintyCost(channel *Channel, amount, riskPPM uint64) uint64 {
+	if riskPPM == 0 {
+		return 0
+	}
+	chance := channel.SuccessChance(amount)
+	if chance >= 1 {
+		return 0
+	}
+	if chance <= 0 {
+		return math.MaxUint64
+	}
+	cost := -math.Log(chance) * float64(riskPPM) * float64(amount) / 1e6
+	if cost >= math.MaxUint64/2 {
+		return math.MaxUint64
+	}
+	return uint64(math.Ceil(cost))
 }
 
 // GetCheapestCircularRoute is GetCircularRoute without a fee limit, returning
@@ -193,33 +251,32 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 		pathHops--
 	}
 
-	// best[id][h] is the lowest fee seen for channel id with h hops to the end.
-	best := make(map[string][]uint64)
-	dominated := func(id string, hops int, fee uint64, popped bool) bool {
-		costs, ok := best[id]
-		if !ok {
-			return false
-		}
-		for h := 1; h < hops; h++ {
-			if costs[h] <= fee {
+	// best[id] holds, for channel id, the labels pushed so far that no other
+	// beats: one is beaten by another with no more hops, no higher fee and no
+	// higher cost. Comparing the fee as well as the cost keeps a label within
+	// maxFee that a cheaper-cost one, later over maxFee, would otherwise hide.
+	// Without a risk rate, cost is fee and this is the lowest fee per hop count.
+	best := make(map[string][]mark)
+	dominated := func(id string, hops int, fee, cost uint64, popped bool) bool {
+		for _, m := range best[id] {
+			if m.hops <= hops && m.fee <= fee && m.cost <= cost {
+				// a popped label finds its own mark: only another one beats it
+				if popped && m.hops == hops && m.fee == fee && m.cost == cost {
+					continue
+				}
 				return true
 			}
 		}
-		if popped {
-			return costs[hops] < fee
-		}
-		return costs[hops] <= fee
+		return false
 	}
-	record := func(id string, hops int, fee uint64) {
-		costs, ok := best[id]
-		if !ok {
-			costs = make([]uint64, req.maxHops+1)
-			for i := range costs {
-				costs[i] = math.MaxUint64
+	record := func(id string, hops int, fee, cost uint64) {
+		kept := best[id][:0]
+		for _, m := range best[id] {
+			if !(hops <= m.hops && fee <= m.fee && cost <= m.cost) {
+				kept = append(kept, m)
 			}
-			best[id] = costs
 		}
-		costs[hops] = fee
+		best[id] = append(kept, mark{hops, fee, cost})
 	}
 
 	// expanded[u] holds the labels already expanded at node u, as (hops, fee,
@@ -248,11 +305,12 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 				if !ok || req.exclude[id] || !channel.CanForward(req.amount) {
 					continue
 				}
-				if pathHops < 1 || dominated(id, 1, 0, false) {
+				cost := uncertaintyCost(channel, req.amount, req.riskPPM)
+				if pathHops < 1 || cost == math.MaxUint64 || dominated(id, 1, 0, cost, false) {
 					continue
 				}
-				record(id, 1, 0)
-				heap.Push(pq, &label{channel: channel, id: id, hops: 1, amount: req.amount, delay: INITIAL_DELAY})
+				record(id, 1, 0, cost)
+				heap.Push(pq, &label{channel: channel, id: id, hops: 1, cost: cost, amount: req.amount, delay: INITIAL_DELAY})
 			}
 		}
 	}
@@ -263,7 +321,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 		if current.final {
 			return current.path(), nil
 		}
-		if current.id != "" && dominated(current.id, current.hops, current.fee, true) {
+		if current.id != "" && dominated(current.id, current.hops, current.fee, current.cost, true) {
 			continue
 		}
 
@@ -288,6 +346,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 					channel: req.firstHop,
 					hops:    current.hops + 1,
 					fee:     totalFee,
+					cost:    addSaturating(current.cost, fee),
 					amount:  current.amount + fee,
 					delay:   delay,
 					next:    current,
@@ -301,7 +360,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 		if current.hops+1 > pathHops || delay > MAX_ROUTE_DELAY {
 			continue
 		}
-		if !addExpansion(expanded, u, expansion{current.hops, current.fee, addSaturating(current.fee, outboundFee)}) {
+		if !addExpansion(expanded, u, expansion{current.hops, current.fee, addSaturating(current.fee, outboundFee), current.cost - current.fee}) {
 			continue
 		}
 
@@ -329,16 +388,22 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 					continue
 				}
 
-				hops := current.hops + 1
-				if dominated(id, hops, totalFee, false) {
+				uncertainty := uncertaintyCost(channel, amount, req.riskPPM)
+				cost := addSaturating(addSaturating(current.cost, fee), uncertainty)
+				if cost == math.MaxUint64 {
 					continue
 				}
-				record(id, hops, totalFee)
+				hops := current.hops + 1
+				if dominated(id, hops, totalFee, cost, false) {
+					continue
+				}
+				record(id, hops, totalFee, cost)
 				heap.Push(pq, &label{
 					channel: channel,
 					id:      id,
 					hops:    hops,
 					fee:     totalFee,
+					cost:    cost,
 					amount:  amount,
 					delay:   delay,
 					next:    current,
@@ -350,10 +415,17 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 	return nil, util.ErrNoRoute
 }
 
+// mark is a label's place in best: its hops, fee and cost.
+type mark struct {
+	hops      int
+	fee, cost uint64
+}
+
 type expansion struct {
 	hops         int
 	fee          uint64
 	withOutbound uint64
+	uncertainty  uint64 // cost - fee: what a later channel's cost adds to cannot change it
 }
 
 // addExpansion records e at node u, unless an earlier expansion there makes it
@@ -361,14 +433,14 @@ type expansion struct {
 func addExpansion(expanded map[string][]expansion, u string, e expansion) bool {
 	list := expanded[u]
 	for _, x := range list {
-		if x.hops <= e.hops && x.fee <= e.fee && x.withOutbound <= e.withOutbound {
+		if x.hops <= e.hops && x.fee <= e.fee && x.withOutbound <= e.withOutbound && x.uncertainty <= e.uncertainty {
 			return false
 		}
 	}
 	// drop the expansions that e makes pointless
 	kept := list[:0]
 	for _, x := range list {
-		if !(e.hops <= x.hops && e.fee <= x.fee && e.withOutbound <= x.withOutbound) {
+		if !(e.hops <= x.hops && e.fee <= x.fee && e.withOutbound <= x.withOutbound && e.uncertainty <= x.uncertainty) {
 			kept = append(kept, x)
 		}
 	}

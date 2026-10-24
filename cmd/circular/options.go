@@ -36,6 +36,13 @@ func registerOptions(p *glightning.Plugin) {
 		log.Fatalln("error registering option circular-liquidity-halflife:", err)
 	}
 
+	if err := p.RegisterNewIntOption("circular-risk-ppm",
+		"How much a route's chance of success weighs against its fees: each unit of -ln(chance) of a channel costs this many ppm of its amount (0: choose by fees and hops alone)",
+		node.DEFAULT_RISK_PPM); err != nil {
+
+		log.Fatalln("error registering option circular-risk-ppm:", err)
+	}
+
 	if err := p.RegisterNewBoolOption("circular-save-stats",
 		"Whether circular should save stats in the database",
 		true); err != nil {

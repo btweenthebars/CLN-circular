@@ -10,8 +10,8 @@ func (q *labelQueue) Len() int { return len(q.items) }
 
 func (q *labelQueue) Less(i, j int) bool {
 	a, b := q.items[i], q.items[j]
-	if a.fee != b.fee {
-		return a.fee < b.fee
+	if a.cost != b.cost {
+		return a.cost < b.cost
 	}
 	return a.hops < b.hops
 }

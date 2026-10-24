@@ -17,6 +17,7 @@ const (
 	DEFAULT_PEER_REFRESH_INTERVAL    = 30  // seconds
 	DEFAULT_LIQUIDITY_RESET_INTERVAL = 300 // minutes
 	DEFAULT_LIQUIDITY_HALF_LIFE      = 60  // minutes
+	DEFAULT_RISK_PPM                 = 200 // ppm per unit of -ln(chance)
 	DEFAULT_RPC_TIMEOUT              = 60  // seconds
 )
 
@@ -26,10 +27,14 @@ var (
 )
 
 type Node struct {
-	lightning          *glightning.Lightning
-	plugin             *glightning.Plugin
-	liquidityRefresh   time.Duration
-	liquidityHalfLife  time.Duration
+	lightning         *glightning.Lightning
+	plugin            *glightning.Plugin
+	liquidityRefresh  time.Duration
+	liquidityHalfLife time.Duration
+	// RiskPPM is how much a route's chance of success weighs against its
+	// fees: each unit of -ln(chance) of a channel costs this many ppm of its
+	// amount (circular-risk-ppm; 0: routes are chosen by fees and hops alone)
+	RiskPPM            uint64
 	initLock           *sync.Mutex
 	saveStats          bool
 	PeersLock          *sync.RWMutex
@@ -201,6 +206,11 @@ func (n *Node) setOptions(lightning *glightning.Lightning, plugin *glightning.Pl
 
 	n.liquidityHalfLife = time.Duration(options["circular-liquidity-halflife"].GetValue().(int)) * time.Minute
 	n.Logln(glightning.Debug, "liquidity half-life: ", int(n.liquidityHalfLife.Minutes()), " minutes")
+
+	if risk := options["circular-risk-ppm"].GetValue().(int); risk > 0 {
+		n.RiskPPM = uint64(risk)
+	}
+	n.Logln(glightning.Debug, "risk ppm: ", n.RiskPPM)
 
 	n.saveStats = options["circular-save-stats"].GetValue().(bool)
 	n.Logln(glightning.Debug, "save stats: ", n.saveStats)

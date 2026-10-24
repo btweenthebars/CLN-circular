@@ -98,6 +98,33 @@ func (c *Channel) CanForward(amount uint64) bool {
 		c.minHtlcMsat <= amount
 }
 
+// SuccessChance is the chance that c can forward amount, taking its
+// liquidity belief as the middle of an even spread of balances: over the whole
+// capacity for the default belief (half of it), narrower once payments have
+// moved the belief toward empty or full. It is 0 for a channel believed
+// unusable.
+func (c *Channel) SuccessChance(amount uint64) float64 {
+	capacity := c.AmountMsat.MSat()
+	liquidity := c.Liquidity
+	if liquidity > capacity {
+		liquidity = capacity
+	}
+	if liquidity == 0 || capacity == 0 {
+		return 0
+	}
+	low, high := uint64(0), 2*liquidity
+	if liquidity > capacity/2 {
+		low, high = 2*liquidity-capacity, capacity
+	}
+	if amount <= low {
+		return 1
+	}
+	if amount >= high {
+		return 0
+	}
+	return float64(high-amount) / float64(high-low)
+}
+
 func (c *Channel) ResetLiquidity() {
 	c.Liquidity = c.AmountMsat.MSat() / 2
 	c.Timestamp = time.Now().Unix()
