@@ -3,8 +3,10 @@ package parallel
 import (
 	"circular/graph"
 	"circular/util"
+	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/gammazero/deque"
+	"math"
 	"sort"
 )
 
@@ -122,10 +124,24 @@ func (r *AbstractRebalance) FireCandidates() {
 	// Splits may deliver less than they ask for, so each asks for what is
 	// left, up to the split amount.
 	for r.AmountRebalanced+r.InFlightAmount < r.amount && r.splitsInFlight < r.splits &&
-		!r.targetStopped && !r.streakStopped && !r.timeStopped && (r.targetCap == 0 || r.splitsInFlight < r.targetCap) {
+		!r.targetStopped && !r.streakStopped && !r.timeStopped && !r.feeStopped &&
+		(r.targetCap == 0 || r.splitsInFlight < r.targetCap) {
 		if r.Node.Stopped.Load() {
 			// circular-stop: until circular-resume
 			r.heldByStop = true
+			break
+		}
+		amount := r.amount - r.AmountRebalanced - r.InFlightAmount
+		if amount > r.splitAmount {
+			amount = r.splitAmount
+		}
+		if worst, ok := r.withinBudget(amount); !ok {
+			if r.splitsInFlight == 0 {
+				// nothing in flight can give part of the budget back
+				r.feeStopped = true
+				r.noteStop(fmt.Sprintf("the run reached its fee budget (maxfee %d sats): %d sats paid, and the next split could cost up to %d more: firing no more splits",
+					r.maxFeeMsat/1000, r.feesPaid()/1000, worst/1000))
+			}
 			break
 		}
 		candidate, err := r.GetNextCandidate()
@@ -134,14 +150,11 @@ func (r *AbstractRebalance) FireCandidates() {
 			r.Node.Logln(glightning.Debug, err)
 			break
 		}
-		amount := r.amount - r.AmountRebalanced - r.InFlightAmount
-		if amount > r.splitAmount {
-			amount = r.splitAmount
-		}
 		// which split this is, to tell what the target's limit was when it
 		// was fired
 		r.noteFired(candidate)
 		r.heldByStop = false
+		r.reserveFee(amount)
 		r.Fire(candidate, amount)
 
 		r.InFlightAmount += amount
@@ -165,4 +178,57 @@ func (r *AbstractRebalance) ownFeeCost(candidate *graph.Channel) float64 {
 		return 0
 	}
 	return sign * float64(ours.ComputeFeePPM(r.splitAmount))
+}
+
+// setMaxFee sets the run's fee budget to sats (0: none).
+func (r *AbstractRebalance) setMaxFee(sats uint64) {
+	r.maxFeeMsat = sats * 1000
+	if sats > math.MaxUint64/1000 {
+		r.maxFeeMsat = math.MaxUint64
+	}
+}
+
+// worstFee is the most a split of amount can pay in fees: its route costs at
+// most maxppm, whether searched, reused or shrunk.
+func (r *AbstractRebalance) worstFee(amount uint64) uint64 {
+	return graph.MaxFeeForPPM(amount, r.maxPPM)
+}
+
+// feesPaid is what the run's successful splits have paid so far.
+func (r *AbstractRebalance) feesPaid() uint64 {
+	if r.Result == nil {
+		return 0
+	}
+	return r.Result.FeesPaidMsat
+}
+
+// withinBudget says whether a split of amount fits in the fee budget, with
+// the most it could cost.
+func (r *AbstractRebalance) withinBudget(amount uint64) (uint64, bool) {
+	worst := r.worstFee(amount)
+	if r.maxFeeMsat == 0 {
+		return worst, true
+	}
+	return worst, addSaturating(addSaturating(r.feesPaid(), r.feeReserved), worst) <= r.maxFeeMsat
+}
+
+// reserveFee holds the most a split of amount fired now can cost, until its
+// result (releaseFee).
+func (r *AbstractRebalance) reserveFee(amount uint64) {
+	if r.maxFeeMsat > 0 {
+		r.feeReserved = addSaturating(r.feeReserved, r.worstFee(amount))
+	}
+}
+
+// releaseFee gives back what reserveFee held for a split that asked for
+// amount.
+func (r *AbstractRebalance) releaseFee(amount uint64) {
+	if r.maxFeeMsat == 0 {
+		return
+	}
+	if worst := r.worstFee(amount); worst < r.feeReserved {
+		r.feeReserved -= worst
+	} else {
+		r.feeReserved = 0
+	}
 }

@@ -76,7 +76,14 @@ type AbstractRebalance struct {
 	timeStopped bool
 	// firstStop is the first reason the run stopped firing splits
 	// (noteStop), circular-stop aside
-	firstStop      string
+	firstStop string
+	// maxFeeMsat: the run pays at most this in fees (0: no budget); a split
+	// is fired only if what was paid, plus the most the splits in flight can
+	// still cost (feeReserved), plus the most it can cost, fits. feeStopped:
+	// with nothing in flight, the next split did not fit.
+	maxFeeMsat     uint64
+	feeReserved    uint64
+	feeStopped     bool
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of

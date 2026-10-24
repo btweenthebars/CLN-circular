@@ -219,6 +219,9 @@ type fakeSplits struct {
 	failedNodes func(call int) map[string]int
 	// failureDelay gives how long a failing call takes (default none)
 	failureDelay func(call int) time.Duration
+	// fired, if set, is called as each split is fired, before it counts as
+	// in flight
+	fired func()
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -234,6 +237,9 @@ func (f *fakeSplits) EnqueueCandidate(result *rebalance.Result) {
 	f.QueueLock.Unlock()
 }
 func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
+	if f.fired != nil {
+		f.fired()
+	}
 	f.lock.Lock()
 	delivered := f.deliver(f.calls, amount)
 	side, retry := rebalance.SideRoute, rebalance.RetryNo
@@ -1464,4 +1470,96 @@ func TestTheFirstStopSaysWhy(t *testing.T) {
 	assert.Equal(t, 1, len(f.asked))
 	assert.True(t, f.heldByStop && f.timeStopped)
 	assert.Contains(t, result.(*Result).Stopped, "time limit")
+}
+
+// A run with a fee budget never pays more than it: a split is fired only if
+// what was paid, the most the splits in flight can still cost, and the most
+// it can cost fit; with nothing in flight and the next split not fitting,
+// the run stops and says so.
+func TestARunKeepsToItsFeeBudget(t *testing.T) {
+	worst := graph.MaxFeeForPPM(100000000, 100) // a 100k-sat split at maxppm 100
+	succeeding := func(_ int, amount uint64) uint64 { return amount }
+
+	// one at a time, each paying 1 sat (the fake's 10 ppm)
+	f := splitsOn(t, 3, succeeding)
+	f.splits = 1
+	f.amount = 30 * 100000000
+	f.maxPPM = 100
+	f.setMaxFee(25)
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	fits := 0
+	for paid := uint64(0); paid+worst <= 25000; paid += 1000 {
+		fits++
+	}
+	assert.Equal(t, fits, len(f.asked))
+	assert.Equal(t, uint64(fits)*1000, res.FeesPaidMsat)
+	assert.Equal(t, fmt.Sprintf("the run reached its fee budget (maxfee 25 sats): %d sats paid, and the next split could cost up to %d more: firing no more splits",
+		fits, worst/1000), res.Stopped)
+
+	// splits in flight hold the most they can cost: never more than the
+	// budget at once
+	f = splitsOn(t, 4, succeeding)
+	f.splits = 3
+	f.amount = 30 * 100000000
+	f.maxPPM = 100
+	f.successDelay = 10 * time.Millisecond
+	f.setMaxFee(2*worst/1000 + 1) // two splits' worst case, not three
+	most := 0
+	f.fired = func() {
+		assert.LessOrEqual(t, f.feesPaid()+f.feeReserved, f.maxFeeMsat)
+		if f.splitsInFlight+1 > most {
+			most = f.splitsInFlight + 1
+		}
+	}
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 2, most, "the third split did not fit")
+	assert.LessOrEqual(t, result.(*Result).FeesPaidMsat, f.maxFeeMsat)
+	assert.Contains(t, result.(*Result).Stopped, "fee budget")
+	assert.Equal(t, uint64(0), f.feeReserved, "all given back")
+
+	// a failed split gives back what it held
+	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.maxPPM = 100
+	f.setMaxFee(worst * 3 / 2 / 1000) // one split at a time
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 3, len(f.asked))
+	assert.Equal(t, "no candidates left: 3 failed", result.(*Result).Stopped)
+
+	// a budget below one split's worst case: nothing is fired
+	f = splitsOn(t, 3, succeeding)
+	f.maxPPM = 100
+	f.setMaxFee(5)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Empty(t, f.asked)
+	assert.Contains(t, result.(*Result).Stopped, "fee budget (maxfee 5 sats): 0 sats paid")
+
+	// no budget
+	f = splitsOn(t, 1, succeeding)
+	f.amount = 3 * 100000000
+	f.splits = 1
+	f.maxPPM = 100
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(300000), result.(*Result).RebalancedAmount)
+	assert.Empty(t, result.(*Result).Stopped)
+}
+
+func TestSetMaxFee(t *testing.T) {
+	a := &AbstractRebalance{}
+	a.setMaxFee(500)
+	assert.Equal(t, uint64(500000), a.maxFeeMsat)
+	a.setMaxFee(0)
+	assert.Equal(t, uint64(0), a.maxFeeMsat)
+	a.setMaxFee(math.MaxUint64)
+	assert.Equal(t, uint64(math.MaxUint64), a.maxFeeMsat)
 }

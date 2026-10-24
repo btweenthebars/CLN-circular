@@ -227,7 +227,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		case r.firstStop != "":
 			// a stop during a hold that circular-resume then ended
 			r.Result.Stopped = r.firstStop
-		case !r.targetStopped && !r.streakStopped && !r.timeStopped:
+		case !r.targetStopped && !r.streakStopped && !r.timeStopped && !r.feeStopped:
 			// nothing stopped it: no candidate was left to fire
 			r.Result.Stopped = r.ranOut()
 		}
@@ -572,6 +572,7 @@ func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {
 	defer r.AmountLock.Unlock()
 
 	r.InFlightAmount -= result.Requested
+	r.releaseFee(result.Requested)
 	r.splitsInFlight--
 	if result.Status == "success" {
 		r.AmountRebalanced += result.AmountMsat

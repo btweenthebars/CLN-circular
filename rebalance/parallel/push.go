@@ -31,6 +31,7 @@ type RebalancePush struct {
 	MaxFailStreak   int      `json:"maxfailstreak,omitempty"`
 	RiskPPM         int      `json:"riskppm,omitempty"`
 	MaxTime         int      `json:"maxtime,omitempty"` // seconds; 0 or less: no limit
+	MaxFee          uint64   `json:"maxfee,omitempty"`  // sats for the whole run; 0: no budget
 	AbstractRebalance
 }
 
@@ -62,6 +63,7 @@ func (r *RebalancePush) prepare() error {
 	r.maxFailStreak = r.MaxFailStreak
 	r.riskPPM = r.RiskPPM
 	r.setMaxTime(r.MaxTime)
+	r.setMaxFee(r.MaxFee)
 
 	r.CandidatesList = r.InList
 	if r.CandidatesList != nil {
