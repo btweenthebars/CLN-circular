@@ -8,6 +8,7 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/gammazero/deque"
 	"sync"
+	"sync/atomic"
 )
 
 type RebalanceMethods interface {
@@ -41,9 +42,14 @@ type AbstractRebalance struct {
 	// maxFailStreak: after this many failed payments in a row, across
 	// splits, with no split succeeding in between, no more splits are fired
 	// (0: DEFAULT_MAX_FAIL_STREAK; below 0: never). failStreak counts them.
-	maxFailStreak  int
-	failStreak     int
-	streakStopped  bool
+	maxFailStreak int
+	failStreak    int
+	streakStopped bool
+	// halt is read by the splits in flight before each payment: set when the
+	// run stops firing splits, it ends them too
+	halt atomic.Bool
+	// riskPPM: see Rebalance.RiskPPM
+	riskPPM        int
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of
@@ -131,6 +137,8 @@ func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uin
 	rebalance := rebalance2.NewRebalance(out, in, amount, r.maxPPM, r.attempts, r.maxHops)
 	rebalance.Node = r.Node
 	rebalance.MaxNodeFails = r.maxNodeFails
+	rebalance.RiskPPM = r.riskPPM
+	rebalance.Halt = &r.halt
 	rebalance.MinAmount = r.minSplit
 	if rebalance.MinAmount > amount {
 		rebalance.MinAmount = amount

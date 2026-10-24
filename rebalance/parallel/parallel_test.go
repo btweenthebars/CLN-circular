@@ -200,6 +200,8 @@ type fakeSplits struct {
 	message string
 	// payments is how many payments a failed split made
 	payments uint64
+	// halted says whether call number call was ended by the run's stop
+	halted func(call int) bool
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -232,6 +234,10 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	result.Precheck = f.precheck
 	result.Message = f.message
 	result.Attempts = f.payments
+	if f.halted != nil && f.halted(f.calls-1) {
+		result.Halted = true
+		result.Message = "rebalance failed after 1 payments. the run stopped: no more payments for this split"
+	}
 	if delivered > 0 {
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
@@ -353,6 +359,7 @@ func TestTargetThatTakesNoMoreStopsTheRun(t *testing.T) {
 		_, _ = f.WaitForResult()
 		assert.True(t, f.targetStopped)
 		assert.Contains(t, f.Result.Stopped, "the target channel cannot take more", "the result says why")
+		assert.True(t, f.halt.Load(), "the splits in flight are told to stop")
 		return f
 	}
 	var refreshed [][]string
@@ -937,11 +944,13 @@ func TestARunStopsAfterTooManyFailuresInARow(t *testing.T) {
 	f := run(0, failing)
 	assert.Equal(t, 6+1, len(f.asked), "300 failed payments after 6 splits; the one in flight then finishes")
 	assert.Contains(t, f.Result.Stopped, "300 payments failed in a row")
+	assert.True(t, f.halt.Load(), "the splits in flight are told to stop")
 	assert.Equal(t, uint64(7*50), f.Result.Attempts)
 
 	f = run(-1, failing)
 	assert.Equal(t, 20, len(f.asked), "below 0: never")
 	assert.Empty(t, f.Result.Stopped)
+	assert.False(t, f.halt.Load())
 
 	// a success ends the streak (every third split succeeds: whatever order
 	// the two in flight come back in, at most 4 failures, 200 payments, fall
@@ -957,4 +966,17 @@ func TestARunStopsAfterTooManyFailuresInARow(t *testing.T) {
 
 	f = run(100, failing)
 	assert.Equal(t, 2+1, len(f.asked))
+}
+
+// Splits the run's stop ended overwrote last_error with "the run stopped",
+// hiding the failure that mattered.
+func TestHaltedSplitsKeepTheLastRealError(t *testing.T) {
+	f := splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.splits = 1 // one at a time: the halted split comes back last
+	f.message = "rebalance failed after 8 payments. route too expensive"
+	f.halted = func(call int) bool { return call == 1 }
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Contains(t, result.(*Result).LastError, "route too expensive")
 }

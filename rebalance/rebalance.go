@@ -9,6 +9,7 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 type Rebalance struct {
@@ -44,11 +45,37 @@ type Rebalance struct {
 	// route goes through. 0 means DEFAULT_MAX_NODE_FAILS.
 	MaxNodeFails int
 
+	// RiskPPM, when above 0, is how much a route's chance of success weighs
+	// against its fees for this rebalance (see graph.GetLikelyCircularRoute);
+	// below 0, routes are chosen by fees and hops alone; 0: the node's
+	// circular-risk-ppm.
+	RiskPPM int
+	// Halt, if set, ends the rebalance before its next payment once it reads
+	// true: the parallel commands set it when they stop, so that splits in
+	// flight do not go on through their attempts.
+	Halt *atomic.Bool
+
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity
 	nodeFailures map[string]int
 	// payments counts the payments this run sent
 	payments int
+}
+
+// errRunStopped ends a split whose run stopped firing splits: neither of
+// its channels is to blame.
+var errRunStopped = errors.New("the run stopped: no more payments for this split")
+
+// riskPPM is the risk rate for this rebalance's searches: r.RiskPPM, or the
+// node's circular-risk-ppm.
+func (r *Rebalance) riskPPM() uint64 {
+	switch {
+	case r.RiskPPM > 0:
+		return uint64(r.RiskPPM)
+	case r.RiskPPM < 0:
+		return 0
+	}
+	return r.Node.RiskPPM
 }
 
 // maxNodeFails is r.MaxNodeFails, or its default.
@@ -188,6 +215,7 @@ func (r *Rebalance) Run() *Result {
 	failure.Attempts = uint64(r.payments)
 	failure.FailedAt, failure.Retry = failureSide(lastErr)
 	failure.Precheck = isPrecheck(lastErr)
+	failure.Halted = errors.Is(lastErr, errRunStopped)
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " payments."
 	if lastError == "" && lastErr != nil {
 		// the attempts ran out: say how the last one failed
@@ -275,6 +303,9 @@ func (r *Rebalance) shrink(route *graph.Route, exclude map[string]bool, shortIds
 func (r *Rebalance) runAttempt(exclude map[string]bool, route *graph.Route) (*Result, *graph.Route, error) {
 	if r.Node.Stopped.Load() {
 		return nil, nil, util.ErrCircularStopped
+	}
+	if r.Halt != nil && r.Halt.Load() {
+		return nil, nil, errRunStopped
 	}
 
 	if err := r.validateLiquidityParameters(r.OutChannel, r.InChannel); err != nil {

@@ -8,6 +8,7 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -523,4 +524,61 @@ func TestADrainedNodeIsRoutedAround(t *testing.T) {
 	// only for this rebalance: 02a is not on the avoid list
 	_, avoided := n.Avoided(0)["02a"]
 	assert.False(t, avoided)
+}
+
+// When a run stopped firing splits, the splits in flight went on through
+// all their attempts: about 100 more payments in a live run.
+func TestHaltEndsASplitBeforeItsNextPayment(t *testing.T) {
+	n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+	out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+	in := addChannel(n.Graph, "5x1x1", inP, self, 0)
+	for i := 0; i < 8; i++ { // every way fails past the out-peer, at a different node
+		mid := fmt.Sprintf("02m%d", i)
+		addChannel(n.Graph, fmt.Sprintf("2x1x%d", i), outP, mid, uint64(i))
+		addChannel(n.Graph, fmt.Sprintf("3x1x%d", i), mid, inP, 0)
+		n.liquidity[id(fmt.Sprintf("3x1x%d", i), mid, inP)] = 0
+	}
+	var halt atomic.Bool
+	r := rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 100
+	r.Halt = &halt
+	pay := r.pay
+	r.pay = func(route *graph.Route) (*graph.PrettyRoute, error) {
+		if len(n.paid) == 1 {
+			halt.Store(true) // the run stops while this split's second payment is out
+		}
+		return pay(route)
+	}
+
+	result := r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, 2, len(n.paid), "no payment after the run stopped")
+	assert.Equal(t, uint64(2), result.Attempts)
+	assert.Equal(t, SideNone, result.FailedAt, "neither of its channels is to blame")
+	assert.Contains(t, result.Message, "the run stopped")
+	assert.True(t, result.Halted)
+}
+
+// circular-risk-ppm was the only way to set the risk rate, for every run.
+func TestRiskPPMPerRebalance(t *testing.T) {
+	route := func(nodeRisk uint64, risk int) string {
+		n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+		out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+		in := addChannel(n.Graph, "5x1x1", inP, self, 0)
+		small := addChannel(n.Graph, "2x1x1", outP, inP, 0) // free, barely larger than the payment
+		small.AmountMsat = glightning.AmountFromMSat(220000000)
+		small.Liquidity = 110000000
+		addChannel(n.Graph, "3x1x1", outP, "02a", 0) // 10M sats, 10 ppm
+		addChannel(n.Graph, "4x1x1", "02a", inP, 1000)
+		r := rebalanceOn(n, out, in, 100000000)
+		r.Node.RiskPPM, r.RiskPPM = nodeRisk, risk
+		r.Attempts = 1
+		assert.Equal(t, "success", r.Run().Status)
+		return n.paid[0][1]
+	}
+	likely, cheap := id("3x1x1", outP, "02a"), id("2x1x1", outP, inP)
+	assert.Equal(t, cheap, route(0, 0), "the node's rate, 0: fees and hops")
+	assert.Equal(t, likely, route(0, 200))
+	assert.Equal(t, likely, route(200, 0), "the node's rate")
+	assert.Equal(t, cheap, route(200, -1), "below 0: off for this rebalance")
 }

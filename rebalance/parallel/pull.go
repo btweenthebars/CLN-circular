@@ -29,6 +29,7 @@ type RebalancePull struct {
 	MaxHops            int      `json:"maxhops,omitempty"`
 	MaxNodeFails       int      `json:"maxnodefails,omitempty"`
 	MaxFailStreak      int      `json:"maxfailstreak,omitempty"`
+	RiskPPM            int      `json:"riskppm,omitempty"`
 	AbstractRebalance
 }
 
@@ -58,6 +59,7 @@ func (r *RebalancePull) prepare() error {
 	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
 	r.maxNodeFails = r.MaxNodeFails
 	r.maxFailStreak = r.MaxFailStreak
+	r.riskPPM = r.RiskPPM
 
 	r.CandidatesList = r.OutList
 	if r.CandidatesList != nil {

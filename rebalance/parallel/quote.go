@@ -36,6 +36,7 @@ type RebalanceQuote struct {
 	MaxHops            int      `json:"maxhops,omitempty"`
 	MaxNodeFails       int      `json:"maxnodefails,omitempty"`
 	MaxFailStreak      int      `json:"maxfailstreak,omitempty"` // accepted, so a run's call can be quoted; no payment is made
+	RiskPPM            int      `json:"riskppm,omitempty"`
 }
 
 func (q *RebalanceQuote) Name() string {
@@ -54,7 +55,7 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 		pull := &RebalancePull{InScid: q.InScid, OutList: q.OutList, MaxOutPPM: q.MaxOutPPM, Amount: q.Amount,
 			MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
 			DepleteUpToPercent: q.DepleteUpToPercent, DepleteUpToAmount: q.DepleteUpToAmount,
-			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails}
+			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM}
 		if err := pull.prepare(); err != nil {
 			return nil, err
 		}
@@ -63,7 +64,7 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 		push := &RebalancePush{OutScid: q.OutScid, InList: q.InList, MinOutPPM: q.MinOutPPM, Amount: q.Amount,
 			MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
 			FillUpToPercent: q.FillUpToPercent, FillUpToAmount: q.FillUpToAmount,
-			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails}
+			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM}
 		if err := push.prepare(); err != nil {
 			return nil, err
 		}
@@ -98,6 +99,7 @@ func (q *RebalanceQuote) quotePair(n *node.Node) (*Quote, error) {
 		Amount: amount / 1000, MaxPPM: maxPPM}
 	rebalance := rebalance2.NewRebalance(out, in, amount, maxPPM, q.Attempts, maxHops)
 	rebalance.Node = n
+	rebalance.RiskPPM = q.RiskPPM
 	result.add(quoteCandidate(n.Graph, out, out.Destination, rebalance))
 	result.summarize()
 	return result, nil
@@ -176,6 +178,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		}
 		rebalance := rebalance2.NewRebalance(out, in, r.splitAmount, r.maxPPM, r.attempts, r.maxHops)
 		rebalance.Node = r.Node
+		rebalance.RiskPPM = r.riskPPM
 		result.add(quoteCandidate(r.Node.Graph, candidate, peer, rebalance))
 	}
 	result.summarize()

@@ -27,7 +27,7 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 		return nil, onIn(fmt.Errorf("%s charges at least %d ppm to send %d sats to us over %s, more than maxppm %d",
 			r.Node.Graph.GetAlias(dst), feePPM(inFee, r.Amount), r.Amount/1000, r.InChannel.ShortChannelId, r.MaxPPM), RetryNo)
 	}
-	route, err := r.Node.Graph.GetLikelyCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops, maxFee, r.Node.RiskPPM)
+	route, err := r.Node.Graph.GetLikelyCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops, maxFee, r.riskPPM())
 	if err == util.ErrNoRoute {
 		// Say how expensive the cheapest route is, if there is one, so maxppm can be tuned.
 		if cheapest, cerr := r.Node.Graph.GetCheapestCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops); cerr == nil {

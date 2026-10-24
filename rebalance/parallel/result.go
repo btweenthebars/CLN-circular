@@ -156,7 +156,9 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 			r.EnqueueCandidate(rebalanceResult)
 		} else {
 			r.Node.Logf(glightning.Debug, "Failed rebalance attempt: %s", rebalanceResult.Message)
-			if rebalanceResult.Message != "" {
+			if rebalanceResult.Message != "" && !rebalanceResult.Halted {
+				// a split the run's stop ended says nothing new: the last real
+				// failure stays
 				// one split's failure, not the run's: say which
 				r.Result.LastError = r.splitName(rebalanceResult) + ": " + rebalanceResult.Message
 			}
@@ -203,6 +205,7 @@ func (r *AbstractRebalance) countFailStreak(result *rebalance.Result) {
 		return
 	}
 	r.streakStopped = true
+	r.halt.Store(true)
 	r.Result.Stopped = fmt.Sprintf("%d payments failed in a row without a split succeeding (maxfailstreak %d): firing no more splits",
 		r.failStreak, limit)
 	r.Node.Logln(glightning.Info, r.Result.Stopped)
@@ -295,6 +298,7 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 			return
 		}
 		r.targetStopped = true
+		r.halt.Store(true)
 		r.Node.Logln(glightning.Info, "the target channel cannot take more for now: firing no more splits. ", result.Message)
 		if r.Result != nil && r.Result.Stopped == "" {
 			r.Result.Stopped = "the target channel cannot take more for now: firing no more splits. " + result.Message

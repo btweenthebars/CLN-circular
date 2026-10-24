@@ -23,6 +23,9 @@ type Result struct {
 	// Precheck: the failure is our copy of a channel's balance being too
 	// low, found before paying; reading the channel again may change it
 	Precheck bool `json:"-"`
+	// Halted: the split ended because its run stopped (Rebalance.Halt), not
+	// for a failure of its own
+	Halted bool `json:"-"`
 }
 
 func NewResult(status string, amount uint64, src, dst string) *Result {
