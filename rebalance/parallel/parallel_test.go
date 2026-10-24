@@ -1445,4 +1445,23 @@ func TestTheFirstStopSaysWhy(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(f.asked))
 	assert.Contains(t, result.(*Result).Stopped, "maxfailstreak 300")
+
+	// circular-stop, the time limit during the hold, then circular-resume
+	// before the split in flight finishes: the time limit says why
+	f = splitsOn(t, 2, func(call int, _ uint64) uint64 {
+		f.Node.Stopped.Store(true)
+		go func(n *node.Node) {
+			time.Sleep(300 * time.Millisecond)
+			n.Stopped.Store(false)
+		}(f.Node)
+		return 0
+	})
+	f.maxTime = 100 * time.Millisecond
+	f.failureDelay = func(int) time.Duration { return 600 * time.Millisecond }
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(f.asked))
+	assert.True(t, f.heldByStop && f.timeStopped)
+	assert.Contains(t, result.(*Result).Stopped, "time limit")
 }

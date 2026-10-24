@@ -224,6 +224,9 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 			// circular-stop came first: its splits ended at their next
 			// payment, and no more were fired
 			r.Result.Stopped = "circular was stopped (circular-stop): firing no more splits"
+		case r.firstStop != "":
+			// a stop during a hold that circular-resume then ended
+			r.Result.Stopped = r.firstStop
 		case !r.targetStopped && !r.streakStopped && !r.timeStopped:
 			// nothing stopped it: no candidate was left to fire
 			r.Result.Stopped = r.ranOut()
@@ -269,13 +272,16 @@ func (r *AbstractRebalance) countFailStreak(result *rebalance.Result) {
 		r.failStreak, limit))
 }
 
-// noteStop logs why the run stopped firing splits, and keeps it in
-// Result.Stopped unless an earlier stop is there, or circular-stop held it
-// back first (said at the end of the run).
+// noteStop logs why the run stopped firing splits, and keeps the first such
+// reason, in Result.Stopped too unless circular-stop is holding the run back
+// (said at the end of the run, or this one if circular was resumed).
 func (r *AbstractRebalance) noteStop(why string) {
 	r.Node.Logln(glightning.Info, why)
+	if r.firstStop == "" {
+		r.firstStop = why
+	}
 	if r.Result != nil && r.Result.Stopped == "" && !r.held() {
-		r.Result.Stopped = why
+		r.Result.Stopped = r.firstStop
 	}
 }
 

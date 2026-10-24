@@ -72,8 +72,11 @@ type AbstractRebalance struct {
 	progressEvery time.Duration
 	// maxTime: once the run has taken this long, it stops as for
 	// maxFailStreak (0: no limit); timeStopped: it has
-	maxTime        time.Duration
-	timeStopped    bool
+	maxTime     time.Duration
+	timeStopped bool
+	// firstStop is the first reason the run stopped firing splits
+	// (noteStop), circular-stop aside
+	firstStop      string
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of
