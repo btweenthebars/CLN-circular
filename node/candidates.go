@@ -136,8 +136,8 @@ func (n *Node) pruneCandidates(open map[string]bool) int {
 //     since, come last;
 //   - then by success rate, (successes+1)/(attempts+2), so a channel never
 //     tried counts as an even chance;
-//   - then those whose successes paid a fee before those never tried;
-//   - then by the fee rate their successes paid (0 if never tried) plus
+//   - then those that have moved liquidity before those that have not;
+//   - then by the fee rate their successes paid (0 if none) plus
 //     cost[id], cheapest first: what moving liquidity on that channel costs
 //     us beyond the rebalance's fee, in ppm (it may be negative);
 //   - ties keep the order they came in.
