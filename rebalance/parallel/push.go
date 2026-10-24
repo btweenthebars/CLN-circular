@@ -28,6 +28,7 @@ type RebalancePush struct {
 	FillUpToPercent float64  `json:"filluptopercent,omitempty"`
 	FillUpToAmount  uint64   `json:"filluptoamount,omitempty"`
 	MaxNodeFails    int      `json:"maxnodefails,omitempty"`
+	MaxFailStreak   int      `json:"maxfailstreak,omitempty"`
 	AbstractRebalance
 }
 
@@ -56,6 +57,7 @@ func (r *RebalancePush) prepare() error {
 	}
 	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
 	r.maxNodeFails = r.MaxNodeFails
+	r.maxFailStreak = r.MaxFailStreak
 
 	r.CandidatesList = r.InList
 	if r.CandidatesList != nil {

@@ -198,6 +198,8 @@ type fakeSplits struct {
 	precheck bool
 	// message is a failed split's message
 	message string
+	// payments is how many payments a failed split made
+	payments uint64
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -229,6 +231,7 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	result.FailedAt, result.Retry = side, retry
 	result.Precheck = f.precheck
 	result.Message = f.message
+	result.Attempts = f.payments
 	if delivered > 0 {
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
@@ -349,6 +352,7 @@ func TestTargetThatTakesNoMoreStopsTheRun(t *testing.T) {
 		f.FireCandidates()
 		_, _ = f.WaitForResult()
 		assert.True(t, f.targetStopped)
+		assert.Contains(t, f.Result.Stopped, "the target channel cannot take more", "the result says why")
 		return f
 	}
 	var refreshed [][]string
@@ -913,4 +917,44 @@ func TestLastErrorNamesTheSplit(t *testing.T) {
 	assert.NoError(t, err)
 	lastError := result.(*Result).LastError
 	assert.Regexp(t, `^last failed split, via [12]x1x1 \(02peer[01]\): rebalance failed after 8 payments\. no route$`, lastError)
+}
+
+// A run whose target nothing reached within maxppm went on through every
+// candidate's attempts: 1,511 payments in 49 minutes, nothing moved.
+func TestARunStopsAfterTooManyFailuresInARow(t *testing.T) {
+	failing := func(int, uint64) uint64 { return 0 }
+	run := func(limit int, deliver func(int, uint64) uint64) *fakeSplits {
+		f := splitsOn(t, 20, deliver)
+		f.amount = 2000000000 // room for all 20 candidates
+		f.payments = 50
+		f.maxFailStreak = limit
+		f.FireCandidates()
+		_, err := f.WaitForResult()
+		assert.NoError(t, err)
+		return f
+	}
+
+	f := run(0, failing)
+	assert.Equal(t, 6+1, len(f.asked), "300 failed payments after 6 splits; the one in flight then finishes")
+	assert.Contains(t, f.Result.Stopped, "300 payments failed in a row")
+	assert.Equal(t, uint64(7*50), f.Result.Attempts)
+
+	f = run(-1, failing)
+	assert.Equal(t, 20, len(f.asked), "below 0: never")
+	assert.Empty(t, f.Result.Stopped)
+
+	// a success ends the streak (every third split succeeds: whatever order
+	// the two in flight come back in, at most 4 failures, 200 payments, fall
+	// between two successes)
+	f = run(0, func(call int, amount uint64) uint64 {
+		if call%3 == 2 {
+			return amount
+		}
+		return 0
+	})
+	assert.GreaterOrEqual(t, len(f.asked), 20, "every candidate, and those that succeeded again")
+	assert.Empty(t, f.Result.Stopped)
+
+	f = run(100, failing)
+	assert.Equal(t, 2+1, len(f.asked))
 }

@@ -35,6 +35,7 @@ type RebalanceQuote struct {
 	Attempts           int      `json:"attempts,omitempty"`
 	MaxHops            int      `json:"maxhops,omitempty"`
 	MaxNodeFails       int      `json:"maxnodefails,omitempty"`
+	MaxFailStreak      int      `json:"maxfailstreak,omitempty"` // accepted, so a run's call can be quoted; no payment is made
 }
 
 func (q *RebalanceQuote) Name() string {

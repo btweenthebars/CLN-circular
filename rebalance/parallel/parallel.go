@@ -38,8 +38,14 @@ type AbstractRebalance struct {
 	minSplit            uint64 // msat: a split whose route was short, with no other route left, sends less over it, down to this
 	attempts            int
 	maxNodeFails        int // see Rebalance.MaxNodeFails
-	maxHops             int
-	splitsInFlight      int
+	// maxFailStreak: after this many failed payments in a row, across
+	// splits, with no split succeeding in between, no more splits are fired
+	// (0: DEFAULT_MAX_FAIL_STREAK; below 0: never). failStreak counts them.
+	maxFailStreak  int
+	failStreak     int
+	streakStopped  bool
+	maxHops        int
+	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of
 	// the last route that worked for it: its next split tries that route
 	// before searching.

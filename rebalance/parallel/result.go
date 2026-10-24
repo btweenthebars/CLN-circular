@@ -77,6 +77,11 @@ type Result struct {
 	// the one drained by circular-pull, or filled by circular-push
 	Successes map[string]*Success `json:"successes"`
 	LastError string              `json:"last_error,omitempty"`
+	// Stopped says why the run fired no more splits, when it did not reach
+	// its target: the target channel took no more, or too many payments
+	// failed in a row (maxfailstreak). Running out of candidates leaves it
+	// empty.
+	Stopped string `json:"stopped,omitempty"`
 }
 
 func NewResult(target uint64) *Result {
@@ -136,6 +141,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		rebalanceResult := <-r.RebalanceResultChan
 
 		r.TotalAttempts += rebalanceResult.Attempts
+		r.countFailStreak(rebalanceResult)
 		r.judgeCandidate(rebalanceResult)
 
 		if rebalanceResult.Status == "success" {
@@ -165,10 +171,41 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 
 	// rebalance is over
 	r.Result.Attempts = r.TotalAttempts
+	if r.AmountRebalanced >= r.amount {
+		// the splits in flight when it stopped still reached the target
+		r.Result.Stopped = ""
+	}
 	r.Result.Time = fmt.Sprintf("%.3fs", float64(time.Since(start).Milliseconds())/1000)
 	r.Node.Logf(glightning.Info, "Parallel rebalance finished. Total payments: %d, time: %s, amount rebalanced: %d sats",
 		r.Result.Attempts, r.Result.Time, r.Result.RebalancedAmount)
 	return r.Result, nil
+}
+
+// DEFAULT_MAX_FAIL_STREAK is how many failed payments in a row, with no
+// split succeeding, end a run by default: a run whose target nothing can
+// reach within maxppm used to go on through every candidate's attempts.
+const DEFAULT_MAX_FAIL_STREAK = 300
+
+// countFailStreak counts the failed payments of result toward the run's
+// streak, which a success ends, and stops firing splits once the streak
+// reaches its limit.
+func (r *AbstractRebalance) countFailStreak(result *rebalance.Result) {
+	if result.Status == "success" {
+		r.failStreak = 0
+		return
+	}
+	r.failStreak += int(result.Attempts)
+	limit := r.maxFailStreak
+	if limit == 0 {
+		limit = DEFAULT_MAX_FAIL_STREAK
+	}
+	if limit < 0 || r.failStreak < limit || r.streakStopped {
+		return
+	}
+	r.streakStopped = true
+	r.Result.Stopped = fmt.Sprintf("%d payments failed in a row without a split succeeding (maxfailstreak %d): firing no more splits",
+		r.failStreak, limit)
+	r.Node.Logln(glightning.Info, r.Result.Stopped)
 }
 
 // splitName names the split behind result by its candidate channel and that
@@ -259,6 +296,9 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 		}
 		r.targetStopped = true
 		r.Node.Logln(glightning.Info, "the target channel cannot take more for now: firing no more splits. ", result.Message)
+		if r.Result != nil && r.Result.Stopped == "" {
+			r.Result.Stopped = "the target channel cannot take more for now: firing no more splits. " + result.Message
+		}
 	}
 }
 
