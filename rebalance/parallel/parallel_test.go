@@ -1141,14 +1141,53 @@ func TestRunningOutOfCandidatesSaysWhy(t *testing.T) {
 
 	// several reasons to skip, most first
 	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
-	f.RebalanceMethods = &unusable{fakeSplits: f, why: map[string]error{
-		"1x1x1": util.ErrChannelDepleted, "2x1x1": util.ErrOutgoingPeerDisconnected, "3x1x1": util.ErrChannelDepleted}}
+	why := map[string]error{"1x1x1": util.ErrChannelDepleted, "2x1x1": util.ErrOutgoingPeerDisconnected, "3x1x1": util.ErrChannelDepleted}
+	f.RebalanceMethods = &unusable{fakeSplits: f, why: func(scid string) error { return why[scid] }}
 	f.FireCandidates()
 	result, err = f.WaitForResult()
 	assert.NoError(t, err)
 	assert.Empty(t, f.asked)
 	assert.Equal(t, "no candidates left: 3 skipped (channel is depleted: 2, outgoing peer is disconnected: 1)",
 		result.(*Result).Stopped)
+
+	// a candidate tried again leaves for its own reason: failed (retry now),
+	// then skipped
+	f = splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	checks := map[string]int{}
+	f.RebalanceMethods = &unusable{fakeSplits: f, why: func(scid string) error {
+		checks[scid]++
+		if scid == "1x1x1" && checks[scid] > 1 {
+			return util.ErrChannelDepleted
+		}
+		return nil
+	}}
+	f.failure = func(call int) (rebalance.Side, rebalance.Retry) {
+		if call == 0 {
+			return rebalance.SideOut, rebalance.RetryNow // a stale fee on our channel
+		}
+		return rebalance.SideNone, rebalance.RetryNo // a timeout, say
+	}
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(f.asked))
+	assert.Equal(t, "no candidates left: 1 failed, 1 skipped (channel is depleted)", result.(*Result).Stopped)
+
+	// in a push the target is the out side
+	f = splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	f.candidateSide = rebalance.SideIn
+	f.failure = func(call int) (rebalance.Side, rebalance.Retry) {
+		if call == 0 {
+			return rebalance.SideOut, rebalance.RetryWhenFree // the target refuses it alone
+		}
+		return rebalance.SideIn, rebalance.RetryNo
+	}
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, "no candidates left: 1 failed, 1 refused by the target", result.(*Result).Stopped)
 
 	// none at all
 	f = splitsOn(t, 0, nil)
@@ -1169,7 +1208,24 @@ func TestRunningOutOfCandidatesSaysWhy(t *testing.T) {
 // unusable is a run whose candidates cannot be used, each for its reason.
 type unusable struct {
 	*fakeSplits
-	why map[string]error
+	why func(scid string) error
 }
 
-func (u *unusable) CanUseChannel(c *glightning.PeerChannel) error { return u.why[c.ShortChannelId] }
+func (u *unusable) CanUseChannel(c *glightning.PeerChannel) error { return u.why(c.ShortChannelId) }
+
+// After circular-stop, the splits in flight end at their next payment: the
+// run fired every other candidate, each failing at once, and then blamed
+// them in stopped.
+func TestCircularStopEndsTheRun(t *testing.T) {
+	var f *fakeSplits
+	f = splitsOn(t, 3, func(call int, amount uint64) uint64 {
+		f.Node.Stopped.Store(true)
+		return 0
+	})
+	f.splits = 1
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(f.asked), "no split fired after the stop")
+	assert.Equal(t, "circular was stopped (circular-stop): firing no more splits", result.(*Result).Stopped)
+}

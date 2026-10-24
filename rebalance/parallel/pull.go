@@ -173,6 +173,7 @@ func (r *RebalancePull) EnqueueCandidate(result *rebalance2.Result) {
 	candidate, err := r.Node.GetOutgoingChannelFromScid(scid)
 	if err != nil {
 		r.Node.Logln(glightning.Unusual, err)
+		r.leftQueue(result.Candidate, err.Error())
 		return
 	}
 

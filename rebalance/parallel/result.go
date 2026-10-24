@@ -206,8 +206,13 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
 	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" && !r.targetStopped && !r.streakStopped {
-		// nothing stopped it: no candidate was left to fire
-		r.Result.Stopped = r.ranOut()
+		if r.Node.Stopped.Load() {
+			// its splits ended at their next payment, and no more were fired
+			r.Result.Stopped = "circular was stopped (circular-stop): firing no more splits"
+		} else {
+			// nothing stopped it: no candidate was left to fire
+			r.Result.Stopped = r.ranOut()
+		}
 		r.Node.Logln(glightning.Info, r.Result.Stopped)
 	}
 	if r.AmountRebalanced >= r.amount {
@@ -601,7 +606,7 @@ func (r *AbstractRebalance) worstNodes() []*FailingNode {
 
 // How a candidate's last split failed, for Result.Stopped.
 const (
-	goneFailed  = "failed"                // on its channel, the route, or neither
+	goneFailed  = "failed"                // on its channel, the route, or neither's fault
 	goneRefused = "refused by the target" // the target took no split from it alone
 )
 
