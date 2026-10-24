@@ -220,7 +220,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Result.WorstNodes = r.worstNodes()
 	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" {
 		switch {
-		case r.heldByStop:
+		case r.held():
 			// circular-stop came first: its splits ended at their next
 			// payment, and no more were fired
 			r.Result.Stopped = "circular was stopped (circular-stop): firing no more splits"
@@ -274,9 +274,15 @@ func (r *AbstractRebalance) countFailStreak(result *rebalance.Result) {
 // back first (said at the end of the run).
 func (r *AbstractRebalance) noteStop(why string) {
 	r.Node.Logln(glightning.Info, why)
-	if r.Result != nil && r.Result.Stopped == "" && !r.heldByStop {
+	if r.Result != nil && r.Result.Stopped == "" && !r.held() {
 		r.Result.Stopped = why
 	}
+}
+
+// held says whether circular-stop is holding the run back: it did the last
+// time the run could fire a split, and circular has not been resumed since.
+func (r *AbstractRebalance) held() bool {
+	return r.heldByStop && r.Node.Stopped.Load()
 }
 
 // splitName names the split behind result by its candidate channel and that

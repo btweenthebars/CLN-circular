@@ -1384,10 +1384,10 @@ func TestTheFirstStopSaysWhy(t *testing.T) {
 	f.splits = 1
 	f.payments = 200
 	f.maxFailStreak = 300
-	f.maxTime = 50 * time.Millisecond
+	f.maxTime = 200 * time.Millisecond
 	f.failureDelay = func(call int) time.Duration {
 		if call == 1 {
-			return 300 * time.Millisecond
+			return time.Second
 		}
 		return 0
 	}
@@ -1402,12 +1402,47 @@ func TestTheFirstStopSaysWhy(t *testing.T) {
 		f.Node.Stopped.Store(true)
 		return 0
 	})
-	f.maxTime = 50 * time.Millisecond
-	f.failureDelay = func(int) time.Duration { return 300 * time.Millisecond }
+	f.maxTime = 200 * time.Millisecond
+	f.failureDelay = func(int) time.Duration { return time.Second }
 	f.FireCandidates()
 	result, err = f.WaitForResult()
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(f.asked))
 	assert.True(t, f.timeStopped)
 	assert.Equal(t, "circular was stopped (circular-stop): firing no more splits", result.(*Result).Stopped)
+
+	// circular-stop, then circular-resume with nothing fired since: the
+	// hold is over, so a later stop (here: no candidate left) says why
+	f = splitsOn(t, 1, func(call int, _ uint64) uint64 {
+		f.Node.Stopped.Store(true)
+		go func(n *node.Node) {
+			time.Sleep(20 * time.Millisecond)
+			n.Stopped.Store(false)
+		}(f.Node)
+		return 0
+	})
+	f.failureDelay = func(int) time.Duration { return 300 * time.Millisecond }
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.True(t, f.heldByStop, "nothing fired since the resume")
+	assert.Equal(t, "no candidates left: 1 failed", result.(*Result).Stopped)
+
+	// the same with a fail streak reached after the resume
+	f = splitsOn(t, 2, func(call int, _ uint64) uint64 {
+		f.Node.Stopped.Store(true)
+		go func(n *node.Node) {
+			time.Sleep(20 * time.Millisecond)
+			n.Stopped.Store(false)
+		}(f.Node)
+		return 0
+	})
+	f.payments = 300
+	f.maxFailStreak = 300
+	f.failureDelay = func(int) time.Duration { return 300 * time.Millisecond }
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(f.asked))
+	assert.Contains(t, result.(*Result).Stopped, "maxfailstreak 300")
 }
