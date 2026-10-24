@@ -25,14 +25,40 @@ func TestRankCandidates(t *testing.T) {
 	}
 	n.RecordCandidate("e", false, 0, 0)
 
-	assert.Equal(t, []string{"b", "a", "c", "d", "e"}, n.RankCandidates([]string{"a", "b", "c", "d", "e"}))
+	assert.Equal(t, []string{"b", "a", "c", "d", "e"}, n.RankCandidates([]string{"a", "b", "c", "d", "e"}, nil))
 
 	// past the backoff, e's record counts again: (5+1)/(6+2), below a and b's (3+1)/(3+2)
 	n.candidates.records["e"].LastFailure = time.Now().Add(-candidateBackoff - time.Minute).Unix()
-	assert.Equal(t, []string{"b", "a", "e", "c", "d"}, n.RankCandidates([]string{"a", "b", "c", "d", "e"}))
+	assert.Equal(t, []string{"b", "a", "e", "c", "d"}, n.RankCandidates([]string{"a", "b", "c", "d", "e"}, nil))
 
 	// ties keep their order
-	assert.Equal(t, []string{"x", "y"}, n.RankCandidates([]string{"x", "y"}))
+	assert.Equal(t, []string{"x", "y"}, n.RankCandidates([]string{"x", "y"}, nil))
+}
+
+// Candidates were ranked by the fee their rebalances paid alone, though
+// draining one that earns us a higher fee costs more.
+func TestRankCandidatesCountsWhatMovingLiquidityCosts(t *testing.T) {
+	n := &Node{}
+	// a and b: the same record, 100 and 120 ppm paid; c and d never tried
+	for i := 0; i < 3; i++ {
+		n.RecordCandidate("a", true, 1000000, 100)
+		n.RecordCandidate("b", true, 1000000, 120)
+	}
+	assert.Equal(t, []string{"a", "b", "c", "d"}, n.RankCandidates([]string{"a", "b", "c", "d"}, nil))
+
+	// a's own fee is 50 ppm more than b's: 150 against 120
+	cost := map[string]float64{"a": 500, "b": 450, "c": 300, "d": 200}
+	assert.Equal(t, []string{"b", "a", "d", "c"}, n.RankCandidates([]string{"a", "b", "c", "d"}, cost),
+		"priced ones first still; the cheaper to move first within each")
+
+	// a cost may be negative: filling a channel that earns more is worth more
+	cost = map[string]float64{"c": -100, "d": -300}
+	assert.Equal(t, []string{"a", "b", "d", "c"}, n.RankCandidates([]string{"a", "b", "c", "d"}, cost))
+
+	// the success rate still comes first
+	n.RecordCandidate("b", false, 0, 0)
+	cost = map[string]float64{"a": 1000}
+	assert.Equal(t, "a", n.RankCandidates([]string{"a", "b"}, cost)[0], "a: (3+1)/(3+2); b: (3+1)/(4+2)")
 }
 
 func TestCandidateRecordsFavourRecentResults(t *testing.T) {

@@ -41,9 +41,14 @@ func (r *AbstractRebalance) FindCandidates(exclude string) error {
 			}
 		}
 	}
-	// best first: by how each did in earlier splits
+	// best first: by how each did in earlier splits, and what moving
+	// liquidity on it costs us
 	sort.Strings(ids) // a stable starting order: peers come from a map
-	for _, id := range r.Node.RankCandidates(ids) {
+	cost := make(map[string]float64, len(ids))
+	for _, id := range ids {
+		cost[id] = r.ownFeeCost(found[id])
+	}
+	for _, id := range r.Node.RankCandidates(ids, cost) {
 		r.Node.Logln(glightning.Debug, "adding candidate to candidates:", id)
 		r.Candidates.PushBack(found[id])
 	}
@@ -135,4 +140,21 @@ func (r *AbstractRebalance) FireCandidates() {
 		r.splitsInFlight++
 		r.Node.Logln(glightning.Debug, "splits in flight: ", r.splitsInFlight)
 	}
+}
+
+// ownFeeCost is what moving liquidity on candidate costs us beyond the
+// rebalance's fee, in ppm of the split: draining one of our out channels
+// (circular-pull) gives up the fee we charge on it, so a dearer channel costs
+// more; filling one (circular-push) gives it more to earn us, so a dearer
+// channel costs less. 0 if our fee on it is unknown.
+func (r *AbstractRebalance) ownFeeCost(candidate *graph.Channel) float64 {
+	sign, peer := 1.0, candidate.Destination
+	if candidate.Source != r.Node.Id {
+		sign, peer = -1, candidate.Source
+	}
+	ours, err := r.Node.Graph.GetChannel(candidate.ShortChannelId + "/" + util.GetDirection(r.Node.Id, peer))
+	if err != nil {
+		return 0
+	}
+	return sign * float64(ours.ComputeFeePPM(r.splitAmount))
 }

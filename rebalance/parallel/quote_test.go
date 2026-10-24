@@ -147,3 +147,17 @@ func TestQuoteOfAPush(t *testing.T) {
 	}
 	assert.Equal(t, "1 of 1 candidates have a route within 100 ppm (cheapest 0 ppm)", quote.Summary)
 }
+
+// Draining one of our channels gives up the fee we charge on it; filling one
+// gives it more to earn.
+func TestOwnFeeCost(t *testing.T) {
+	n, add, peer := quoteNetwork()
+	out := add("1x1x1", "02self", "02a", 5000) // our fee: 50 ppm on 100k sats
+	in := add("1x1x1", "02a", "02self", 0)
+	peer("02a", "1x1x1")
+	a := quoteRun(n, nil, "")
+
+	assert.Equal(t, 50.0, a.ownFeeCost(out), "circular-pull: the candidate is our out channel")
+	assert.Equal(t, -50.0, a.ownFeeCost(in), "circular-push: the candidate is our in channel")
+	assert.Equal(t, 0.0, a.ownFeeCost(graph.NewChannel(&glightning.Channel{ShortChannelId: "9x9x9", Source: "02self", Destination: "02z"}, 0, 0)), "unknown")
+}
