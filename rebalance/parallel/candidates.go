@@ -97,12 +97,14 @@ func (r *AbstractRebalance) GetNextCandidate() (*graph.Channel, error) {
 		peerChannel, err := r.Node.GetPeerChannelFromGraphChannel(candidate)
 		if err != nil {
 			r.Node.Logln(glightning.Unusual, "error getting peer channel from graph channel:", err)
+			r.leftQueue(candidateId(candidate), err.Error())
 			continue
 		}
 
 		// check if we can use the channel
 		if err := r.CanUseChannel(peerChannel); err != nil {
 			r.Node.Logln(glightning.Debug, "channel not usable:", err)
+			r.leftQueue(candidateId(candidate), err.Error())
 			continue
 		}
 		r.Node.Logln(glightning.Debug, "channel usable")

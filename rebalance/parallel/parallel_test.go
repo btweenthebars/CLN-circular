@@ -11,6 +11,7 @@ import (
 	"github.com/gammazero/deque"
 	"github.com/stretchr/testify/assert"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -972,7 +973,7 @@ func TestARunStopsAfterTooManyFailuresInARow(t *testing.T) {
 
 	f = run(-1, failing)
 	assert.Equal(t, 20, len(f.asked), "below 0: never")
-	assert.Empty(t, f.Result.Stopped)
+	assert.Equal(t, "no candidates left: 20 failed", f.Result.Stopped)
 	assert.False(t, f.halt.Load())
 
 	// a success ends the streak (every third split succeeds: whatever order
@@ -985,7 +986,7 @@ func TestARunStopsAfterTooManyFailuresInARow(t *testing.T) {
 		return 0
 	})
 	assert.GreaterOrEqual(t, len(f.asked), 20, "every candidate, and those that succeeded again")
-	assert.Empty(t, f.Result.Stopped)
+	assert.True(t, strings.HasPrefix(f.Result.Stopped, "no candidates left: "), f.Result.Stopped)
 
 	f = run(100, failing)
 	assert.Equal(t, 2+1, len(f.asked))
@@ -1107,3 +1108,68 @@ func TestWorstNodes(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotContains(t, string(out), "worst_nodes")
 }
+
+// A run that fell short because no candidate was left said nothing in
+// stopped: it now says how many failed, how many the target refused, and how
+// many were skipped, and why.
+func TestRunningOutOfCandidatesSaysWhy(t *testing.T) {
+	f := splitsOn(t, 4, func(call int, amount uint64) uint64 {
+		if call == 0 {
+			return amount
+		}
+		return 0
+	})
+	f.splits = 1
+	f.amount = 1000000000
+	d := &depletedOne{fakeSplits: f, depleted: "4x1x1"}
+	f.RebalanceMethods = d
+	f.failure = func(call int) (rebalance.Side, rebalance.Retry) {
+		if call == 2 {
+			return rebalance.SideIn, rebalance.RetryWhenFree // the target refuses it alone
+		}
+		return rebalance.SideRoute, rebalance.RetryNo
+	}
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	assert.Equal(t, uint64(100000), res.RebalancedAmount)
+	// 1x1x1 succeeds, then fails; the target refuses 2x1x1 alone; 3x1x1
+	// fails; 4x1x1 is depleted
+	assert.Equal(t, 4, len(f.asked))
+	assert.Equal(t, "no candidates left: 2 failed, 1 refused by the target, 1 skipped (channel is depleted)", res.Stopped)
+
+	// several reasons to skip, most first
+	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.RebalanceMethods = &unusable{fakeSplits: f, why: map[string]error{
+		"1x1x1": util.ErrChannelDepleted, "2x1x1": util.ErrOutgoingPeerDisconnected, "3x1x1": util.ErrChannelDepleted}}
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Empty(t, f.asked)
+	assert.Equal(t, "no candidates left: 3 skipped (channel is depleted: 2, outgoing peer is disconnected: 1)",
+		result.(*Result).Stopped)
+
+	// none at all
+	f = splitsOn(t, 0, nil)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, "no candidates to try", result.(*Result).Stopped)
+
+	// the target reached: nothing to say
+	f = splitsOn(t, 1, func(_ int, amount uint64) uint64 { return amount })
+	f.amount = 100000000
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Empty(t, result.(*Result).Stopped)
+}
+
+// unusable is a run whose candidates cannot be used, each for its reason.
+type unusable struct {
+	*fakeSplits
+	why map[string]error
+}
+
+func (u *unusable) CanUseChannel(c *glightning.PeerChannel) error { return u.why[c.ShortChannelId] }

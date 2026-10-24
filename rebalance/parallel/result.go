@@ -95,9 +95,8 @@ type Result struct {
 	// are not counted
 	WorstNodes []*FailingNode `json:"worst_nodes,omitempty"`
 	// Stopped says why the run fired no more splits, when it did not reach
-	// its target: the target channel took no more, or too many payments
-	// failed in a row (maxfailstreak). Running out of candidates leaves it
-	// empty.
+	// its target: the target channel took no more, too many payments failed
+	// in a row (maxfailstreak), or no candidate was left (and why).
 	Stopped string `json:"stopped,omitempty"`
 }
 
@@ -161,6 +160,10 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		r.countFailedNodes(rebalanceResult)
 		r.countFailStreak(rebalanceResult)
 		r.judgeCandidate(rebalanceResult)
+		if rebalanceResult.Status != "success" && rebalanceResult.Candidate != "" {
+			// a candidate tried again leaves the queue again, for its own reason
+			r.leftQueue(rebalanceResult.Candidate, r.howItFailed(rebalanceResult))
+		}
 
 		if rebalanceResult.Status == "success" {
 			r.Node.Logln(glightning.Info, rebalanceResult.Message)
@@ -202,6 +205,11 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Result.Attempts = r.TotalAttempts
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
+	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" && !r.targetStopped && !r.streakStopped {
+		// nothing stopped it: no candidate was left to fire
+		r.Result.Stopped = r.ranOut()
+		r.Node.Logln(glightning.Info, r.Result.Stopped)
+	}
 	if r.AmountRebalanced >= r.amount {
 		// the splits in flight when it stopped still reached the target
 		r.Result.Stopped = ""
@@ -589,4 +597,76 @@ func (r *AbstractRebalance) worstNodes() []*FailingNode {
 	}
 	r.Node.Graph.UnlockAliases()
 	return nodes
+}
+
+// How a candidate's last split failed, for Result.Stopped.
+const (
+	goneFailed  = "failed"                // on its channel, the route, or neither
+	goneRefused = "refused by the target" // the target took no split from it alone
+)
+
+// leftQueue notes why candidate id left the queue.
+func (r *AbstractRebalance) leftQueue(id, why string) {
+	if r.gone == nil {
+		r.gone = map[string]string{}
+	}
+	r.gone[id] = why
+}
+
+// howItFailed says whose a failed split's failure was.
+func (r *AbstractRebalance) howItFailed(result *rebalance.Result) string {
+	switch result.FailedAt {
+	case r.candidateSide, rebalance.SideRoute, rebalance.SideNone:
+		return goneFailed
+	}
+	return goneRefused
+}
+
+// ranOut says why no candidate was left: how many failed, how many the
+// target refused, and how many were skipped, and why.
+func (r *AbstractRebalance) ranOut() string {
+	var failed, refused, skipped int
+	reasons := map[string]int{}
+	for _, why := range r.gone {
+		switch why {
+		case goneFailed:
+			failed++
+		case goneRefused:
+			refused++
+		default:
+			skipped++
+			reasons[why]++
+		}
+	}
+	var parts []string
+	if failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", failed))
+	}
+	if refused > 0 {
+		parts = append(parts, fmt.Sprintf("%d refused by the target", refused))
+	}
+	if skipped > 0 {
+		whys := make([]string, 0, len(reasons))
+		for why := range reasons {
+			whys = append(whys, why)
+		}
+		sort.Slice(whys, func(i, j int) bool {
+			if reasons[whys[i]] != reasons[whys[j]] {
+				return reasons[whys[i]] > reasons[whys[j]]
+			}
+			return whys[i] < whys[j]
+		})
+		if len(whys) == 1 {
+			parts = append(parts, fmt.Sprintf("%d skipped (%s)", skipped, whys[0]))
+		} else {
+			for i, why := range whys {
+				whys[i] = fmt.Sprintf("%s: %d", why, reasons[why])
+			}
+			parts = append(parts, fmt.Sprintf("%d skipped (%s)", skipped, strings.Join(whys, ", ")))
+		}
+	}
+	if len(parts) == 0 {
+		return "no candidates to try"
+	}
+	return "no candidates left: " + strings.Join(parts, ", ")
 }

@@ -54,7 +54,12 @@ type AbstractRebalance struct {
 	movedMsat uint64
 	// failedAt counts, per node, the payments of every split it failed, for
 	// Result.WorstNodes
-	failedAt       map[string]int
+	failedAt map[string]int
+	// gone says, per candidate id, why it last left the queue with no split
+	// in flight: skipped (why it could not be used), or how its last split
+	// failed (goneFailed, goneRefused); for Result.Stopped when the run runs
+	// out of candidates
+	gone           map[string]string
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of
