@@ -620,4 +620,22 @@ func TestFailuresAreCountedByNode(t *testing.T) {
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, 1, len(n.paid))
 	assert.Empty(t, result.FailedNodes)
+
+	// our own node, or a node that is not on the route: not counted either
+	for _, erring := range []*glightning.PaymentErrorData{
+		{ErringNode: self, ErringChannel: "1x1x1", ErringIndex: 0, FailCode: failTemporaryChannelFailure},
+		{ErringNode: "02zz", ErringChannel: "8x8x8", ErringIndex: 2, FailCode: failTemporaryChannelFailure},
+	} {
+		n, out, in = network()
+		r = rebalanceOn(n, out, in, 100000000)
+		data := erring
+		r.pay = func(route *graph.Route) (*graph.PrettyRoute, error) {
+			n.paid = append(n.paid, route.ChannelIds())
+			return nil, &glightning.PaymentError{Data: data}
+		}
+		result = r.Run()
+		assert.Equal(t, "failure", result.Status)
+		assert.Equal(t, 1, len(n.paid))
+		assert.Empty(t, result.FailedNodes, erring.ErringNode)
+	}
 }
