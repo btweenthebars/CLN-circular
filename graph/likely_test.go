@@ -185,3 +185,62 @@ func TestABoundLoosensTowardTheCapacity(t *testing.T) {
 	assert.Equal(t, low.AmountMsat.MSat()/2, low.Liquidity)
 	assert.InDelta(t, 0.6, low.SuccessChance(4000000000), 1e-9)
 }
+
+// A channel priced far above its node's others was given the same chance as
+// any other unknown channel, though such channels are usually drained.
+func TestDearChannelsAreLessLikely(t *testing.T) {
+	g := newTestGraph()
+	g.channel("1x1x1", "02a", "02b", 0, 100)
+	g.channel("2x1x1", "02a", "02c", 0, 100)
+	g.channel("3x1x1", "02a", "02d", 0, 120)
+	dear := g.channel("4x1x1", "02a", "02e", 0, 300) // three times the median, 100
+	usual := g.Channels["3x1x1/"+util.GetDirection("02a", "02d")]
+	alone := g.channel("5x1x1", "02z", "02y", 0, 5000) // a node with one channel: no median
+	// a node charging nothing: 1 ppm is twice its median, but no sign
+	g.channel("6x1x1", "02f", "02b", 0, 0)
+	g.channel("7x1x1", "02f", "02c", 0, 0)
+	cheap := g.channel("8x1x1", "02f", "02d", 0, 1)
+
+	assert.Equal(t, 1, g.MarkDearChannels())
+	assert.True(t, dear.Dear)
+	assert.False(t, usual.Dear)
+	assert.False(t, alone.Dear)
+	assert.False(t, cheap.Dear)
+
+	amount := uint64(1000000000) // 1M sats of 10M
+	assert.InDelta(t, 0.9, usual.SuccessChance(amount), 1e-9)
+	assert.InDelta(t, 1-1.0/6, dear.SuccessChance(amount), 1e-9, "believed to hold 30%: spread over 0 to 6M")
+
+	// what a payment taught wins over the price
+	g.LearnLowerBound("4x1x1/"+util.GetDirection("02a", "02e"), 8000000000)
+	assert.Equal(t, 1.0, dear.SuccessChance(amount))
+
+	// a fee update is judged against the node's median at once
+	id := "1x1x1/" + util.GetDirection("02a", "02b")
+	g.ApplyChannelUpdate(&ChannelUpdate{ChannelId: id, Timestamp: 10, FeePPM: 500})
+	assert.True(t, g.Channels[id].Dear)
+	g.ApplyChannelUpdate(&ChannelUpdate{ChannelId: id, Timestamp: 11, FeePPM: 100})
+	assert.False(t, g.Channels[id].Dear)
+}
+
+// Between two otherwise equal routes, the one through a dear channel loses.
+func TestLikelyRouteAvoidsDearChannels(t *testing.T) {
+	g := newTestGraph()
+	out := g.channel("1x1x1", self, outP, 0, 0)
+	in := g.channel("2x1x1", inP, self, 0, 0)
+	g.channel("3x1x1", outP, "02a", 0, 0)
+	g.channel("4x1x1", "02a", inP, 0, 0)
+	g.channel("5x1x1", outP, "02b", 0, 0)
+	g.channel("6x1x1", "02b", inP, 0, 0)
+	// 02a charges far more than usual toward the in-peer
+	g.channel("7x1x1", "02a", "02x", 0, 10)
+	g.channel("8x1x1", "02a", "02y", 0, 10)
+	g.Channels["4x1x1/"+util.GetDirection("02a", inP)].FeePerMillionth = 100
+	g.Channels["6x1x1/"+util.GetDirection("02b", inP)].FeePerMillionth = 100 // the same fee: only the signal differs
+	g.MarkDearChannels()
+	amount := uint64(1000000000)
+
+	route, err := g.GetLikelyCircularRoute(out, in, amount, nil, 8, MaxFeeForPPM(amount, 500), 200)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"1x1x1", "5x1x1", "6x1x1", "2x1x1"}, scids(route))
+}

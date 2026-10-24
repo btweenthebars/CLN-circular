@@ -18,7 +18,10 @@ type Channel struct {
 	Timestamp           int64  `json:"timestamp"`
 	// Upper: a failed payment showed the channel holds at most Liquidity, so
 	// it is a bound rather than an estimate (see SuccessChance)
-	Upper       bool `json:"upper,omitempty"`
+	Upper bool `json:"upper,omitempty"`
+	// Dear: its fee rate is at least DearFactor times its node's median, a
+	// sign its side is drained (see MarkDearChannels)
+	Dear        bool `json:"-"`
 	maxHtlcMsat uint64
 	minHtlcMsat uint64
 }
@@ -127,6 +130,10 @@ func (c *Channel) SuccessChance(amount uint64) float64 {
 			return 0
 		}
 		return float64(liquidity+1-amount) / float64(liquidity+1)
+	}
+	if c.Dear && !c.learned() {
+		// priced well above its node's other channels: likely drained
+		liquidity = uint64(float64(capacity) * DearShare)
 	}
 	low, high := uint64(0), 2*liquidity
 	if liquidity > capacity/2 {

@@ -39,6 +39,9 @@ type Graph struct {
 	avoid             map[string]int64 // node or channel id -> until (Unix time)
 	avoidLock         *sync.Mutex
 	lastDecay         int64 // Unix time of the last DecayLiquidity, under channelsLock
+	// feeMedians holds each node's median fee rate (ppm) over its active
+	// channels, from MarkDearChannels, under channelsLock
+	feeMedians map[string]uint64
 }
 
 func NewGraph() *Graph {
@@ -181,6 +184,7 @@ func (g *Graph) refreshChannels(channelList []*glightning.Channel, listed map[st
 		} else {
 			channel = NewChannel(c, existing.Liquidity, existing.Timestamp)
 			channel.Upper = existing.Upper
+			channel.Dear = g.isDear(channel)
 			if c.LastUpdate > existing.LastUpdate {
 				// a failure blamed on the old policy says nothing about the new one
 				g.Unavoid(channelId)
@@ -231,6 +235,7 @@ func (g *Graph) ApplyChannelUpdate(u *ChannelUpdate) bool {
 	}
 	g.Channels[u.ChannelId] = NewChannel(&updated, old.Liquidity, old.Timestamp)
 	g.Channels[u.ChannelId].Upper = old.Upper
+	g.Channels[u.ChannelId].Dear = g.isDear(g.Channels[u.ChannelId])
 	// a failure blamed on the old policy says nothing about the new one
 	g.Unavoid(u.ChannelId)
 	return true

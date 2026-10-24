@@ -1,6 +1,7 @@
 package node
 
 import (
+	"circular/graph"
 	"circular/util"
 	"errors"
 	"github.com/elementsproject/glightning/glightning"
@@ -72,6 +73,10 @@ func (n *Node) refreshGraph() error {
 
 	n.Logln(glightning.Debug, "pruning channels")
 	n.Graph.PruneChannels()
+
+	if dear := n.Graph.MarkDearChannels(); dear > 0 {
+		n.Logf(glightning.Debug, "%d channels priced at %dx or more their node's median fee rate", dear, graph.DearFactor)
+	}
 
 	n.Logln(glightning.Debug, "refreshing aliases")
 	nodes, err := n.lightning.ListNodes()
