@@ -606,10 +606,12 @@ func TestFailuresAreCountedByNode(t *testing.T) {
 	n.liquidity[id("4x1x1", outP, "02b")] = 0
 	r := rebalanceOn(n, out, in, 100000000)
 	r.Attempts = 3
+	r.Sent = &atomic.Int64{}
 	result := r.Run()
 	assert.Equal(t, "success", result.Status, result.Message)
 	assert.Equal(t, 3, len(n.paid))
 	assert.Equal(t, map[string]int{"02a": 1, outP: 1}, result.FailedNodes)
+	assert.Equal(t, int64(3), r.Sent.Load(), "each payment counted as it is sent")
 
 	// the in-peer cannot send to us over our channel: not its failure
 	n, out, in = network()

@@ -9,6 +9,7 @@ import (
 	"github.com/gammazero/deque"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type RebalanceMethods interface {
@@ -62,7 +63,13 @@ type AbstractRebalance struct {
 	gone map[string]string
 	// heldByStop: the last time the run could fire a split, circular-stop
 	// held it back
-	heldByStop     bool
+	heldByStop bool
+	// sent counts the payments of every split as they are sent, those in
+	// flight included (Rebalance.Sent)
+	sent atomic.Int64
+	// progressEvery is how often a run in progress logs how it is going
+	// (0: PROGRESS_EVERY)
+	progressEvery  time.Duration
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of
@@ -152,6 +159,7 @@ func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uin
 	rebalance.MaxNodeFails = r.maxNodeFails
 	rebalance.RiskPPM = r.riskPPM
 	rebalance.Halt = &r.halt
+	rebalance.Sent = &r.sent
 	rebalance.MinAmount = r.minSplit
 	if rebalance.MinAmount > amount {
 		rebalance.MinAmount = amount

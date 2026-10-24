@@ -151,10 +151,17 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	start := time.Now()
 	r.Result = NewResult(r.amount)
 
+	every := r.progressEvery
+	if every <= 0 {
+		every = PROGRESS_EVERY
+	}
+	progress := time.NewTicker(every)
+	defer progress.Stop()
+
 	// while there's something inflight, wait for results
 	for r.splitsInFlight > 0 {
 		r.Node.Logln(glightning.Debug, "Waiting for result, InFlightAmount:", r.InFlightAmount)
-		rebalanceResult := <-r.RebalanceResultChan
+		rebalanceResult := r.nextResult(start, progress.C)
 
 		r.TotalAttempts += rebalanceResult.Attempts
 		r.countFailedNodes(rebalanceResult)
@@ -674,4 +681,55 @@ func (r *AbstractRebalance) ranOut() string {
 		return "no candidates to try"
 	}
 	return "no candidates left: " + strings.Join(parts, ", ")
+}
+
+// PROGRESS_EVERY is how often a run in progress logs how it is going.
+const PROGRESS_EVERY = 30 * time.Second
+
+// nextResult waits for a split's result, logging how the run is going each
+// time tick fires meanwhile.
+func (r *AbstractRebalance) nextResult(start time.Time, tick <-chan time.Time) *rebalance.Result {
+	for {
+		select {
+		case result := <-r.RebalanceResultChan:
+			return result
+		case <-tick:
+			r.Node.Logln(glightning.Info, r.progress(start))
+		}
+	}
+}
+
+// progress says how the run is going: for example
+//
+//	circular-pull 965538x2935x4: 1200000/3000000 sats moved in 312s, 143 payments, avg 280 ppm, 2 splits in flight
+//
+// and, when the last payments failed, how many in a row.
+func (r *AbstractRebalance) progress(start time.Time) string {
+	name := "rebalance"
+	if named, ok := r.RebalanceMethods.(interface{ Name() string }); ok {
+		name = named.Name()
+	}
+	target := ""
+	if r.TargetChannel != nil {
+		target = " " + r.TargetChannel.ShortChannelId
+	}
+	r.AmountLock.Lock()
+	moved, inFlight := r.AmountRebalanced, r.splitsInFlight
+	r.AmountLock.Unlock()
+	// the splits count their payments as they send them; their results
+	// count them too, once they finish
+	payments := uint64(r.sent.Load())
+	if payments < r.TotalAttempts {
+		payments = r.TotalAttempts
+	}
+	line := fmt.Sprintf("%s%s: %d/%d sats moved in %ds, %d payments", name, target, moved/1000, r.amount/1000,
+		int(time.Since(start).Seconds()), payments)
+	if r.movedMsat > 0 {
+		line += fmt.Sprintf(", avg %d ppm", avgPPM(r.Result.FeesPaidMsat, r.movedMsat))
+	}
+	line += fmt.Sprintf(", %d splits in flight", inFlight)
+	if r.failStreak > 0 {
+		line += fmt.Sprintf(", %d payments failed in a row", r.failStreak)
+	}
+	return line
 }

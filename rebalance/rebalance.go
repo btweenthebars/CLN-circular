@@ -54,6 +54,9 @@ type Rebalance struct {
 	// true: the parallel commands set it when they stop, so that splits in
 	// flight do not go on through their attempts.
 	Halt *atomic.Bool
+	// Sent, if set, counts each payment as it is sent: the parallel commands
+	// share one between their splits, for their progress lines.
+	Sent *atomic.Int64
 
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity

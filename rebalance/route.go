@@ -70,6 +70,9 @@ func (r *Rebalance) tryRoute(route *graph.Route, exclude map[string]bool) (*grap
 		pay = r.payInvoice
 	}
 	r.payments++
+	if r.Sent != nil {
+		r.Sent.Add(1)
+	}
 	prettyRoute, err := pay(route)
 	if err != nil {
 		// Learn from the failure now, so the next attempt avoids what failed.

@@ -1,6 +1,7 @@
 package parallel
 
 import (
+	"bytes"
 	"circular/graph"
 	"circular/node"
 	"circular/rebalance"
@@ -10,7 +11,9 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/gammazero/deque"
 	"github.com/stretchr/testify/assert"
+	"log"
 	"math"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -1250,4 +1253,75 @@ func TestCircularStopEndsTheRun(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(f.asked))
 	assert.Equal(t, "no candidates left: 2 failed", result.(*Result).Stopped)
+}
+
+// Runs that took an hour logged nothing on how they were going until the
+// end. While splits are in flight, the run now logs a line every
+// progressEvery.
+func TestProgressIsLoggedWhileSplitsAreInFlight(t *testing.T) {
+	var out lockedBuffer
+	log.SetOutput(&out)
+	defer log.SetOutput(os.Stderr)
+
+	f := splitsOn(t, 1, func(_ int, amount uint64) uint64 { return amount })
+	f.amount = 100000000
+	f.successDelay = 100 * time.Millisecond
+	f.progressEvery = 10 * time.Millisecond
+	f.FireCandidates()
+	_, err := f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Contains(t, out.String(), "rebalance: 0/100000 sats moved in 0s, 0 payments, 1 splits in flight")
+
+	// none when the run is shorter
+	out.Reset()
+	f = splitsOn(t, 1, func(_ int, amount uint64) uint64 { return amount })
+	f.amount = 100000000
+	f.FireCandidates()
+	_, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.NotContains(t, out.String(), "sats moved in")
+}
+
+func TestProgressLine(t *testing.T) {
+	f := splitsOn(t, 1, nil)
+	f.TargetChannel = graph.NewChannel(&glightning.Channel{ShortChannelId: "965538x2935x4"}, 0, 0)
+	f.Result = NewResult(3000000000)
+	f.amount = 3000000000
+	start := time.Now().Add(-312 * time.Second)
+	assert.Equal(t, "rebalance 965538x2935x4: 0/3000000 sats moved in 312s, 0 payments, 0 splits in flight", f.progress(start))
+
+	f.AmountRebalanced, f.movedMsat, f.Result.FeesPaidMsat = 1200000000, 1200000000, 336000 // 280 ppm
+	f.splitsInFlight = 2
+	f.TotalAttempts = 120
+	f.sent.Store(143) // payments of the splits in flight included
+	f.failStreak = 23
+	assert.Equal(t, "rebalance 965538x2935x4: 1200000/3000000 sats moved in 312s, 143 payments, avg 280 ppm, "+
+		"2 splits in flight, 23 payments failed in a row", f.progress(start))
+
+	f.RebalanceMethods = &RebalancePull{}
+	assert.True(t, strings.HasPrefix(f.progress(start), "circular-pull 965538x2935x4: "))
+}
+
+// lockedBuffer is a bytes.Buffer safe to write from several goroutines.
+type lockedBuffer struct {
+	lock sync.Mutex
+	buf  bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	return b.buf.String()
+}
+
+func (b *lockedBuffer) Reset() {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	b.buf.Reset()
 }
