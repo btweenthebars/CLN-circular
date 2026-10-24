@@ -40,9 +40,19 @@ func (r *RebalancePush) New() interface{} {
 }
 
 func (r *RebalancePush) Call() (jrpc2.Result, error) {
+	if err := r.prepare(); err != nil {
+		return nil, err
+	}
+	r.FireCandidates()
+	return r.WaitForResult()
+}
+
+// prepare reads the parameters and finds the candidates, in the order a run
+// tries them.
+func (r *RebalancePush) prepare() error {
 	r.AbstractRebalance.RebalanceMethods = r
 	if r.OutScid == "" {
-		return nil, util.ErrNoRequiredParameter
+		return util.ErrNoRequiredParameter
 	}
 	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
 	r.maxNodeFails = r.MaxNodeFails
@@ -57,21 +67,19 @@ func (r *RebalancePush) Call() (jrpc2.Result, error) {
 	r.setDefaults()
 
 	if err := r.validateParameters(); err != nil {
-		return nil, err
+		return err
 	}
 
 	outgoingChannel, err := r.Node.GetOutgoingChannelFromScid(r.OutScid)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	r.TargetChannel = outgoingChannel
 
 	if err = r.FindCandidates(r.TargetChannel.Destination); err != nil {
-		return nil, err
+		return err
 	}
-
-	r.FireCandidates()
-	return r.WaitForResult()
+	return nil
 }
 
 func (r *RebalancePush) IsGoodCandidate(peerChannel *glightning.PeerChannel) bool {

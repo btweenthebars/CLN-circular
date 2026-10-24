@@ -9,7 +9,6 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type Rebalance struct {
@@ -89,7 +88,7 @@ func (r *Rebalance) Run() *Result {
 		// exclude accumulates failing channels across attempts so the pathfinder
 		// skips them on subsequent tries within the same Run() call. It starts
 		// with what recent rebalances learned to avoid.
-		exclude = r.Node.Graph.Avoided(time.Now().Unix())
+		exclude = r.startExclude()
 		// the last route that failed for lack of liquidity: sent again with
 		// less once no other route is found
 		short *graph.Route
@@ -98,11 +97,6 @@ func (r *Rebalance) Run() *Result {
 		// the error that ended the run, to tell where it failed
 		lastErr error
 	)
-	exclude[r.Node.Id] = true
-	// Our own peers may be avoided as middle hops of other routes, but here
-	// they are the ends of ours: excluding them would leave no route.
-	delete(exclude, r.OutChannel.Destination)
-	delete(exclude, r.InChannel.Source)
 	requested := r.Amount
 	defer func() { r.Amount = requested }()
 	r.nodeFailures = map[string]int{}

@@ -40,9 +40,19 @@ func (r *RebalancePull) New() interface{} {
 }
 
 func (r *RebalancePull) Call() (jrpc2.Result, error) {
+	if err := r.prepare(); err != nil {
+		return nil, err
+	}
+	r.FireCandidates()
+	return r.WaitForResult()
+}
+
+// prepare reads the parameters and finds the candidates, in the order a run
+// tries them.
+func (r *RebalancePull) prepare() error {
 	r.AbstractRebalance.RebalanceMethods = r
 	if r.InScid == "" {
-		return nil, util.ErrNoRequiredParameter
+		return util.ErrNoRequiredParameter
 	}
 	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
 	r.maxNodeFails = r.MaxNodeFails
@@ -58,24 +68,22 @@ func (r *RebalancePull) Call() (jrpc2.Result, error) {
 
 	if err := r.validateParameters(); err != nil {
 		r.Node.Logf(glightning.Unusual, "RebalancePull validateParameters failed: %v", err)
-		return nil, err
+		return err
 	}
 	r.Node.Logf(glightning.Debug, "RebalancePull parameters validated: %+v", r)
 
 	incomingChannel, err := r.Node.GetIncomingChannelFromScid(r.InScid)
 	if err != nil {
 		r.Node.Logf(glightning.Unusual, "GetIncomingChannelFromScid(%s) failed: %v", r.InScid, err)
-		return nil, err
+		return err
 	}
 	r.TargetChannel = incomingChannel
 
 	if err = r.FindCandidates(r.TargetChannel.Source); err != nil {
 		r.Node.Logf(glightning.Unusual, "FindCandidates failed: %v", err)
-		return nil, err
+		return err
 	}
-
-	r.FireCandidates()
-	return r.WaitForResult()
+	return nil
 }
 
 func (r *RebalancePull) IsGoodCandidate(peerChannel *glightning.PeerChannel) bool {

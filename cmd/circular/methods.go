@@ -28,6 +28,12 @@ func registerMethods(p *glightning.Plugin) {
 	rpcRebalancePush.Category = "utility"
 	p.RegisterMethod(rpcRebalancePush)
 
+	rpcQuote := glightning.NewRpcMethod(&parallel.RebalanceQuote{}, "Quote a rebalance without paying")
+	rpcQuote.LongDesc = "With the parameters of circular-pull (`inscid`), circular-push (`outscid`) or circular (both), " +
+		"show for each candidate the route a run would try first, its fee and a rough chance of success, or why it would not be tried. Nothing is paid. Give the parameters by name (-k or key=value)."
+	rpcQuote.Category = "utility"
+	p.RegisterMethod(rpcQuote)
+
 	rpcStats := glightning.NewRpcMethod(&node.Stats{}, "Get stats")
 	rpcStats.LongDesc = "Get the stats of the usage of circular"
 	rpcStats.Category = "utility"

@@ -20,6 +20,7 @@ Earlier versions settled rebalances from an `htlc_accepted` hook that released t
 * `circular-push`: Push liquidity out of a channel using multiple peer channels as destinations in parallel
 * `circular`: Rebalance between two specific channels by Short Channel ID (`inscid` / `outscid`)
 * `circular-node`: Rebalance between two specific peers by Node ID (`innode` / `outnode`)
+* `circular-quote`: Show what a `circular-pull`, `circular-push` or `circular` run would try first, without paying anything
 * `circular-active`: List currently active in-flight rebalancing payments
 * `circular-stats`: Get usage statistics and historical performance data
 * `circular-delete-stats`: Reset and delete saved rebalancing statistics
@@ -170,6 +171,44 @@ Example: you have a 10M channel and you set `filluptopercent` to 0.2 (20%) and `
 
 As for `circular-pull`, the threshold is checked after the split, against the remote balance less the HTLCs in flight.
 
+
+### Quote a rebalance without paying
+```bash
+lightning-cli circular-quote -k inscid=123456x1x1 splitamount=20000 maxppm=500 maxoutppm=50 maxhops=6
+```
+`circular-quote` takes the parameters of `circular-pull` (with `inscid`), `circular-push` (with `outscid`) or `circular` (with both), so you can swap the command name in a call you already make with named parameters (`-k` or `key=value`). Name them: positional arguments fill its fields in an order of its own, not that of the command you copied. It picks the candidates the same way and runs the same route search as a run, and pays nothing. For each candidate, in the order a run would try them, it shows the route of its first payment: fee rate, fee, hops and the path from your out-peer to your in-peer. A candidate without one shows why (`error`), and when every route costs more than `maxppm`, the cheapest rate found (`cheapest_ppm`). A candidate a run would not use, because of `depleteuptopercent`/`depleteuptoamount` or `filluptopercent`/`filluptoamount`, shows why under `skipped`. Candidates a run leaves out before trying anything are not listed: those over `maxoutppm` (pull) or not over `minoutppm` (push), and in a push, peers whose fee to send to you is above `maxppm` even with their inbound discounts.
+
+```json
+{
+  "mode": "pull",
+  "target": "123456x1x1",
+  "target_peer": "Target",
+  "amount": 20000,
+  "maxppm": 500,
+  "summary": "1 of 2 candidates have a route within 500 ppm (cheapest 412 ppm); 1 would fail (the cheapest route above maxppm is 518 ppm)",
+  "candidates": [
+    {
+      "scid": "234567x1x1",
+      "alias": "Zero",
+      "node_id": "02...",
+      "ppm": 412,
+      "fee_msat": 8240,
+      "hops": 5,
+      "path": ["Zero", "Hub", "Other", "Target"],
+      "estimate": 0.83,
+      "guessed_hops": 2
+    },
+    {
+      "scid": "345678x1x1",
+      "alias": "One",
+      "node_id": "03...",
+      "cheapest_ppm": 518,
+      "error": "route too expensive. Cheapest route found was 518 ppm, but maxppm is 500"
+    }
+  ]
+}
+```
+`estimate` is a rough chance that the route can carry the payment. For each channel between your two peers that no payment has told circular about (`guessed_hops`), it assumes any balance up to the channel's capacity is as likely as any other; channels whose liquidity was learned count as able to carry it, since the search only takes them if they can. It is a guide for comparing routes, not a promise. A quote reflects what circular knows at that moment: what earlier payments taught it and the nodes it is avoiding.
 
 ### Get stats about the usage of the plugin
 ```bash
