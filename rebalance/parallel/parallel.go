@@ -69,7 +69,11 @@ type AbstractRebalance struct {
 	sent atomic.Int64
 	// progressEvery is how often a run in progress logs how it is going
 	// (0: PROGRESS_EVERY)
-	progressEvery  time.Duration
+	progressEvery time.Duration
+	// maxTime: once the run has taken this long, it stops as for
+	// maxFailStreak (0: no limit); timeStopped: it has
+	maxTime        time.Duration
+	timeStopped    bool
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of

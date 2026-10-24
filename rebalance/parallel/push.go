@@ -30,6 +30,7 @@ type RebalancePush struct {
 	MaxNodeFails    int      `json:"maxnodefails,omitempty"`
 	MaxFailStreak   int      `json:"maxfailstreak,omitempty"`
 	RiskPPM         int      `json:"riskppm,omitempty"`
+	MaxTime         int      `json:"maxtime,omitempty"` // seconds; 0 or less: no limit
 	AbstractRebalance
 }
 
@@ -60,6 +61,7 @@ func (r *RebalancePush) prepare() error {
 	r.maxNodeFails = r.MaxNodeFails
 	r.maxFailStreak = r.MaxFailStreak
 	r.riskPPM = r.RiskPPM
+	r.setMaxTime(r.MaxTime)
 
 	r.CandidatesList = r.InList
 	if r.CandidatesList != nil {

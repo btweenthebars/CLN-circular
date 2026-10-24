@@ -1325,3 +1325,46 @@ func (b *lockedBuffer) Reset() {
 	defer b.lock.Unlock()
 	b.buf.Reset()
 }
+
+// A run with a time limit stops when it is reached, as at maxfailstreak:
+// no more splits, those in flight told to stop before their next payment.
+func TestARunStopsAtItsTimeLimit(t *testing.T) {
+	f := splitsOn(t, 3, func(_ int, amount uint64) uint64 { return amount })
+	f.amount = 100 * 100000000 // 100 splits
+	f.splits = 1
+	f.successDelay = 20 * time.Millisecond
+	f.maxTime = 100 * time.Millisecond
+	start := time.Now()
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	assert.Less(t, time.Since(start), 2*time.Second, "it did not wait for the target")
+	assert.Equal(t, "the run reached its time limit (maxtime 0s): firing no more splits", res.Stopped)
+	assert.True(t, f.halt.Load(), "the splits in flight are told to stop")
+	assert.Greater(t, len(f.asked), 0)
+	assert.Less(t, len(f.asked), 100)
+	assert.Equal(t, uint64(len(f.asked))*100000, res.RebalancedAmount, "the split in flight still counts")
+
+	// no limit
+	f = splitsOn(t, 1, func(_ int, amount uint64) uint64 { return amount })
+	f.amount = 3 * 100000000
+	f.splits = 1
+	f.successDelay = 20 * time.Millisecond
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(300000), result.(*Result).RebalancedAmount)
+	assert.Empty(t, result.(*Result).Stopped)
+	assert.False(t, f.halt.Load())
+}
+
+func TestSetMaxTime(t *testing.T) {
+	a := &AbstractRebalance{}
+	a.setMaxTime(3600)
+	assert.Equal(t, time.Hour, a.maxTime)
+	a.setMaxTime(0)
+	assert.Equal(t, time.Duration(0), a.maxTime)
+	a.setMaxTime(-1)
+	assert.Equal(t, time.Duration(0), a.maxTime)
+}

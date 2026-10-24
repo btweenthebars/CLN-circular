@@ -157,11 +157,17 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	}
 	progress := time.NewTicker(every)
 	defer progress.Stop()
+	var deadline <-chan time.Time // never, without a time limit
+	if r.maxTime > 0 {
+		timer := time.NewTimer(r.maxTime)
+		defer timer.Stop()
+		deadline = timer.C
+	}
 
 	// while there's something inflight, wait for results
 	for r.splitsInFlight > 0 {
 		r.Node.Logln(glightning.Debug, "Waiting for result, InFlightAmount:", r.InFlightAmount)
-		rebalanceResult := r.nextResult(start, progress.C)
+		rebalanceResult := r.nextResult(start, progress.C, deadline)
 
 		r.TotalAttempts += rebalanceResult.Attempts
 		r.countFailedNodes(rebalanceResult)
@@ -212,7 +218,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Result.Attempts = r.TotalAttempts
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
-	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" && !r.targetStopped && !r.streakStopped {
+	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" && !r.targetStopped && !r.streakStopped && !r.timeStopped {
 		if r.heldByStop {
 			// its splits ended at their next payment, and no more were fired
 			r.Result.Stopped = "circular was stopped (circular-stop): firing no more splits"
@@ -687,15 +693,41 @@ func (r *AbstractRebalance) ranOut() string {
 const PROGRESS_EVERY = 30 * time.Second
 
 // nextResult waits for a split's result, logging how the run is going each
-// time tick fires meanwhile.
-func (r *AbstractRebalance) nextResult(start time.Time, tick <-chan time.Time) *rebalance.Result {
+// time tick fires meanwhile, and stopping the run if deadline fires.
+func (r *AbstractRebalance) nextResult(start time.Time, tick, deadline <-chan time.Time) *rebalance.Result {
 	for {
 		select {
 		case result := <-r.RebalanceResultChan:
 			return result
 		case <-tick:
 			r.Node.Logln(glightning.Info, r.progress(start))
+		case <-deadline:
+			r.timeUp()
 		}
+	}
+}
+
+// setMaxTime sets the run's time limit to seconds, if above 0.
+func (r *AbstractRebalance) setMaxTime(seconds int) {
+	r.maxTime = 0
+	if seconds > 0 {
+		r.maxTime = time.Duration(seconds) * time.Second
+	}
+}
+
+// timeUp stops the run at its time limit, as countFailStreak does at
+// maxfailstreak: no more splits, and those in flight end before their next
+// payment.
+func (r *AbstractRebalance) timeUp() {
+	if r.timeStopped {
+		return
+	}
+	r.timeStopped = true
+	r.halt.Store(true)
+	stopped := fmt.Sprintf("the run reached its time limit (maxtime %.0fs): firing no more splits", r.maxTime.Seconds())
+	r.Node.Logln(glightning.Info, stopped)
+	if r.Result.Stopped == "" {
+		r.Result.Stopped = stopped
 	}
 }
 

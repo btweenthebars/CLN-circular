@@ -122,7 +122,7 @@ func (r *AbstractRebalance) FireCandidates() {
 	// Splits may deliver less than they ask for, so each asks for what is
 	// left, up to the split amount.
 	for r.AmountRebalanced+r.InFlightAmount < r.amount && r.splitsInFlight < r.splits &&
-		!r.targetStopped && !r.streakStopped && (r.targetCap == 0 || r.splitsInFlight < r.targetCap) {
+		!r.targetStopped && !r.streakStopped && !r.timeStopped && (r.targetCap == 0 || r.splitsInFlight < r.targetCap) {
 		if r.Node.Stopped.Load() {
 			// circular-stop: until circular-resume
 			r.heldByStop = true
