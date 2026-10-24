@@ -1506,7 +1506,7 @@ func TestARunKeepsToItsFeeBudget(t *testing.T) {
 	f.amount = 30 * 100000000
 	f.maxPPM = 100
 	f.successDelay = 10 * time.Millisecond
-	f.setMaxFee(2*worst/1000 + 1) // two splits' worst case, not three
+	f.setMaxFee(int(2*worst/1000 + 1)) // two splits' worst case, not three
 	most := 0
 	f.fired = func() {
 		assert.LessOrEqual(t, f.feesPaid()+f.feeReserved, f.maxFeeMsat)
@@ -1525,7 +1525,7 @@ func TestARunKeepsToItsFeeBudget(t *testing.T) {
 	// a failed split gives back what it held
 	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
 	f.maxPPM = 100
-	f.setMaxFee(worst * 3 / 2 / 1000) // one split at a time
+	f.setMaxFee(int(worst * 3 / 2 / 1000)) // one split at a time
 	f.FireCandidates()
 	result, err = f.WaitForResult()
 	assert.NoError(t, err)
@@ -1560,6 +1560,45 @@ func TestSetMaxFee(t *testing.T) {
 	assert.Equal(t, uint64(500000), a.maxFeeMsat)
 	a.setMaxFee(0)
 	assert.Equal(t, uint64(0), a.maxFeeMsat)
-	a.setMaxFee(math.MaxUint64)
+	a.setMaxFee(-1)
+	assert.Equal(t, uint64(0), a.maxFeeMsat)
+	a.setMaxFee(math.MaxInt64)
 	assert.Equal(t, uint64(math.MaxUint64), a.maxFeeMsat)
+}
+
+// The node's startup options fill what a run's call leaves out: 0 takes the
+// node's value, below 0 turns the limit off whatever the node says.
+func TestRunNodeDefaults(t *testing.T) {
+	n := &node.Node{Defaults: node.Defaults{Attempts: 50, MaxHops: 6, MaxFailStreak: 120, MaxTime: 900, MaxFee: 400}}
+	a := &AbstractRebalance{Node: n}
+	a.setGenericDefaults()
+	assert.Equal(t, 50, a.attempts)
+	assert.Equal(t, 6, a.maxHops)
+	a.setMaxTime(0)
+	assert.Equal(t, 15*time.Minute, a.maxTime)
+	a.setMaxTime(-1)
+	assert.Equal(t, time.Duration(0), a.maxTime)
+	a.setMaxTime(60)
+	assert.Equal(t, time.Minute, a.maxTime)
+	a.setMaxFee(0)
+	assert.Equal(t, uint64(400000), a.maxFeeMsat)
+	a.setMaxFee(-1)
+	assert.Equal(t, uint64(0), a.maxFeeMsat)
+	a.setMaxFee(100)
+	assert.Equal(t, uint64(100000), a.maxFeeMsat)
+
+	// the fail streak: the node's limit when the call gives none
+	streak := func(nodeLimit, callLimit int) bool {
+		f := splitsOn(t, 1, nil)
+		f.Node.Defaults.MaxFailStreak = nodeLimit
+		f.maxFailStreak = callLimit
+		f.Result = NewResult(f.amount)
+		f.countFailStreak(&rebalance.Result{Status: "failure", Attempts: 150})
+		return f.streakStopped
+	}
+	assert.True(t, streak(120, 0), "150 failed payments: over the node's 120")
+	assert.False(t, streak(-1, 0), "the node turned it off")
+	assert.False(t, streak(120, 200), "the call's own limit wins")
+	assert.True(t, streak(-1, 100), "the call's own limit wins")
+	assert.False(t, streak(0, 0), "the built-in 300")
 }

@@ -180,11 +180,18 @@ func (r *AbstractRebalance) ownFeeCost(candidate *graph.Channel) float64 {
 	return sign * float64(ours.ComputeFeePPM(r.splitAmount))
 }
 
-// setMaxFee sets the run's fee budget to sats (0: none).
-func (r *AbstractRebalance) setMaxFee(sats uint64) {
-	r.maxFeeMsat = sats * 1000
-	if sats > math.MaxUint64/1000 {
-		r.maxFeeMsat = math.MaxUint64
+// setMaxFee sets the run's fee budget to sats: 0, the node's default; below
+// 0, none.
+func (r *AbstractRebalance) setMaxFee(sats int) {
+	if sats == 0 {
+		sats = r.Node.GetDefaults().MaxFee
+	}
+	r.maxFeeMsat = 0
+	if sats > 0 {
+		r.maxFeeMsat = uint64(sats) * 1000
+		if uint64(sats) > math.MaxUint64/1000 {
+			r.maxFeeMsat = math.MaxUint64
+		}
 	}
 }
 

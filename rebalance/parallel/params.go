@@ -32,10 +32,10 @@ func (r *AbstractRebalance) setGenericDefaults() {
 		r.maxPPM = rebalance.DEFAULT_MAXPPM
 	}
 	if r.attempts <= 0 {
-		r.attempts = rebalance.DEFAULT_ATTEMPTS
+		r.attempts = rebalance.OrDefault(r.Node.GetDefaults().Attempts, rebalance.DEFAULT_ATTEMPTS)
 	}
 	if r.maxHops <= 0 {
-		r.maxHops = rebalance.DEFAULT_MAXHOPS
+		r.maxHops = rebalance.OrDefault(r.Node.GetDefaults().MaxHops, rebalance.DEFAULT_MAXHOPS)
 	}
 
 	r.AmountRebalanced = 0

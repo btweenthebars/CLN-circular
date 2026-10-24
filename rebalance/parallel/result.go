@@ -261,6 +261,10 @@ func (r *AbstractRebalance) countFailStreak(result *rebalance.Result) {
 	r.failStreak += int(result.Attempts)
 	limit := r.maxFailStreak
 	if limit == 0 {
+		// the node's default, which may be below 0 (no limit)
+		limit = r.Node.GetDefaults().MaxFailStreak
+	}
+	if limit == 0 {
 		limit = DEFAULT_MAX_FAIL_STREAK
 	}
 	if limit < 0 || r.failStreak < limit || r.streakStopped {
@@ -730,8 +734,12 @@ func (r *AbstractRebalance) nextResult(start time.Time, tick, deadline <-chan ti
 	}
 }
 
-// setMaxTime sets the run's time limit to seconds, if above 0.
+// setMaxTime sets the run's time limit to seconds: 0, the node's default;
+// below 0, none.
 func (r *AbstractRebalance) setMaxTime(seconds int) {
+	if seconds == 0 {
+		seconds = r.Node.GetDefaults().MaxTime
+	}
 	r.maxTime = 0
 	if seconds > 0 {
 		r.maxTime = time.Duration(seconds) * time.Second

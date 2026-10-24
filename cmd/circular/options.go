@@ -3,6 +3,8 @@ package main
 import (
 	"circular/graph"
 	"circular/node"
+	"circular/rebalance"
+	"circular/rebalance/parallel"
 	"github.com/elementsproject/glightning/glightning"
 	"log"
 )
@@ -41,6 +43,22 @@ func registerOptions(p *glightning.Plugin) {
 		node.DEFAULT_RISK_PPM); err != nil {
 
 		log.Fatalln("error registering option circular-risk-ppm:", err)
+	}
+
+	for _, o := range []struct {
+		name, desc string
+		value      int
+	}{
+		{"circular-attempts", "Payments a rebalance (or split) may make, when a call leaves attempts out", rebalance.DEFAULT_ATTEMPTS},
+		{"circular-max-hops", "Channels a route may have, when a call leaves maxhops out", rebalance.DEFAULT_MAXHOPS},
+		{"circular-max-node-fails", "Payments a node may fail for lack of liquidity before a rebalance routes around it, when a call leaves maxnodefails out", rebalance.DEFAULT_MAX_NODE_FAILS},
+		{"circular-max-fail-streak", "Failed payments in a row after which circular-pull/push stop, when a call leaves maxfailstreak out (below 0: no limit)", parallel.DEFAULT_MAX_FAIL_STREAK},
+		{"circular-max-time", "Seconds after which circular-pull/push stop, when a call leaves maxtime out (0: no limit)", 0},
+		{"circular-max-fee", "Sats circular-pull/push may pay in fees per run, when a call leaves maxfee out (0: no budget)", 0},
+	} {
+		if err := p.RegisterNewIntOption(o.name, o.desc, o.value); err != nil {
+			log.Fatalln("error registering option "+o.name+":", err)
+		}
 	}
 
 	if err := p.RegisterNewBoolOption("circular-save-stats",

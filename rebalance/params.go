@@ -101,11 +101,20 @@ func (r *Rebalance) setDefaults() {
 		r.Node.Logln(glightning.Debug, "maxPPM not provided, using default value", r.MaxPPM)
 	}
 	if r.Attempts <= 0 {
-		r.Attempts = DEFAULT_ATTEMPTS
+		r.Attempts = OrDefault(r.Node.GetDefaults().Attempts, DEFAULT_ATTEMPTS)
 		r.Node.Logln(glightning.Debug, "attempts not provided, using default value", r.Attempts)
 	}
 	if r.MaxHops <= 0 {
-		r.MaxHops = DEFAULT_MAXHOPS
+		r.MaxHops = OrDefault(r.Node.GetDefaults().MaxHops, DEFAULT_MAXHOPS)
 		r.Node.Logln(glightning.Debug, "maxHops not provided, using default value", r.MaxHops)
 	}
+}
+
+// OrDefault is the node's default for a parameter a call left out, or the
+// built-in one if the node has none (0 or less).
+func OrDefault(nodeDefault, builtin int) int {
+	if nodeDefault > 0 {
+		return nodeDefault
+	}
+	return builtin
 }

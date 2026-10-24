@@ -1,6 +1,7 @@
 package rebalance
 
 import (
+	"circular/node"
 	"circular/util"
 	"errors"
 	"github.com/elementsproject/glightning/glightning"
@@ -54,4 +55,27 @@ func TestCheckFirstHopCountsTheFees(t *testing.T) {
 
 	out.SpendableMsat = glightning.AmountFromMSat(100004000)
 	assert.NoError(t, r.checkFirstHop(route))
+}
+
+// The node's startup options fill what a call leaves out; what a call gives
+// wins; with neither, the built-in defaults.
+func TestNodeDefaults(t *testing.T) {
+	n := &node.Node{Defaults: node.Defaults{Attempts: 7, MaxHops: 5, MaxNodeFails: 3}}
+	r := &Rebalance{Node: n}
+	r.setDefaults()
+	assert.Equal(t, 7, r.Attempts)
+	assert.Equal(t, 5, r.MaxHops)
+	assert.Equal(t, 3, r.maxNodeFails())
+
+	r = &Rebalance{Node: n, Attempts: 2, MaxHops: 9, MaxNodeFails: 4}
+	r.setDefaults()
+	assert.Equal(t, 2, r.Attempts)
+	assert.Equal(t, 9, r.MaxHops)
+	assert.Equal(t, 4, r.maxNodeFails())
+
+	r = &Rebalance{Node: &node.Node{}}
+	r.setDefaults()
+	assert.Equal(t, DEFAULT_ATTEMPTS, r.Attempts)
+	assert.Equal(t, DEFAULT_MAXHOPS, r.MaxHops)
+	assert.Equal(t, DEFAULT_MAX_NODE_FAILS, r.maxNodeFails())
 }

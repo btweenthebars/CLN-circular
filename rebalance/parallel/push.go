@@ -30,8 +30,8 @@ type RebalancePush struct {
 	MaxNodeFails    int      `json:"maxnodefails,omitempty"`
 	MaxFailStreak   int      `json:"maxfailstreak,omitempty"`
 	RiskPPM         int      `json:"riskppm,omitempty"`
-	MaxTime         int      `json:"maxtime,omitempty"` // seconds; 0 or less: no limit
-	MaxFee          uint64   `json:"maxfee,omitempty"`  // sats for the whole run; 0: no budget
+	MaxTime         int      `json:"maxtime,omitempty"` // seconds; 0: the node's default (circular-max-time); below 0: no limit
+	MaxFee          int      `json:"maxfee,omitempty"`  // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
 	AbstractRebalance
 }
 

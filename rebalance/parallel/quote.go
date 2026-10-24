@@ -38,7 +38,7 @@ type RebalanceQuote struct {
 	MaxFailStreak      int      `json:"maxfailstreak,omitempty"` // accepted, so a run's call can be quoted; no payment is made
 	RiskPPM            int      `json:"riskppm,omitempty"`
 	MaxTime            int      `json:"maxtime,omitempty"` // accepted, like maxfailstreak
-	MaxFee             uint64   `json:"maxfee,omitempty"`  // accepted, like maxfailstreak
+	MaxFee             int      `json:"maxfee,omitempty"`  // accepted, like maxfailstreak
 }
 
 func (q *RebalanceQuote) Name() string {
@@ -95,7 +95,7 @@ func (q *RebalanceQuote) quotePair(n *node.Node) (*Quote, error) {
 		maxPPM = rebalance2.DEFAULT_MAXPPM
 	}
 	if maxHops <= 0 {
-		maxHops = rebalance2.DEFAULT_MAXHOPS
+		maxHops = rebalance2.OrDefault(n.GetDefaults().MaxHops, rebalance2.DEFAULT_MAXHOPS)
 	}
 	result := &Quote{Mode: "pair", Target: q.InScid, TargetPeer: n.Graph.GetAlias(in.Source),
 		Amount: amount / 1000, MaxPPM: maxPPM}

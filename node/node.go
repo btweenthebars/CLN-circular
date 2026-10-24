@@ -34,7 +34,11 @@ type Node struct {
 	// RiskPPM is how much a route's chance of success weighs against its
 	// fees: each unit of -ln(chance) of a channel costs this many ppm of its
 	// amount (circular-risk-ppm; 0: routes are chosen by fees and hops alone)
-	RiskPPM            uint64
+	RiskPPM uint64
+	// Defaults are what the rebalance commands use for the parameters a
+	// call leaves out (the circular-attempts ... circular-max-fee startup
+	// options)
+	Defaults           Defaults
 	initLock           *sync.Mutex
 	saveStats          bool
 	PeersLock          *sync.RWMutex
@@ -212,6 +216,16 @@ func (n *Node) setOptions(lightning *glightning.Lightning, plugin *glightning.Pl
 	}
 	n.Logln(glightning.Debug, "risk ppm: ", n.RiskPPM)
 
+	n.Defaults = Defaults{
+		Attempts:      options["circular-attempts"].GetValue().(int),
+		MaxHops:       options["circular-max-hops"].GetValue().(int),
+		MaxNodeFails:  options["circular-max-node-fails"].GetValue().(int),
+		MaxFailStreak: options["circular-max-fail-streak"].GetValue().(int),
+		MaxTime:       options["circular-max-time"].GetValue().(int),
+		MaxFee:        options["circular-max-fee"].GetValue().(int),
+	}
+	n.Logf(glightning.Debug, "defaults: %+v", n.Defaults)
+
 	n.saveStats = options["circular-save-stats"].GetValue().(bool)
 	n.Logln(glightning.Debug, "save stats: ", n.saveStats)
 
@@ -242,4 +256,23 @@ func (n *Node) RefreshChannel(channel *graph.Channel) {
 		return
 	}
 	n.Graph.RefreshChannels(channels)
+}
+
+// Defaults are the startup options for the parameters a rebalance call
+// leaves out. A field at 0 leaves the command's built-in default.
+type Defaults struct {
+	Attempts      int // payments per split (circular-attempts)
+	MaxHops       int // channels per route (circular-max-hops)
+	MaxNodeFails  int // per node and split (circular-max-node-fails)
+	MaxFailStreak int // failed payments in a row per run; below 0: no limit (circular-max-fail-streak)
+	MaxTime       int // seconds per run; 0 or less: no limit (circular-max-time)
+	MaxFee        int // sats per run; 0 or less: no budget (circular-max-fee)
+}
+
+// GetDefaults returns n.Defaults, or none for a nil node.
+func (n *Node) GetDefaults() Defaults {
+	if n == nil {
+		return Defaults{}
+	}
+	return n.Defaults
 }

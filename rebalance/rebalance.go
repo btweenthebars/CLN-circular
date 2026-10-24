@@ -87,7 +87,7 @@ func (r *Rebalance) riskPPM() uint64 {
 // maxNodeFails is r.MaxNodeFails, or its default.
 func (r *Rebalance) maxNodeFails() int {
 	if r.MaxNodeFails <= 0 {
-		return DEFAULT_MAX_NODE_FAILS
+		return OrDefault(r.Node.GetDefaults().MaxNodeFails, DEFAULT_MAX_NODE_FAILS)
 	}
 	return r.MaxNodeFails
 }
