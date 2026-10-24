@@ -26,6 +26,9 @@ type Result struct {
 	// Halted: the split ended because its run stopped (Rebalance.Halt), not
 	// for a failure of its own
 	Halted bool `json:"-"`
+	// CheapestPPM: the rate of the cheapest route found, when every route
+	// cost more than maxppm
+	CheapestPPM uint64 `json:"-"`
 }
 
 func NewResult(status string, amount uint64, src, dst string) *Result {

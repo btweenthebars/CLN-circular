@@ -49,7 +49,9 @@ type AbstractRebalance struct {
 	// run stops firing splits, it ends them too
 	halt atomic.Bool
 	// riskPPM: see Rebalance.RiskPPM
-	riskPPM        int
+	riskPPM int
+	// movedMsat is what the successful splits delivered, for Result.AvgPPM
+	movedMsat      uint64
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of

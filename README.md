@@ -129,6 +129,10 @@ The result of `circular-pull` (and `circular-push`) looks like this:
   "rebalanced_amount": 640136,
   "attempts": 2073,
   "time": "4877.893s",
+  "fees_paid_msat": 483943,
+  "avg_ppm": 756,
+  "splits_succeeded": 32,
+  "splits_failed": 311,
   "successes": {
     "123456x1x0": {
       "alias": "BCash_Is_Trash",
@@ -139,7 +143,7 @@ The result of `circular-pull` (and `circular-push`) looks like this:
   }
 }
 ```
-Each entry in `successes` is a candidate channel: its peer, the sats moved at each fee rate (ppm), and under `involving` the other nodes its successful routes went through, each once, in the order first seen (without your node and that peer; the target channel's peer is in every entry). `attempts` is the total of payments the splits made. `last_error`, when present, is the last failed split's message, prefixed with that split's channel and peer (`last failed split, via 123456x1x0 (alias): ...`); its count of payments is that split's alone.
+Each entry in `successes` is a candidate channel: its peer, the sats moved at each fee rate (ppm), and under `involving` the other nodes its successful routes went through, each once, in the order first seen (without your node and that peer; the target channel's peer is in every entry). `attempts` is the total of payments the splits made. `fees_paid_msat` and `avg_ppm` are what the successful splits paid, in all and as a rate of what they moved; `splits_succeeded` and `splits_failed` count the splits (leaving out those a stop ended). When splits failed because every route cost more than `maxppm`, `cheapest_ppm_over_max` is the lowest rate of the cheapest routes they found: the `maxppm` their search would have needed. Splits stopped before any search because the peer sending to you charges more than `maxppm` on its own are not counted there; their message says what that peer charges. `last_error`, when present, is the last failed split's message, prefixed with that split's channel and peer (`last failed split, via 123456x1x0 (alias): ...`); its count of payments is that split's alone.
 
 Candidates are tried best first, by how they did in earlier splits (kept across runs in `learned.json`): a channel that failed in the last 30 minutes, and hasn't succeeded since, goes last; the others by success rate; then those that have moved liquidity before those that have not; then by the fee rate their splits paid (for those that have not, your own fee alone), adjusted by your own fee on the channel: `circular-pull` adds it, since draining a channel gives up what it earns you, and `circular-push` subtracts it, since filling a channel gives it more to earn. Channels never tried count as an even chance.
 

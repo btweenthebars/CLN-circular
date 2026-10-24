@@ -54,3 +54,15 @@ func TestQuoteOfARouteAboveMaxPPM(t *testing.T) {
 	}
 	assert.Empty(t, n.paid)
 }
+
+// A split that failed because every route cost too much did not say how
+// cheap the cheapest was, except in its message.
+func TestFailureCarriesTheCheapestRate(t *testing.T) {
+	n, out, in := shortRoute()
+	n.Channels[id("2x1x1", outP, "02a")].BaseFeeMillisatoshi = 50000 // 500 ppm on 100k sats
+	r := rebalanceOn(n, out, in, 100000000)
+	r.MaxPPM = 400
+	result := r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, uint64(500), result.CheapestPPM)
+}

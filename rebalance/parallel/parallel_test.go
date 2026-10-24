@@ -131,6 +131,10 @@ func TestSuccessesAreKeyedByChannel(t *testing.T) {
 		"rebalanced_amount": 641141,
 		"attempts": 0,
 		"time": "",
+		"fees_paid_msat": 0,
+		"avg_ppm": 0,
+		"splits_succeeded": 0,
+		"splits_failed": 0,
 		"successes": {
 			"1x1x1": {"alias": "BCash_Is_Trash", "node_id": "02bcash", "756": 640136},
 			"4x4x4": {"alias": "BCash_Is_Trash", "node_id": "02bcash", "12": 1000},
@@ -202,6 +206,11 @@ type fakeSplits struct {
 	payments uint64
 	// halted says whether call number call was ended by the run's stop
 	halted func(call int) bool
+	// cheapest gives, for a call, the rate of the cheapest route over maxppm
+	// (0: none); a successful call carries it too, which a run must ignore
+	cheapest func(call int) uint64
+	// fee gives a successful call's fee for what it delivered (default 10 ppm)
+	fee func(call int, delivered uint64) uint64
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -234,14 +243,22 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	result.Precheck = f.precheck
 	result.Message = f.message
 	result.Attempts = f.payments
+	if f.cheapest != nil {
+		result.CheapestPPM = f.cheapest(f.calls - 1)
+	}
 	if f.halted != nil && f.halted(f.calls-1) {
 		result.Halted = true
 		result.Message = "rebalance failed after 1 payments. the run stopped: no more payments for this split"
 	}
 	if delivered > 0 {
+		cheapest := result.CheapestPPM
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
 		result.AmountMsat, result.Requested, result.PPM = delivered, amount, 10
 		result.Candidate, result.Fee = candidateId(candidate), delivered/100000
+		if f.fee != nil {
+			result.Fee = f.fee(f.calls-1, delivered)
+		}
+		result.CheapestPPM = cheapest
 		result.Route = &graph.PrettyRoute{Hops: []graph.PrettyRouteHop{{ShortChannelId: candidate.ShortChannelId}}}
 	}
 	go func() {
@@ -979,4 +996,55 @@ func TestHaltedSplitsKeepTheLastRealError(t *testing.T) {
 	result, err := f.WaitForResult()
 	assert.NoError(t, err)
 	assert.Contains(t, result.(*Result).LastError, "route too expensive")
+	assert.Greater(t, len(f.asked), 1)
+	assert.Equal(t, len(f.asked)-1, result.(*Result).SplitsFailed, "the halted split is not a failure")
+}
+
+// A run's result listed what moved at each rate, but not what the run cost,
+// how many splits failed, or what maxppm would have let the failed ones search.
+func TestRunTotals(t *testing.T) {
+	f := splitsOn(t, 3, func(call int, amount uint64) uint64 {
+		switch call {
+		case 0:
+			return amount
+		case 1:
+			return amount / 2
+		}
+		return 0
+	})
+	f.splits = 1
+	f.amount = 400000000
+	f.fee = func(call int, delivered uint64) uint64 {
+		if call == 0 {
+			return delivered / 100000 // 10 ppm
+		}
+		return delivered / 10000 // 100 ppm
+	}
+	f.cheapest = func(call int) uint64 {
+		switch call {
+		case 0, 1:
+			return 600 // successful splits: not theirs to say
+		case 2:
+			return 700
+		}
+		return 650
+	}
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	assert.Equal(t, uint64(150000), res.RebalancedAmount)
+	assert.Equal(t, 2, res.SplitsSucceeded)
+	assert.Equal(t, len(f.asked)-2, res.SplitsFailed, "every other split fired")
+	assert.Greater(t, res.SplitsFailed, 1)
+	assert.Equal(t, uint64(1000+5000), res.FeesPaidMsat, "100k sats at 10 ppm, 50k at 100")
+	assert.Equal(t, uint64(40), res.AvgPPM, "weighted by what moved: 6,000 msat on 150k sats")
+	assert.Equal(t, uint64(650), res.CheapestPPMOverMax)
+}
+
+func TestAvgPPM(t *testing.T) {
+	assert.Equal(t, uint64(0), avgPPM(0, 0))
+	assert.Equal(t, uint64(756), avgPPM(483943, 640136000))
+	// 200 BTC in fees on 1,000 BTC: fee*1e6 does not fit in 64 bits
+	assert.Equal(t, uint64(200000), avgPPM(20000000000000, 100000000000000))
 }

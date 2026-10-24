@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/elementsproject/glightning/jrpc2"
+	"math"
+	"math/bits"
 	"sort"
 	"strings"
 	"time"
@@ -73,10 +75,21 @@ type Result struct {
 	RebalancedAmount uint64 `json:"rebalanced_amount"`
 	Attempts         uint64 `json:"attempts"`
 	Time             string `json:"time"`
+	// FeesPaidMsat is what the successful splits paid in fees, and AvgPPM
+	// that as a rate of what they moved
+	FeesPaidMsat    uint64 `json:"fees_paid_msat"`
+	AvgPPM          uint64 `json:"avg_ppm"`
+	SplitsSucceeded int    `json:"splits_succeeded"`
+	// SplitsFailed leaves out the splits the run's stop ended
+	SplitsFailed int `json:"splits_failed"`
 	// Successes are keyed by the short channel id of the candidate channel:
 	// the one drained by circular-pull, or filled by circular-push
 	Successes map[string]*Success `json:"successes"`
 	LastError string              `json:"last_error,omitempty"`
+	// CheapestPPMOverMax is the lowest rate of the cheapest routes found by
+	// splits that failed because every route cost more than maxppm: the
+	// maxppm their search would have needed
+	CheapestPPMOverMax uint64 `json:"cheapest_ppm_over_max,omitempty"`
 	// Stopped says why the run fired no more splits, when it did not reach
 	// its target: the target channel took no more, or too many payments
 	// failed in a row (maxfailstreak). Running out of candidates leaves it
@@ -151,11 +164,20 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 			}
 			// update results data
 			r.AddSuccess(rebalanceResult)
+			r.Result.SplitsSucceeded++
+			r.Result.FeesPaidMsat += rebalanceResult.Fee
+			r.movedMsat += rebalanceResult.AmountMsat
 
 			// put the candidate back in front of the queue
 			r.EnqueueCandidate(rebalanceResult)
 		} else {
 			r.Node.Logf(glightning.Debug, "Failed rebalance attempt: %s", rebalanceResult.Message)
+			if !rebalanceResult.Halted {
+				r.Result.SplitsFailed++
+			}
+			if p := rebalanceResult.CheapestPPM; p > 0 && (r.Result.CheapestPPMOverMax == 0 || p < r.Result.CheapestPPMOverMax) {
+				r.Result.CheapestPPMOverMax = p
+			}
 			if rebalanceResult.Message != "" && !rebalanceResult.Halted {
 				// a split the run's stop ended says nothing new: the last real
 				// failure stays
@@ -173,6 +195,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 
 	// rebalance is over
 	r.Result.Attempts = r.TotalAttempts
+	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	if r.AmountRebalanced >= r.amount {
 		// the splits in flight when it stopped still reached the target
 		r.Result.Stopped = ""
@@ -499,4 +522,17 @@ func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {
 	if result.Status == "success" {
 		r.AmountRebalanced += result.AmountMsat
 	}
+}
+
+// avgPPM is fee as a rate of moved, in ppm, without overflowing fee*1e6.
+func avgPPM(fee, moved uint64) uint64 {
+	if moved == 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(fee, 1000000)
+	if hi >= moved {
+		return math.MaxUint64
+	}
+	ppm, _ := bits.Div64(hi, lo, moved)
+	return ppm
 }

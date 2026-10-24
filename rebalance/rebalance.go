@@ -216,6 +216,10 @@ func (r *Rebalance) Run() *Result {
 	failure.FailedAt, failure.Retry = failureSide(lastErr)
 	failure.Precheck = isPrecheck(lastErr)
 	failure.Halted = errors.Is(lastErr, errRunStopped)
+	var tooExpensive util.ErrRouteTooExpensive
+	if errors.As(lastErr, &tooExpensive) {
+		failure.CheapestPPM = tooExpensive.FeePPM
+	}
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " payments."
 	if lastError == "" && lastErr != nil {
 		// the attempts ran out: say how the last one failed
