@@ -59,7 +59,10 @@ type AbstractRebalance struct {
 	// in flight: skipped (why it could not be used), or how its last split
 	// failed (goneFailed, goneRefused); for Result.Stopped when the run runs
 	// out of candidates
-	gone           map[string]string
+	gone map[string]string
+	// heldByStop: the last time the run could fire a split, circular-stop
+	// held it back
+	heldByStop     bool
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of

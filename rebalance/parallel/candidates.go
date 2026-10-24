@@ -122,8 +122,12 @@ func (r *AbstractRebalance) FireCandidates() {
 	// Splits may deliver less than they ask for, so each asks for what is
 	// left, up to the split amount.
 	for r.AmountRebalanced+r.InFlightAmount < r.amount && r.splitsInFlight < r.splits &&
-		!r.targetStopped && !r.streakStopped && !r.Node.Stopped.Load() &&
-		(r.targetCap == 0 || r.splitsInFlight < r.targetCap) {
+		!r.targetStopped && !r.streakStopped && (r.targetCap == 0 || r.splitsInFlight < r.targetCap) {
+		if r.Node.Stopped.Load() {
+			// circular-stop: until circular-resume
+			r.heldByStop = true
+			break
+		}
 		candidate, err := r.GetNextCandidate()
 		if err != nil {
 			// no candidate left
@@ -137,6 +141,7 @@ func (r *AbstractRebalance) FireCandidates() {
 		// which split this is, to tell what the target's limit was when it
 		// was fired
 		r.noteFired(candidate)
+		r.heldByStop = false
 		r.Fire(candidate, amount)
 
 		r.InFlightAmount += amount

@@ -1228,4 +1228,26 @@ func TestCircularStopEndsTheRun(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(f.asked), "no split fired after the stop")
 	assert.Equal(t, "circular was stopped (circular-stop): firing no more splits", result.(*Result).Stopped)
+
+	// stopped before the run
+	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.Node.Stopped.Store(true)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Empty(t, f.asked)
+	assert.Equal(t, "circular was stopped (circular-stop): firing no more splits", result.(*Result).Stopped)
+
+	// resumed while a split was in flight: the run goes on, and ends for
+	// its own reason
+	f = splitsOn(t, 2, func(call int, amount uint64) uint64 { return 0 })
+	f.splits = 1
+	f.Node.Stopped.Store(true)
+	f.FireCandidates() // held back
+	f.Node.Stopped.Store(false)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(f.asked))
+	assert.Equal(t, "no candidates left: 2 failed", result.(*Result).Stopped)
 }

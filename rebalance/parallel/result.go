@@ -206,7 +206,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
 	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" && !r.targetStopped && !r.streakStopped {
-		if r.Node.Stopped.Load() {
+		if r.heldByStop {
 			// its splits ended at their next payment, and no more were fired
 			r.Result.Stopped = "circular was stopped (circular-stop): firing no more splits"
 		} else {
