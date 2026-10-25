@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,9 +20,12 @@ type forwardsOf struct {
 	ppm, sats map[string]uint64
 	reads     map[string]int
 	err       error
+	lock      sync.Mutex // prefetchEarnings reads several at once
 }
 
 func (f *forwardsOf) read(scid string, _ time.Time) (uint64, uint64, error) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
 	if f.reads == nil {
 		f.reads = map[string]int{}
 	}
@@ -184,14 +188,19 @@ func TestInPeerAboveACandidatesLimit(t *testing.T) {
 	assert.Contains(t, why, "charges at least 200 ppm to send to us, more than this candidate's limit")
 	_, why = a.notWorth(cheap)
 	assert.Empty(t, why, "450 ppm")
-	assert.True(t, a.newSplit(dear, target, dear, 100000000).OwnLimit)
+	assert.Equal(t, uint64(1000), a.newSplit(dear, target, dear, 100000000).RunMaxPPM)
 
-	// at the run's maxppm, the in-peer's fee is the target refusing, as
-	// without a fee ratio: left to the run
+	// above the run's maxppm too, the in-peer's fee is the target refusing,
+	// as without a fee ratio: left to the split, and the run says so
+	a.maxPPM = 190
+	e, why = a.notWorth(dear)
+	assert.Equal(t, uint64(150), e.limit)
+	assert.Empty(t, why)
+	// at the run's maxppm: no limit of its own
 	a.maxPPM = 150
 	_, why = a.notWorth(cheap)
 	assert.Empty(t, why)
-	assert.False(t, a.newSplit(cheap, target, cheap, 100000000).OwnLimit)
+	assert.Equal(t, uint64(0), a.newSplit(cheap, target, cheap, 100000000).RunMaxPPM)
 }
 
 // A ratio that is not a finite number never lifts a split above maxppm.

@@ -145,9 +145,12 @@ func (r *AbstractRebalance) notWorth(candidate *graph.Channel) (economics, strin
 		if candidate.Source != r.Node.Id {
 			in, out = candidate, r.TargetChannel
 		}
-		if inFee := r.Node.Graph.LeastForwardFee(in, out, r.splitAmount); inFee > graph.MaxFeeForPPM(r.splitAmount, e.limit) {
+		inFee := r.Node.Graph.LeastForwardFee(in, out, r.splitAmount)
+		// above the run's maxppm too, it is the channel refusing, as without a
+		// ratio: the split finds out, and the run says so
+		if inFee > graph.MaxFeeForPPM(r.splitAmount, e.limit) && inFee <= graph.MaxFeeForPPM(r.splitAmount, r.maxPPM) {
 			return e, fmt.Sprintf("%s charges at least %d ppm to send to us, more than this candidate's limit: %s",
-				r.Node.Graph.GetAlias(in.Source), inFee*1000000/r.splitAmount, e)
+				r.Node.Graph.GetAlias(in.Source), avgPPM(inFee, r.splitAmount), e)
 		}
 	}
 	return e, ""

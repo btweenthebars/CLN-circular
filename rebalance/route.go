@@ -26,9 +26,9 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 		// out channel
 		err := fmt.Errorf("%s charges at least %d ppm to send %d sats to us over %s, more than maxppm %d",
 			r.Node.Graph.GetAlias(dst), feePPM(inFee, r.Amount), r.Amount/1000, r.InChannel.ShortChannelId, r.MaxPPM)
-		if r.OwnLimit {
-			// a limit of this split's own, below the run's: the split is not
-			// worth it, which says nothing of either channel
+		if r.RunMaxPPM > r.MaxPPM && inFee <= graph.MaxFeeForPPM(r.Amount, r.RunMaxPPM) {
+			// above a limit of this split's own, but within the run's: the
+			// split is not worth it, which says nothing of either channel
 			return nil, fmt.Errorf("%w (this split's own limit)", err)
 		}
 		return nil, onIn(err, RetryNo)

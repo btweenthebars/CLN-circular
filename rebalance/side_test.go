@@ -108,12 +108,21 @@ func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
 	n, out, in = shortRoute()
 	in.Channel.FeePerMillionth = 500
 	r = rebalanceOn(n, out, in, 100000000)
-	r.MaxPPM, r.OwnLimit = 300, true
+	r.MaxPPM, r.RunMaxPPM = 300, 1000
 	result = r.Run()
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, SideNone, result.FailedAt)
 	assert.Contains(t, result.Message, "charges at least 500 ppm to send 100000 sats to us over 5x1x1, more than maxppm 300 (this split's own limit)")
 	assert.Empty(t, n.paid)
+
+	// above the run's maxppm too, it is the in channel refusing, as before
+	n, out, in = shortRoute()
+	in.Channel.FeePerMillionth = 5000
+	r = rebalanceOn(n, out, in, 100000000)
+	r.MaxPPM, r.RunMaxPPM = 300, 1000
+	result = r.Run()
+	assert.Equal(t, SideIn, result.FailedAt)
+	assert.NotContains(t, result.Message, "own limit")
 }
 
 // The check on the in-peer's fee left out its inbound discounts, which the
