@@ -55,10 +55,18 @@ func registerOptions(p *glightning.Plugin) {
 		{"circular-max-fail-streak", "Failed payments in a row after which circular-pull/push stop, when a call leaves maxfailstreak out (below 0: no limit)", parallel.DEFAULT_MAX_FAIL_STREAK},
 		{"circular-max-time", "Seconds after which circular-pull/push stop, when a call leaves maxtime out (0: no limit)", 0},
 		{"circular-max-fee", "Sats circular-pull/push may pay in fees per run, when a call leaves maxfee out (0: no budget)", 0},
+		{"circular-earn-days", "Days of forwards that count for what a channel's liquidity earns, with feeratio", node.DEFAULT_EARN_DAYS},
 	} {
 		if err := p.RegisterNewIntOption(o.name, o.desc, o.value); err != nil {
 			log.Fatalln("error registering option "+o.name+":", err)
 		}
+	}
+
+	if err := p.RegisterNewOption("circular-fee-ratio",
+		"When a call leaves feeratio out: circular-pull/push pay at most this share (e.g. 0.8) of what the filled channel earns, less our fee on the drained one (0: off)",
+		"0"); err != nil {
+
+		log.Fatalln("error registering option circular-fee-ratio:", err)
 	}
 
 	if err := p.RegisterNewBoolOption("circular-save-stats",

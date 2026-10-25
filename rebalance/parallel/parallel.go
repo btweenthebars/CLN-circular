@@ -81,9 +81,16 @@ type AbstractRebalance struct {
 	// is fired only if what was paid, plus the most the splits in flight can
 	// still cost (feeReserved), plus the most it can cost, fits. feeStopped:
 	// with nothing in flight, the next split did not fit.
-	maxFeeMsat     uint64
-	feeReserved    uint64
-	feeStopped     bool
+	maxFeeMsat  uint64
+	feeReserved uint64
+	feeStopped  bool
+	// feeRatio (0: off) and earnSince: see setFeeRatio and splitEconomics;
+	// earnings caches what each filled channel earns, for the run; forwards
+	// reads it (Node.Earned; tests replace it)
+	feeRatio       float64
+	earnSince      time.Time
+	earnings       map[string]earning
+	forwards       func(scid string, since time.Time) (uint64, uint64, error)
 	maxHops        int
 	splitsInFlight int
 	// routes holds, for each candidate's short channel id, the channel ids of
@@ -167,18 +174,8 @@ func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uin
 	if fresh, err := r.Node.Graph.GetChannel(candidateId(in)); err == nil {
 		in = fresh
 	}
-	r.Node.Logln(glightning.Debug, "Firing candidate: ", key, " for ", amount/1000, " sats, attempts: ", r.attempts)
-	rebalance := rebalance2.NewRebalance(out, in, amount, r.maxPPM, r.attempts, r.maxHops)
-	rebalance.Node = r.Node
-	rebalance.MaxNodeFails = r.maxNodeFails
-	rebalance.RiskPPM = r.riskPPM
-	rebalance.Halt = &r.halt
-	rebalance.Sent = &r.sent
-	rebalance.MinAmount = r.minSplit
-	if rebalance.MinAmount > amount {
-		rebalance.MinAmount = amount
-	}
-	rebalance.Route = r.routes[key]
+	rebalance := r.newSplit(out, in, candidate, amount)
+	r.Node.Logln(glightning.Debug, "Firing candidate: ", key, " for ", amount/1000, " sats, attempts: ", r.attempts, ", maxppm: ", rebalance.MaxPPM)
 
 	go func() {
 		result := rebalance2.NewResult("failure", amount/1000, out.Destination, in.Source)
@@ -192,6 +189,24 @@ func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uin
 		}()
 		result = rebalance.Run()
 	}()
+}
+
+// newSplit is the rebalance of a split of amount from out to in, over
+// candidate: with the run's settings, and with a fee ratio, the most the
+// candidate's economics allow.
+func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount uint64) *rebalance2.Rebalance {
+	rebalance := rebalance2.NewRebalance(out, in, amount, r.splitEconomics(candidate).limit, r.attempts, r.maxHops)
+	rebalance.Node = r.Node
+	rebalance.MaxNodeFails = r.maxNodeFails
+	rebalance.RiskPPM = r.riskPPM
+	rebalance.Halt = &r.halt
+	rebalance.Sent = &r.sent
+	rebalance.MinAmount = r.minSplit
+	if rebalance.MinAmount > amount {
+		rebalance.MinAmount = amount
+	}
+	rebalance.Route = r.routes[candidate.ShortChannelId]
+	return rebalance
 }
 
 // candidateId is the id ("scid/direction") of a candidate channel.

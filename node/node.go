@@ -7,6 +7,7 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/robfig/cron/v3"
 	"log"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -223,6 +224,14 @@ func (n *Node) setOptions(lightning *glightning.Lightning, plugin *glightning.Pl
 		MaxFailStreak: options["circular-max-fail-streak"].GetValue().(int),
 		MaxTime:       options["circular-max-time"].GetValue().(int),
 		MaxFee:        options["circular-max-fee"].GetValue().(int),
+		EarnDays:      options["circular-earn-days"].GetValue().(int),
+	}
+	if ratio := options["circular-fee-ratio"].GetValue().(string); ratio != "" {
+		if v, err := strconv.ParseFloat(ratio, 64); err != nil {
+			n.Logln(glightning.Unusual, "circular-fee-ratio is not a number: ", ratio)
+		} else {
+			n.Defaults.FeeRatio = v
+		}
 	}
 	n.Logf(glightning.Debug, "defaults: %+v", n.Defaults)
 
@@ -267,6 +276,11 @@ type Defaults struct {
 	MaxFailStreak int // failed payments in a row per run; below 0: no limit (circular-max-fail-streak)
 	MaxTime       int // seconds per run; 0 or less: no limit (circular-max-time)
 	MaxFee        int // sats per run; 0 or less: no budget (circular-max-fee)
+	// FeeRatio: circular-pull/push pay at most this share of what the
+	// filled channel earns, less our fee on the drained one; 0 or less: off
+	// (circular-fee-ratio)
+	FeeRatio float64
+	EarnDays int // days of forwards for what a channel earns; 0: DEFAULT_EARN_DAYS (circular-earn-days)
 }
 
 // GetDefaults returns n.Defaults, or none for a nil node.

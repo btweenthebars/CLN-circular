@@ -30,8 +30,9 @@ type RebalancePush struct {
 	MaxNodeFails    int      `json:"maxnodefails,omitempty"`
 	MaxFailStreak   int      `json:"maxfailstreak,omitempty"`
 	RiskPPM         int      `json:"riskppm,omitempty"`
-	MaxTime         int      `json:"maxtime,omitempty"` // seconds; 0: the node's default (circular-max-time); below 0: no limit
-	MaxFee          int      `json:"maxfee,omitempty"`  // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
+	MaxTime         int      `json:"maxtime,omitempty"`  // seconds; 0: the node's default (circular-max-time); below 0: no limit
+	MaxFee          int      `json:"maxfee,omitempty"`   // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
+	FeeRatio        float64  `json:"feeratio,omitempty"` // splits pay at most this share of what the filled channel earns, less our fee on the drained one; 0: circular-fee-ratio; below 0: off
 	AbstractRebalance
 }
 
@@ -64,6 +65,7 @@ func (r *RebalancePush) prepare() error {
 	r.riskPPM = r.RiskPPM
 	r.setMaxTime(r.MaxTime)
 	r.setMaxFee(r.MaxFee)
+	r.setFeeRatio(r.FeeRatio)
 
 	r.CandidatesList = r.InList
 	if r.CandidatesList != nil {

@@ -39,6 +39,7 @@ type RebalanceQuote struct {
 	RiskPPM            int      `json:"riskppm,omitempty"`
 	MaxTime            int      `json:"maxtime,omitempty"` // accepted, like maxfailstreak
 	MaxFee             int      `json:"maxfee,omitempty"`  // accepted, like maxfailstreak
+	FeeRatio           float64  `json:"feeratio,omitempty"`
 }
 
 func (q *RebalanceQuote) Name() string {
@@ -57,7 +58,7 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 		pull := &RebalancePull{InScid: q.InScid, OutList: q.OutList, MaxOutPPM: q.MaxOutPPM, Amount: q.Amount,
 			MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
 			DepleteUpToPercent: q.DepleteUpToPercent, DepleteUpToAmount: q.DepleteUpToAmount,
-			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM}
+			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio}
 		if err := pull.prepare(); err != nil {
 			return nil, err
 		}
@@ -66,7 +67,7 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 		push := &RebalancePush{OutScid: q.OutScid, InList: q.InList, MinOutPPM: q.MinOutPPM, Amount: q.Amount,
 			MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
 			FillUpToPercent: q.FillUpToPercent, FillUpToAmount: q.FillUpToAmount,
-			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM}
+			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio}
 		if err := push.prepare(); err != nil {
 			return nil, err
 		}
@@ -134,8 +135,11 @@ type QuoteCandidate struct {
 	Estimate    *float64 `json:"estimate,omitempty"`
 	GuessedHops *int     `json:"guessed_hops,omitempty"`
 	CheapestPPM uint64   `json:"cheapest_ppm,omitempty"` // when every route costs more than maxppm
-	Error       string   `json:"error,omitempty"`        // why its first payment would not be sent
-	Skipped     string   `json:"skipped,omitempty"`      // why a run would not use it
+	// with feeratio: the most its splits may pay (ppm), and why
+	MaxPPM    *uint64 `json:"maxppm,omitempty"`
+	Economics string  `json:"economics,omitempty"`
+	Error     string  `json:"error,omitempty"`   // why its first payment would not be sent
+	Skipped   string  `json:"skipped,omitempty"` // why a run would not use it
 }
 
 // quote quotes the candidates found by prepare, in the order a run tries
@@ -178,10 +182,21 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		if fresh, err := r.Node.Graph.GetChannel(candidateId(in)); err == nil {
 			in = fresh
 		}
-		rebalance := rebalance2.NewRebalance(out, in, r.splitAmount, r.maxPPM, r.attempts, r.maxHops)
+		e := r.splitEconomics(candidate)
+		if r.feeRatio > 0 && e.limit == 0 {
+			result.add(&QuoteCandidate{Scid: candidate.ShortChannelId, Alias: r.Node.Graph.GetAlias(peer),
+				NodeId: peer, Skipped: fmt.Sprintf("%s %g: %s", notWorthIt, r.feeRatio, e)})
+			continue
+		}
+		rebalance := rebalance2.NewRebalance(out, in, r.splitAmount, e.limit, r.attempts, r.maxHops)
 		rebalance.Node = r.Node
 		rebalance.RiskPPM = r.riskPPM
-		result.add(quoteCandidate(r.Node.Graph, candidate, peer, rebalance))
+		c := quoteCandidate(r.Node.Graph, candidate, peer, rebalance)
+		if r.feeRatio > 0 {
+			limit := e.limit
+			c.MaxPPM, c.Economics = &limit, e.String()
+		}
+		result.add(c)
 	}
 	result.summarize()
 	return result
