@@ -123,6 +123,8 @@ func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
 	result = r.Run()
 	assert.Equal(t, SideIn, result.FailedAt)
 	assert.NotContains(t, result.Message, "own limit")
+	assert.Contains(t, result.Message, "charges at least 5000 ppm to send 100000 sats to us over 5x1x1, more than maxppm 1000",
+		"the run's maxppm, the one it is above")
 }
 
 // The check on the in-peer's fee left out its inbound discounts, which the
