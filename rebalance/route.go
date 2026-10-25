@@ -34,7 +34,7 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 		err := fmt.Errorf("%s charges at least %d ppm to send %d sats to us over %s, more than maxppm %d",
 			r.Node.Graph.GetAlias(dst), feePPM(inFee, r.Amount), r.Amount/1000, r.InChannel.ShortChannelId, limit)
 		if own {
-			return nil, fmt.Errorf("%w (this split's own limit)", err)
+			return nil, fmt.Errorf("%w (%w)", err, errOwnLimit)
 		}
 		return nil, onIn(err, RetryNo)
 	}

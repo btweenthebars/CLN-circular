@@ -73,6 +73,10 @@ type Rebalance struct {
 	payments int
 }
 
+// errOwnLimit marks the in-peer charging more than a split's own feeratio
+// limit, though not more than its run's maxppm.
+var errOwnLimit = errors.New("this split's own limit")
+
 // errRunStopped ends a split whose run stopped firing splits: neither of
 // its channels is to blame.
 var errRunStopped = errors.New("the run stopped: no more payments for this split")
@@ -233,6 +237,11 @@ func (r *Rebalance) Run() *Result {
 	var tooExpensive util.ErrRouteTooExpensive
 	if errors.As(lastErr, &tooExpensive) {
 		failure.CheapestPPM = tooExpensive.FeePPM
+		// a route within the run's maxppm, not within this split's own limit
+		failure.HeldByOwnLimit = r.RunMaxPPM > r.MaxPPM && tooExpensive.FeePPM <= r.RunMaxPPM
+	}
+	if errors.Is(lastErr, errOwnLimit) {
+		failure.HeldByOwnLimit = true
 	}
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " payments."
 	if lastError == "" && lastErr != nil {

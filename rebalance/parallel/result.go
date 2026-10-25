@@ -90,6 +90,11 @@ type Result struct {
 	// splits that failed because every route cost more than maxppm: the
 	// maxppm their search would have needed
 	CheapestPPMOverMax uint64 `json:"cheapest_ppm_over_max,omitempty"`
+	// With feeratio: FeeratioSkipped counts the candidates left out before
+	// trying (not worth it), FeeratioHeld the splits that failed on their
+	// own limit where maxppm would have let them go on
+	FeeratioSkipped int `json:"feeratio_skipped,omitempty"`
+	FeeratioHeld    int `json:"feeratio_held,omitempty"`
 	// WorstNodes are the nodes that failed the most of the run's payments,
 	// most first, at most WORST_NODES of them; failures on our own channels
 	// are not counted
@@ -196,6 +201,9 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 			if !rebalanceResult.Halted {
 				r.Result.SplitsFailed++
 			}
+			if rebalanceResult.HeldByOwnLimit {
+				r.Result.FeeratioHeld++
+			}
 			if p := rebalanceResult.CheapestPPM; p > 0 && (r.Result.CheapestPPMOverMax == 0 || p < r.Result.CheapestPPMOverMax) {
 				r.Result.CheapestPPMOverMax = p
 			}
@@ -218,6 +226,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	r.Result.Attempts = r.TotalAttempts
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
+	r.Result.FeeratioSkipped = len(r.feeratioSkipped)
 	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" {
 		switch {
 		case r.held():

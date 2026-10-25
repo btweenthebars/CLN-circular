@@ -65,4 +65,15 @@ func TestFailureCarriesTheCheapestRate(t *testing.T) {
 	result := r.Run()
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, uint64(500), result.CheapestPPM)
+	assert.False(t, result.HeldByOwnLimit, "no limit of its own")
+
+	// a feeratio limit of 400 under a run's maxppm: held by its own limit if
+	// the run's maxppm would have taken the 500-ppm route
+	for runMax, held := range map[uint64]bool{1000: true, 500: true, 450: false} {
+		r = rebalanceOn(n, out, in, 100000000)
+		r.MaxPPM, r.RunMaxPPM = 400, runMax
+		result = r.Run()
+		assert.Equal(t, uint64(500), result.CheapestPPM)
+		assert.Equal(t, held, result.HeldByOwnLimit, runMax)
+	}
 }

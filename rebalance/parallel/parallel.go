@@ -87,12 +87,14 @@ type AbstractRebalance struct {
 	// feeRatio (0: off) and earnSince: see setFeeRatio and splitEconomics;
 	// earnings caches what each filled channel earns, for the run; forwards
 	// reads it (Node.Earned; tests replace it)
-	feeRatio       float64
-	earnSince      time.Time
-	earnings       map[string]earning
-	forwards       func(scid string, since time.Time) (uint64, uint64, error)
-	maxHops        int
-	splitsInFlight int
+	feeRatio  float64
+	earnSince time.Time
+	earnings  map[string]earning
+	// feeratioSkipped: the candidates notWorth left out, by id
+	feeratioSkipped map[string]bool
+	forwards        func(scid string, since time.Time) (uint64, uint64, error)
+	maxHops         int
+	splitsInFlight  int
 	// routes holds, for each candidate's short channel id, the channel ids of
 	// the last route that worked for it: its next split tries that route
 	// before searching.

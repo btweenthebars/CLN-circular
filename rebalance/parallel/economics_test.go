@@ -6,11 +6,13 @@ import (
 	"circular/util"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -254,4 +256,43 @@ func TestEarningsAreReadBeforeTheRun(t *testing.T) {
 	a.forwards = fw.read
 	a.prefetchEarnings()
 	assert.Empty(t, fw.reads)
+}
+
+// When a run with a fee ratio moved nothing, the result did not say whether
+// the ratio or maxppm held it back: it counts the candidates the ratio left
+// out, and the splits that failed on their own limit where maxppm would have
+// let them go on.
+func TestFeeratioCountsInTheResult(t *testing.T) {
+	f := splitsOn(t, 4, func(int, uint64) uint64 { return 0 })
+	f.splits = 1
+	f.maxPPM, f.feeRatio = 1000, 0.8
+	f.TargetChannel = graph.NewChannel(&glightning.Channel{ShortChannelId: "9x1x1", Source: "02in", Destination: "02self"}, 0, 0)
+	f.forwards = (&forwardsOf{ppm: map[string]uint64{"9x1x1": 500}, sats: map[string]uint64{"9x1x1": 200000}}).read
+	// we charge 450 ppm on 1x1x1 and 3x1x1: 0.8 × 500 − 450 < 1, not worth it
+	for _, scid := range []string{"1x1x1", "3x1x1"} {
+		peer := fmt.Sprintf("02peer%d", scid[0]-'1') // splitsOn: 1x1x1 is with 02peer0
+		dear := graph.NewChannel(&glightning.Channel{ShortChannelId: scid, Source: "02self", Destination: peer,
+			BaseFeeMillisatoshi: 45000}, 0, 0)
+		f.Node.Graph.Channels[scid+"/"+util.GetDirection("02self", peer)] = dear
+	}
+	f.held = func(call int) bool { return call == 0 }
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	assert.Equal(t, 2, res.FeeratioSkipped)
+	assert.Equal(t, 1, res.FeeratioHeld, "2x1x1's split; 4x1x1's failed otherwise")
+	assert.Equal(t, 2, len(f.asked))
+	out, err := json.Marshal(res)
+	assert.NoError(t, err)
+	assert.Contains(t, string(out), `"feeratio_skipped":2,"feeratio_held":1`)
+
+	// without a ratio: neither field
+	f = splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	out, err = json.Marshal(result)
+	assert.NoError(t, err)
+	assert.NotContains(t, string(out), "feeratio")
 }

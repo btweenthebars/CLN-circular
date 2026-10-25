@@ -29,6 +29,10 @@ type Result struct {
 	// CheapestPPM: the rate of the cheapest route found, when every route
 	// cost more than maxppm
 	CheapestPPM uint64 `json:"-"`
+	// HeldByOwnLimit: the split failed on its own (feeratio) limit, where
+	// its run's maxppm would have let it go on: every route cost more than
+	// the limit but one cost no more than maxppm, or the in-peer alone did
+	HeldByOwnLimit bool `json:"-"`
 	// FailedNodes counts, per node, the payments it failed, leaving out
 	// failures on our own channels
 	FailedNodes map[string]int `json:"-"`

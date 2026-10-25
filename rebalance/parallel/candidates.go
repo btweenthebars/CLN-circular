@@ -112,6 +112,10 @@ func (r *AbstractRebalance) GetNextCandidate() (*graph.Channel, error) {
 		if _, why := r.notWorth(candidate); why != "" {
 			r.Node.Logln(glightning.Info, "skipping ", candidate.ShortChannelId, ", ", notWorthIt, " ", r.feeRatio, ": ", why)
 			r.leftQueue(candidateId(candidate), notWorthIt)
+			if r.feeratioSkipped == nil {
+				r.feeratioSkipped = map[string]bool{}
+			}
+			r.feeratioSkipped[candidateId(candidate)] = true
 			continue
 		}
 		r.Node.Logln(glightning.Debug, "channel usable")

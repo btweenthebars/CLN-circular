@@ -222,6 +222,8 @@ type fakeSplits struct {
 	// fired, if set, is called as each split is fired, before it counts as
 	// in flight
 	fired func()
+	// held says whether a failing call failed on its own feeratio limit
+	held func(call int) bool
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -259,6 +261,9 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	result.Attempts = f.payments
 	if f.cheapest != nil {
 		result.CheapestPPM = f.cheapest(f.calls - 1)
+	}
+	if f.held != nil {
+		result.HeldByOwnLimit = f.held(f.calls - 1)
 	}
 	if f.halted != nil && f.halted(f.calls-1) {
 		result.Halted = true
