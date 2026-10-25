@@ -89,6 +89,7 @@ func (r *RebalancePush) prepare() error {
 	if err = r.FindCandidates(r.TargetChannel.Destination); err != nil {
 		return err
 	}
+	r.prefetchEarnings()
 	return nil
 }
 

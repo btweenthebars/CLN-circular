@@ -195,7 +195,9 @@ func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uin
 // candidate: with the run's settings, and with a fee ratio, the most the
 // candidate's economics allow.
 func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount uint64) *rebalance2.Rebalance {
-	rebalance := rebalance2.NewRebalance(out, in, amount, r.splitEconomics(candidate).limit, r.attempts, r.maxHops)
+	limit := r.splitEconomics(candidate).limit
+	rebalance := rebalance2.NewRebalance(out, in, amount, limit, r.attempts, r.maxHops)
+	rebalance.OwnLimit = r.feeRatio > 0 && limit < r.maxPPM
 	rebalance.Node = r.Node
 	rebalance.MaxNodeFails = r.maxNodeFails
 	rebalance.RiskPPM = r.riskPPM

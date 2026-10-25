@@ -24,8 +24,14 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 		// what the in-peer charges to send to us, with the best of its inbound
 		// discounts, is more than maxppm allows: no route can do, whatever the
 		// out channel
-		return nil, onIn(fmt.Errorf("%s charges at least %d ppm to send %d sats to us over %s, more than maxppm %d",
-			r.Node.Graph.GetAlias(dst), feePPM(inFee, r.Amount), r.Amount/1000, r.InChannel.ShortChannelId, r.MaxPPM), RetryNo)
+		err := fmt.Errorf("%s charges at least %d ppm to send %d sats to us over %s, more than maxppm %d",
+			r.Node.Graph.GetAlias(dst), feePPM(inFee, r.Amount), r.Amount/1000, r.InChannel.ShortChannelId, r.MaxPPM)
+		if r.OwnLimit {
+			// a limit of this split's own, below the run's: the split is not
+			// worth it, which says nothing of either channel
+			return nil, fmt.Errorf("%w (this split's own limit)", err)
+		}
+		return nil, onIn(err, RetryNo)
 	}
 	route, err := r.Node.Graph.GetLikelyCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops, maxFee, r.riskPPM())
 	if err == util.ErrNoRoute {

@@ -7,6 +7,7 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/robfig/cron/v3"
 	"log"
+	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -39,27 +40,30 @@ type Node struct {
 	// Defaults are what the rebalance commands use for the parameters a
 	// call leaves out (the circular-attempts ... circular-max-fee startup
 	// options)
-	Defaults           Defaults
-	initLock           *sync.Mutex
-	saveStats          bool
-	PeersLock          *sync.RWMutex
-	Id                 string
-	Peers              map[string]*glightning.Peer
-	scidToPeer         map[string]*glightning.Peer // reverse index: scid → peer, guarded by PeersLock
-	peersReadAt        time.Time                   // when refreshPeers read the channels in Peers, guarded by PeersLock
-	channelsReadAt     map[string]time.Time        // later reads of one peer's channels, guarded by PeersLock
-	connectedAt        map[string]time.Time        // when a notification last changed a peer's connection, guarded by PeersLock
-	Graph              *graph.Graph
-	DB                 *Store
-	dataDir            string        // lightning-dir/circular
-	learnedLock        sync.Mutex    // guards pendingBeliefs and migrateLegacy, and serializes saves
-	pendingBeliefs     *learnedState // read at start, applied after the first graph refresh
-	migrateLegacy      bool          // pendingBeliefs came from an earlier version's graph.json
-	learnedApplied     atomic.Bool   // the first graph refresh applied what was saved
-	cron               *cron.Cron
-	candidates         candidateRecords // how our channels did as pull/push candidates
-	Stopped            atomic.Bool      // circular-stop: no new rebalances
-	gossipStopped      atomic.Bool
+	Defaults       Defaults
+	initLock       *sync.Mutex
+	saveStats      bool
+	PeersLock      *sync.RWMutex
+	Id             string
+	Peers          map[string]*glightning.Peer
+	scidToPeer     map[string]*glightning.Peer // reverse index: scid → peer, guarded by PeersLock
+	peersReadAt    time.Time                   // when refreshPeers read the channels in Peers, guarded by PeersLock
+	channelsReadAt map[string]time.Time        // later reads of one peer's channels, guarded by PeersLock
+	connectedAt    map[string]time.Time        // when a notification last changed a peer's connection, guarded by PeersLock
+	Graph          *graph.Graph
+	DB             *Store
+	dataDir        string        // lightning-dir/circular
+	learnedLock    sync.Mutex    // guards pendingBeliefs and migrateLegacy, and serializes saves
+	pendingBeliefs *learnedState // read at start, applied after the first graph refresh
+	migrateLegacy  bool          // pendingBeliefs came from an earlier version's graph.json
+	learnedApplied atomic.Bool   // the first graph refresh applied what was saved
+	cron           *cron.Cron
+	candidates     candidateRecords // how our channels did as pull/push candidates
+	Stopped        atomic.Bool      // circular-stop: no new rebalances
+	gossipStopped  atomic.Bool
+	// earned caches what Earned read, per channel (EARN_CACHE_TTL)
+	earned             map[string]earnedEntry
+	earnedLock         sync.Mutex
 	ActivePayments     map[string]*ActivePayment
 	activePaymentsLock *sync.RWMutex
 }
@@ -227,7 +231,7 @@ func (n *Node) setOptions(lightning *glightning.Lightning, plugin *glightning.Pl
 		EarnDays:      options["circular-earn-days"].GetValue().(int),
 	}
 	if ratio := options["circular-fee-ratio"].GetValue().(string); ratio != "" {
-		if v, err := strconv.ParseFloat(ratio, 64); err != nil {
+		if v, err := strconv.ParseFloat(ratio, 64); err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
 			n.Logln(glightning.Unusual, "circular-fee-ratio is not a number: ", ratio)
 		} else {
 			n.Defaults.FeeRatio = v

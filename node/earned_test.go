@@ -37,3 +37,21 @@ func TestEarnedPPM(t *testing.T) {
 	ppm, _ = EarnedPPM([]glightning.Forwarding{f}, now.Add(-2*24*time.Hour))
 	assert.Equal(t, uint64(100), ppm)
 }
+
+// What a channel earned is kept for EARN_CACHE_TTL: runs started meanwhile
+// do not read its forwards again.
+func TestEarnedIsCached(t *testing.T) {
+	since := time.Now().Add(-30 * 24 * time.Hour)
+	n := &Node{earned: map[string]earnedEntry{
+		"1x1x1": {ppm: 250, volume: 5, since: since, at: time.Now()},
+		"2x1x1": {ppm: 250, volume: 5, since: since, at: time.Now().Add(-EARN_CACHE_TTL - time.Minute)},
+	}}
+	ppm, volume, err := n.Earned("1x1x1", since.Add(time.Minute))
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(250), ppm)
+	assert.Equal(t, uint64(5), volume)
+	_, _, err = n.Earned("2x1x1", since)
+	assert.Error(t, err, "too old: read again (and no lightningd here)")
+	_, _, err = n.Earned("1x1x1", since.Add(-time.Hour))
+	assert.Error(t, err, "another window: read again")
+}

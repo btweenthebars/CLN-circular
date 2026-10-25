@@ -17,7 +17,16 @@ const (
 	// must have carried in that time for their rate to count; below it, our
 	// current fee on the channel stands in.
 	EARN_MIN_VOLUME_MSAT = 100000000 // 100k sats
+	// EARN_CACHE_TTL is how long what a channel earned is kept before its
+	// forwards are read again: runs started meanwhile share it.
+	EARN_CACHE_TTL = 10 * time.Minute
 )
+
+// earnedEntry is what Earned read for a channel, and when.
+type earnedEntry struct {
+	ppm, volume uint64
+	since, at   time.Time
+}
 
 type listForwardsRequest struct {
 	Status     string `json:"status"`
@@ -36,6 +45,12 @@ type listForwardsResponse struct {
 // what those resolved since since earned, as ppm of what they carried, and
 // how much they carried (msat).
 func (n *Node) Earned(scid string, since time.Time) (uint64, uint64, error) {
+	n.earnedLock.Lock()
+	e, ok := n.earned[scid]
+	n.earnedLock.Unlock()
+	if ok && time.Since(e.at) < EARN_CACHE_TTL && e.since.Sub(since).Abs() < EARN_CACHE_TTL {
+		return e.ppm, e.volume, nil
+	}
 	if n.lightning == nil {
 		return 0, 0, errors.New("not connected to lightningd")
 	}
@@ -44,6 +59,12 @@ func (n *Node) Earned(scid string, since time.Time) (uint64, uint64, error) {
 		return 0, 0, err
 	}
 	ppm, volume := EarnedPPM(resp.Forwards, since)
+	n.earnedLock.Lock()
+	if n.earned == nil {
+		n.earned = map[string]earnedEntry{}
+	}
+	n.earned[scid] = earnedEntry{ppm: ppm, volume: volume, since: since, at: time.Now()}
+	n.earnedLock.Unlock()
 	return ppm, volume, nil
 }
 

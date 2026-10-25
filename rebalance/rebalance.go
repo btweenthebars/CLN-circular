@@ -57,6 +57,9 @@ type Rebalance struct {
 	// Sent, if set, counts each payment as it is sent: the parallel commands
 	// share one between their splits, for their progress lines.
 	Sent *atomic.Int64
+	// OwnLimit: MaxPPM is this split's own limit (feeratio), below its run's;
+	// the in-peer charging more than it then blames neither channel
+	OwnLimit bool
 
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity

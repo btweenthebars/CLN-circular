@@ -1,10 +1,12 @@
 package parallel
 
 import (
+	"circular/graph"
 	"circular/node"
 	"circular/util"
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -156,4 +158,91 @@ func TestSetFeeRatio(t *testing.T) {
 	a.setFeeRatio(0)
 	assert.Equal(t, 0.0, a.feeRatio, "off by default")
 	assert.WithinDuration(t, time.Now().Add(-node.DEFAULT_EARN_DAYS*24*time.Hour), a.earnSince, time.Minute)
+}
+
+// A candidate whose in-peer charges more than its own limit is skipped up
+// front: its split failed the in-peer check, which in circular-pull reads as
+// the target refusing, and stopped the run.
+func TestInPeerAboveACandidatesLimit(t *testing.T) {
+	n, add, _ := quoteNetwork()
+	target := add("9x1x1", "02in", "02self", 0)
+	add("9x1x1", "02self", "02in", 60000)
+	add("3x1x1", "02m", "02in", 20000) // the in-peer charges 200 ppm to send to us
+	target.BaseFeeMillisatoshi = 20000
+	cheap := add("1x1x1", "02self", "02p0", 0)
+	dear := add("2x1x1", "02self", "02p1", 30000)
+	a := quoteRun(n, target, "", cheap, dear)
+	a.maxPPM, a.feeRatio = 1000, 0.5
+	a.forwards = (&forwardsOf{ppm: map[string]uint64{"9x1x1": 1000}, sats: map[string]uint64{"9x1x1": 200000}}).read
+
+	e, why := a.notWorth(dear)
+	assert.Equal(t, uint64(200), e.limit, "0.5 × 1000 − 300")
+	assert.Empty(t, why, "200 ppm is within its limit")
+	a.feeRatio = 0.45
+	e, why = a.notWorth(dear)
+	assert.Equal(t, uint64(150), e.limit)
+	assert.Contains(t, why, "charges at least 200 ppm to send to us, more than this candidate's limit")
+	_, why = a.notWorth(cheap)
+	assert.Empty(t, why, "450 ppm")
+	assert.True(t, a.newSplit(dear, target, dear, 100000000).OwnLimit)
+
+	// at the run's maxppm, the in-peer's fee is the target refusing, as
+	// without a fee ratio: left to the run
+	a.maxPPM = 150
+	_, why = a.notWorth(cheap)
+	assert.Empty(t, why)
+	assert.False(t, a.newSplit(cheap, target, cheap, 100000000).OwnLimit)
+}
+
+// A ratio that is not a finite number never lifts a split above maxppm.
+func TestFeeRatioNotANumber(t *testing.T) {
+	a := &AbstractRebalance{Node: &node.Node{}}
+	a.setFeeRatio(math.Inf(1))
+	assert.Equal(t, 0.0, a.feeRatio)
+	a.setFeeRatio(math.NaN())
+	assert.Equal(t, 0.0, a.feeRatio)
+
+	n, add, _ := quoteNetwork()
+	target := add("9x1x1", "02in", "02self", 0) // we charge nothing on it
+	candidate := add("1x1x1", "02self", "02p0", 0)
+	a = quoteRun(n, target, "", candidate)
+	a.maxPPM, a.feeRatio = 100, math.Inf(1) // Inf × 0 − 0 is NaN
+	a.forwards = (&forwardsOf{}).read
+	assert.Equal(t, uint64(0), a.splitEconomics(candidate).limit)
+}
+
+// What the channels a run fills earn is read before it fires anything: the
+// target in circular-pull, every candidate in circular-push.
+func TestEarningsAreReadBeforeTheRun(t *testing.T) {
+	n, add, _ := quoteNetwork()
+	out := add("1x1x1", "02self", "02t", 0)
+	var candidates []*graph.Channel
+	for _, scid := range []string{"7x1x1", "8x1x1", "9x1x1"} {
+		candidates = append(candidates, add(scid, "02c"+scid[:1], "02self", 0))
+	}
+	a := quoteRun(n, out, "", candidates...)
+	a.maxPPM, a.feeRatio = 1000, 0.8
+	fw := &forwardsOf{ppm: map[string]uint64{"7x1x1": 100, "8x1x1": 200, "9x1x1": 300},
+		sats: map[string]uint64{"7x1x1": 200000, "8x1x1": 200000, "9x1x1": 200000}}
+	a.forwards = fw.read
+	a.prefetchEarnings()
+	assert.Equal(t, map[string]int{"7x1x1": 1, "8x1x1": 1, "9x1x1": 1}, fw.reads)
+	assert.Equal(t, uint64(240), a.splitEconomics(candidates[2]).limit)
+	assert.Equal(t, 1, fw.reads["9x1x1"], "not read again")
+
+	// pull: the target only
+	target := add("6x1x1", "02in", "02self", 0)
+	a = quoteRun(n, target, "", out)
+	a.maxPPM, a.feeRatio = 1000, 0.8
+	fw = &forwardsOf{}
+	a.forwards = fw.read
+	a.prefetchEarnings()
+	assert.Equal(t, map[string]int{"6x1x1": 1}, fw.reads)
+
+	// without a fee ratio: nothing
+	a = quoteRun(n, target, "", out)
+	fw = &forwardsOf{}
+	a.forwards = fw.read
+	a.prefetchEarnings()
+	assert.Empty(t, fw.reads)
 }

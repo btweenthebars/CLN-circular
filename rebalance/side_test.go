@@ -102,6 +102,18 @@ func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
 	assert.Contains(t, result.Message, "charges at least 5000 ppm to send 100000 sats to us over 5x1x1, more than maxppm 1000")
 	assert.NotContains(t, result.Message, "Unable to find a route", "the in-peer's own fee is not a lack of routes")
 	assert.Empty(t, n.paid)
+
+	// below a split's own limit (feeratio), the split is not worth it: no
+	// channel is to blame, so a circular-pull goes on with other candidates
+	n, out, in = shortRoute()
+	in.Channel.FeePerMillionth = 500
+	r = rebalanceOn(n, out, in, 100000000)
+	r.MaxPPM, r.OwnLimit = 300, true
+	result = r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, SideNone, result.FailedAt)
+	assert.Contains(t, result.Message, "charges at least 500 ppm to send 100000 sats to us over 5x1x1, more than maxppm 300 (this split's own limit)")
+	assert.Empty(t, n.paid)
 }
 
 // The check on the in-peer's fee left out its inbound discounts, which the

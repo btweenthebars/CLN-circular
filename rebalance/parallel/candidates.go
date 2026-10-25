@@ -109,8 +109,8 @@ func (r *AbstractRebalance) GetNextCandidate() (*graph.Channel, error) {
 			r.leftQueue(candidateId(candidate), err.Error())
 			continue
 		}
-		if e := r.splitEconomics(candidate); r.feeRatio > 0 && e.limit == 0 {
-			r.Node.Logln(glightning.Info, "skipping ", candidate.ShortChannelId, ", ", notWorthIt, " ", r.feeRatio, ": ", e)
+		if _, why := r.notWorth(candidate); why != "" {
+			r.Node.Logln(glightning.Info, "skipping ", candidate.ShortChannelId, ", ", notWorthIt, " ", r.feeRatio, ": ", why)
 			r.leftQueue(candidateId(candidate), notWorthIt)
 			continue
 		}

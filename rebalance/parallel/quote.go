@@ -182,10 +182,10 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		if fresh, err := r.Node.Graph.GetChannel(candidateId(in)); err == nil {
 			in = fresh
 		}
-		e := r.splitEconomics(candidate)
-		if r.feeRatio > 0 && e.limit == 0 {
+		e, why := r.notWorth(candidate)
+		if why != "" {
 			result.add(&QuoteCandidate{Scid: candidate.ShortChannelId, Alias: r.Node.Graph.GetAlias(peer),
-				NodeId: peer, Skipped: fmt.Sprintf("%s %g: %s", notWorthIt, r.feeRatio, e)})
+				NodeId: peer, Skipped: fmt.Sprintf("%s %g: %s", notWorthIt, r.feeRatio, why)})
 			continue
 		}
 		rebalance := rebalance2.NewRebalance(out, in, r.splitAmount, e.limit, r.attempts, r.maxHops)

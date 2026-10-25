@@ -93,6 +93,7 @@ func (r *RebalancePull) prepare() error {
 		r.Node.Logf(glightning.Unusual, "FindCandidates failed: %v", err)
 		return err
 	}
+	r.prefetchEarnings()
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"circular/util"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/elementsproject/glightning/glightning"
@@ -42,7 +43,7 @@ func (r *AbstractRebalance) setFeeRatio(ratio float64) {
 		ratio = defaults.FeeRatio
 	}
 	r.feeRatio = 0
-	if ratio > 0 {
+	if ratio > 0 && !math.IsInf(ratio, 0) {
 		r.feeRatio = ratio
 	}
 	days := defaults.EarnDays
@@ -69,12 +70,22 @@ func (r *AbstractRebalance) earns(scid, peer string) earning {
 	if e, ok := r.earnings[scid]; ok {
 		return e
 	}
-	read := r.forwards
-	if read == nil {
-		read = r.Node.Earned
+	ppm, volume, err := r.readForwards()(scid, r.earnSince)
+	return r.keepEarning(scid, peer, ppm, volume, err)
+}
+
+// readForwards reads what a channel earned: Node.Earned, or a test's fake.
+func (r *AbstractRebalance) readForwards() func(scid string, since time.Time) (uint64, uint64, error) {
+	if r.forwards != nil {
+		return r.forwards
 	}
+	return r.Node.Earned
+}
+
+// keepEarning keeps, for the run, what the channel scid with peer earns
+// from what reading its forwards gave.
+func (r *AbstractRebalance) keepEarning(scid, peer string, ppm, volume uint64, err error) earning {
 	e := earning{basis: "current fee"}
-	ppm, volume, err := read(scid, r.earnSince)
 	switch {
 	case err != nil:
 		r.Node.Logln(glightning.Unusual, "unable to read the forwards of ", scid, ": ", err)
@@ -107,14 +118,82 @@ func (r *AbstractRebalance) splitEconomics(candidate *graph.Channel) economics {
 	e.drain, _ = r.ourFeePPM(drained.ShortChannelId, drained.Destination)
 	limit := r.feeRatio*float64(e.earn.ppm) - float64(e.drain)
 	switch {
-	case limit < 1:
+	case !(limit >= 1): // NaN too
 		e.limit = 0
 	case limit >= float64(r.maxPPM):
 		e.limit = r.maxPPM
-	case limit >= math.MaxUint64:
-		e.limit = math.MaxUint64
 	default:
 		e.limit = uint64(limit)
 	}
 	return e
+}
+
+// notWorth says why a split over candidate is not worth it at the run's fee
+// ratio, or "" if it is: its limit comes to nothing, or the peer sending to
+// us charges more than that limit on its own (when the limit is below the
+// run's maxppm; at maxppm that is the channel refusing, as without a ratio).
+func (r *AbstractRebalance) notWorth(candidate *graph.Channel) (economics, string) {
+	e := r.splitEconomics(candidate)
+	if r.feeRatio <= 0 {
+		return e, ""
+	}
+	if e.limit == 0 {
+		return e, e.String()
+	}
+	if e.limit < r.maxPPM {
+		in, out := r.TargetChannel, candidate
+		if candidate.Source != r.Node.Id {
+			in, out = candidate, r.TargetChannel
+		}
+		if inFee := r.Node.Graph.LeastForwardFee(in, out, r.splitAmount); inFee > graph.MaxFeeForPPM(r.splitAmount, e.limit) {
+			return e, fmt.Sprintf("%s charges at least %d ppm to send to us, more than this candidate's limit: %s",
+				r.Node.Graph.GetAlias(in.Source), inFee*1000000/r.splitAmount, e)
+		}
+	}
+	return e, ""
+}
+
+// FORWARD_READS is how many channels' forwards prefetchEarnings reads at
+// once.
+const FORWARD_READS = 8
+
+// prefetchEarnings reads, before the run fires anything, what each channel
+// it would fill earns: the target in circular-pull, every candidate in
+// circular-push. Reading them as splits are fired held up the run.
+func (r *AbstractRebalance) prefetchEarnings() {
+	if r.feeRatio <= 0 || r.TargetChannel == nil {
+		return
+	}
+	type read struct {
+		scid, peer  string
+		ppm, volume uint64
+		err         error
+	}
+	var reads []*read
+	if r.TargetChannel.Destination == r.Node.Id {
+		reads = append(reads, &read{scid: r.TargetChannel.ShortChannelId, peer: r.TargetChannel.Source})
+	} else {
+		r.QueueLock.Lock()
+		for i := 0; i < r.Candidates.Len(); i++ {
+			c := r.Candidates.At(i)
+			reads = append(reads, &read{scid: c.ShortChannelId, peer: c.Source})
+		}
+		r.QueueLock.Unlock()
+	}
+	forwards, since := r.readForwards(), r.earnSince
+	slots := make(chan struct{}, FORWARD_READS)
+	var wg sync.WaitGroup
+	for _, rd := range reads {
+		wg.Add(1)
+		go func(rd *read) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			rd.ppm, rd.volume, rd.err = forwards(rd.scid, since)
+		}(rd)
+	}
+	wg.Wait()
+	for _, rd := range reads {
+		r.keepEarning(rd.scid, rd.peer, rd.ppm, rd.volume, rd.err)
+	}
 }
