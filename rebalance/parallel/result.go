@@ -965,16 +965,18 @@ func (r *AbstractRebalance) probeSize() uint64 {
 }
 
 // priceHeld says whether a failed split shows that its run's maxppm held it
-// back, so that a higher one may let it through: payments failed on the way
-// (the routes within the limit had no liquidity), every route found cost
-// more, or the in-peer alone did. A split held by a limit of its own
-// (feeratio, below maxppm: a higher maxppm does not raise it), or that tried
-// nothing (depleted, disconnected, refused by the target), does not.
+// back, so that a higher one may let it through: payments failed in the
+// middle of their routes (the routes within the limit did not work: others
+// may), every route found cost more, or the in-peer alone did. A split with
+// a limit of its own (feeratio, below maxppm: a higher maxppm does not raise
+// it), one whose payments failed only at our peers (no route avoids them),
+// or one that tried nothing (depleted, disconnected, refused by the target)
+// does not.
 func priceHeld(res *rebalance.Result) bool {
-	if res.CheapestPPM > 0 && !res.HeldByOwnLimit || res.InOverMax {
-		return true // above the run's maxppm, whatever the split's own limit
+	if res.OwnLimit {
+		return false
 	}
-	return len(res.FailedNodes) > 0 && !res.OwnLimit
+	return res.CheapestPPM > 0 || res.InOverMax || res.MiddleFailures > 0
 }
 
 // nextStep is the next round's limit, whether it is a probe, and whether to

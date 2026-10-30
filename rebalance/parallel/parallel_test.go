@@ -218,6 +218,9 @@ type fakeSplits struct {
 	fee func(call int, delivered uint64) uint64
 	// failedNodes gives, for a call, the payments each node failed
 	failedNodes func(call int) map[string]int
+	// middle is how many payments of a failed split failed in the middle of
+	// their routes
+	middle int
 	// failureDelay gives how long a failing call takes (default none)
 	failureDelay func(call int) time.Duration
 	// fired, if set, is called as each split is fired, before it counts as
@@ -267,6 +270,7 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	}
 	if f.held != nil {
 		result.HeldByOwnLimit = f.held(f.calls - 1)
+		result.OwnLimit = result.HeldByOwnLimit // a limit of its own, below the run's
 	}
 	if f.halted != nil && f.halted(f.calls-1) {
 		result.Halted = true
@@ -275,6 +279,7 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 	if f.failedNodes != nil {
 		result.FailedNodes = f.failedNodes(f.calls - 1)
 	}
+	result.MiddleFailures = f.middle
 	if delivered > 0 {
 		cheapest, failed := result.CheapestPPM, result.FailedNodes
 		result = rebalance.NewResult("success", delivered/1000, candidate.Destination, "02target")
@@ -1879,10 +1884,11 @@ func TestSteppingUpTheFee(t *testing.T) {
 		assert.Equal(t, uint64(1450), res.RoundHistory[2].MaxPPM, "1390 + 150, capped at 1450")
 	}
 
-	// payments that failed on the way (no liquidity on the routes within
-	// maxppm): a step up may find others
+	// payments that failed in the middle of their routes (the routes within
+	// maxppm did not work): a step up may find others
 	f = splitsOn(t, 2, routesFrom(1300))
 	f.failedNodes = func(int) map[string]int { return map[string]int{"02middle": 3} }
+	f.middle = 3
 	f.splits, f.amount, f.maxPPM = 1, 300000000, 1100
 	f.stepPPM, f.capPPM, f.probeMsat = 300, 1700, 100000000
 	f.retryEvery, f.maxTime = time.Hour, 5*time.Second
@@ -1901,6 +1907,9 @@ func TestSteppingUpTheFee(t *testing.T) {
 	for name, fail := range map[string]func(*fakeSplits){
 		"our channels": func(f *fakeSplits) {
 			f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideOut, rebalance.RetryNo }
+		},
+		"payments failed only at our peers": func(f *fakeSplits) {
+			f.failedNodes = func(int) map[string]int { return map[string]int{"02peer0": 5} }
 		},
 		"held by its own limit": func(f *fakeSplits) {
 			// the cheapest route within the run's maxppm, above the split's
@@ -1967,10 +1976,12 @@ func TestPriceHeld(t *testing.T) {
 		{"nothing tried", rebalance.Result{}, false},
 		{"every route above maxppm", rebalance.Result{CheapestPPM: 1300}, true},
 		{"a route within maxppm, above its own limit", rebalance.Result{CheapestPPM: 900, HeldByOwnLimit: true, OwnLimit: true}, false},
-		{"above the run's maxppm, with a limit of its own", rebalance.Result{CheapestPPM: 1300, OwnLimit: true}, true},
+		{"above the run's maxppm, with a lower limit of its own", rebalance.Result{CheapestPPM: 1300, OwnLimit: true}, false},
 		{"the in-peer above maxppm", rebalance.Result{InOverMax: true}, true},
-		{"payments failed on the way", rebalance.Result{FailedNodes: map[string]int{"02x": 1}}, true},
-		{"failed on the way, within its own limit", rebalance.Result{FailedNodes: map[string]int{"02x": 1}, OwnLimit: true}, false},
+		{"the in-peer above maxppm, with a lower limit of its own", rebalance.Result{InOverMax: true, OwnLimit: true}, false},
+		{"payments failed in the middle", rebalance.Result{FailedNodes: map[string]int{"02x": 1}, MiddleFailures: 1}, true},
+		{"payments failed only at our peers", rebalance.Result{FailedNodes: map[string]int{"02outpeer": 5}}, false},
+		{"failed in the middle, within its own limit", rebalance.Result{MiddleFailures: 1, OwnLimit: true}, false},
 	} {
 		assert.Equal(t, c.want, priceHeld(&c.res), c.name)
 	}

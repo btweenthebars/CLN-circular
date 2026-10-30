@@ -611,7 +611,25 @@ func TestFailuresAreCountedByNode(t *testing.T) {
 	assert.Equal(t, "success", result.Status, result.Message)
 	assert.Equal(t, 3, len(n.paid))
 	assert.Equal(t, map[string]int{"02a": 1, outP: 1}, result.FailedNodes)
+	assert.Equal(t, 1, result.MiddleFailures, "02a's, not the out-peer's")
 	assert.Equal(t, int64(3), r.Sent.Load(), "each payment counted as it is sent")
+	// run again (the route that worked first): its counts start over
+	result = r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	assert.Empty(t, result.FailedNodes)
+	assert.Zero(t, result.MiddleFailures)
+
+	// none of the middle nodes can forward: a failure that counts them
+	n, out, in = network()
+	for _, c := range [][2]string{{"3x1x1", "02a"}, {"5x1x1", "02b"}, {"7x1x1", "02c"}} {
+		n.liquidity[id(c[0], c[1], inP)] = 0
+	}
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 3
+	result = r.Run()
+	assert.Equal(t, "failure", result.Status)
+	assert.Equal(t, 3, len(n.paid))
+	assert.Equal(t, 3, result.MiddleFailures)
 
 	// the in-peer cannot send to us over our channel: not its failure
 	n, out, in = network()
@@ -622,6 +640,7 @@ func TestFailuresAreCountedByNode(t *testing.T) {
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, 1, len(n.paid))
 	assert.Empty(t, result.FailedNodes)
+	assert.Zero(t, result.MiddleFailures)
 
 	// our own node, or a node that is not on the route: not counted either
 	for _, erring := range []*glightning.PaymentErrorData{
@@ -639,5 +658,6 @@ func TestFailuresAreCountedByNode(t *testing.T) {
 		assert.Equal(t, "failure", result.Status)
 		assert.Equal(t, 1, len(n.paid))
 		assert.Empty(t, result.FailedNodes, erring.ErringNode)
+		assert.Zero(t, result.MiddleFailures, erring.ErringNode)
 	}
 }

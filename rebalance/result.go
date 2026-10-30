@@ -42,6 +42,9 @@ type Result struct {
 	// FailedNodes counts, per node, the payments it failed, leaving out
 	// failures on our own channels
 	FailedNodes map[string]int `json:"-"`
+	// MiddleFailures counts the payments that failed at a node in the
+	// middle of their route, neither our out-peer nor our in-peer
+	MiddleFailures int `json:"-"`
 }
 
 func NewResult(status string, amount uint64, src, dst string) *Result {

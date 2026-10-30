@@ -103,6 +103,9 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 			r.failedAt = map[string]int{}
 		}
 		r.failedAt[failure.ErringNode]++
+		if k > 1 {
+			r.midFailures++ // past our out-peer
+		}
 	}
 
 	// The channels before it carried the payment, so they hold at least that much.

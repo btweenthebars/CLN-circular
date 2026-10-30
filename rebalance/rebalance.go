@@ -71,6 +71,10 @@ type Rebalance struct {
 	failedAt map[string]int
 	// payments counts the payments this run sent
 	payments int
+	// midFailures counts the payments of this run that failed at a node in
+	// the middle of their route, neither our out-peer nor our in-peer
+	// (Result.MiddleFailures)
+	midFailures int
 }
 
 // errOwnLimit marks the in-peer charging more than a split's own feeratio
@@ -149,7 +153,7 @@ func (r *Rebalance) Run() *Result {
 	defer func() { r.Amount = requested }()
 	r.nodeFailures = map[string]int{}
 	r.failedAt = map[string]int{}
-	r.payments = 0
+	r.payments, r.midFailures = 0, 0
 
 	// a route that worked before needs no search
 	known := r.knownRoute(exclude)
@@ -195,7 +199,7 @@ func (r *Rebalance) Run() *Result {
 		// Success
 		if err == nil && result != nil {
 			result.Attempts = uint64(r.payments)
-			result.FailedNodes = r.failedAt
+			result.FailedNodes, result.MiddleFailures = r.failedAt, r.midFailures
 			r.Node.Logln(glightning.Info, result.Message)
 			if result.Route != nil {
 				r.Node.Logln(glightning.Info, "\n"+result.Route.String())
@@ -236,7 +240,7 @@ func (r *Rebalance) Run() *Result {
 	r.Amount = requested
 	failure := NewResult("failure", r.Amount/1000, r.OutChannel.Destination, r.InChannel.Source)
 	failure.Attempts = uint64(r.payments)
-	failure.FailedNodes = r.failedAt
+	failure.FailedNodes, failure.MiddleFailures = r.failedAt, r.midFailures
 	failure.FailedAt, failure.Retry = failureSide(lastErr)
 	failure.Precheck = isPrecheck(lastErr)
 	failure.Halted = errors.Is(lastErr, errRunStopped)
