@@ -95,6 +95,10 @@ type Result struct {
 	// own limit where maxppm would have let them go on
 	FeeratioSkipped int `json:"feeratio_skipped,omitempty"`
 	FeeratioHeld    int `json:"feeratio_held,omitempty"`
+	// Rounds, in slow mode (retryevery), is how many rounds the run fired,
+	// and LastRound why the last one that fell short did
+	Rounds    int    `json:"rounds,omitempty"`
+	LastRound string `json:"last_round,omitempty"`
 	// WorstNodes are the nodes that failed the most of the run's payments,
 	// most first, at most WORST_NODES of them; failures on our own channels
 	// are not counted
@@ -169,10 +173,22 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		deadline = timer.C
 	}
 
+	for r.rounds = 1; ; r.rounds++ {
+		r.waitForRound(start, progress.C, deadline)
+		if !r.anotherRound(start, progress.C, deadline) {
+			break
+		}
+	}
+	return r.endRun(start)
+}
+
+// waitForRound waits for the results of a round's splits, firing more as
+// they come back, until none is in flight.
+func (r *AbstractRebalance) waitForRound(start time.Time, tick, deadline <-chan time.Time) {
 	// while there's something inflight, wait for results
 	for r.splitsInFlight > 0 {
 		r.Node.Logln(glightning.Debug, "Waiting for result, InFlightAmount:", r.InFlightAmount)
-		rebalanceResult := r.nextResult(start, progress.C, deadline)
+		rebalanceResult := r.nextResult(start, tick, deadline)
 
 		r.TotalAttempts += rebalanceResult.Attempts
 		r.countFailedNodes(rebalanceResult)
@@ -221,9 +237,16 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 		// now that we had a result, we can fire more candidates
 		r.FireCandidates()
 	}
+}
 
+// endRun completes the run's result once nothing is in flight and no other
+// round follows.
+func (r *AbstractRebalance) endRun(start time.Time) (jrpc2.Result, error) {
 	// rebalance is over
 	r.Result.Attempts = r.TotalAttempts
+	if r.retryEvery > 0 {
+		r.Result.Rounds = r.rounds
+	}
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
 	r.Result.FeeratioSkipped = len(r.feeratioSkipped)
@@ -796,8 +819,116 @@ func (r *AbstractRebalance) progress(start time.Time) string {
 		line += fmt.Sprintf(", avg %d ppm", avgPPM(r.Result.FeesPaidMsat, r.movedMsat))
 	}
 	line += fmt.Sprintf(", %d splits in flight", inFlight)
+	if r.retryEvery > 0 {
+		line += fmt.Sprintf(", round %d", r.rounds)
+	}
 	if r.failStreak > 0 {
 		line += fmt.Sprintf(", %d payments failed in a row", r.failStreak)
 	}
 	return line
+}
+
+// DEFAULT_SLOW_MAXTIME is the time limit of a run in slow mode that has none
+// of its own; MIN_RETRY_EVERY the shortest wait between its rounds.
+const (
+	DEFAULT_SLOW_MAXTIME = 6 * time.Hour
+	MIN_RETRY_EVERY      = time.Minute
+)
+
+// setRetryEvery turns slow mode on with a wait of seconds between rounds
+// (0 or less: off; at least MIN_RETRY_EVERY), with a time limit of
+// DEFAULT_SLOW_MAXTIME if the run has none. Call after setMaxTime.
+func (r *AbstractRebalance) setRetryEvery(seconds int) {
+	r.retryEvery = 0
+	if seconds <= 0 {
+		return
+	}
+	r.retryEvery = time.Duration(seconds) * time.Second
+	if r.retryEvery < MIN_RETRY_EVERY {
+		r.retryEvery = MIN_RETRY_EVERY
+	}
+	if r.maxTime <= 0 {
+		r.maxTime = DEFAULT_SLOW_MAXTIME
+	}
+}
+
+// anotherRound, in slow mode, decides whether a round that fell short is
+// followed by another: not if the target was reached, or the run hit its
+// time limit or fee budget, or circular-stop holds it. If so, it waits
+// retryEvery (logging progress; the time limit or circular-stop during the
+// wait end the run instead), then starts the next round.
+func (r *AbstractRebalance) anotherRound(start time.Time, tick, deadline <-chan time.Time) bool {
+	if r.retryEvery <= 0 || r.AmountRebalanced >= r.amount || r.timeStopped || r.feeStopped ||
+		r.held() || r.Node.Stopped.Load() {
+		return false
+	}
+	why := r.firstStop
+	if why == "" {
+		why = r.ranOut()
+	}
+	r.Result.LastRound = why
+	r.Node.Logf(glightning.Info, "%s: round %d: %s; next round in %s",
+		r.progress(start), r.rounds, why, r.retryEvery)
+	if !r.waitRetry(start, tick, deadline) {
+		return false
+	}
+	r.newRound()
+	return true
+}
+
+// waitRetry waits retryEvery before another round: false if the run's time
+// limit or circular-stop comes first.
+func (r *AbstractRebalance) waitRetry(start time.Time, tick, deadline <-chan time.Time) bool {
+	next := time.NewTimer(r.retryEvery)
+	defer next.Stop()
+	poll := r.retryEvery / 20
+	if poll > time.Second {
+		poll = time.Second
+	}
+	stopped := time.NewTicker(poll)
+	defer stopped.Stop()
+	for {
+		select {
+		case <-next.C:
+			return true
+		case <-tick:
+			r.Node.Logln(glightning.Info, r.progress(start)+", waiting for the next round")
+		case <-deadline:
+			// that, not the last round's stop, is why the run ends (the
+			// latter is in last_round)
+			r.firstStop, r.Result.Stopped = "", ""
+			r.timeUp()
+			return false
+		case <-stopped.C:
+			if r.Node.Stopped.Load() {
+				r.firstStop, r.Result.Stopped = "", ""
+				r.heldByStop = true // said at the end of the run
+				return false
+			}
+		}
+	}
+}
+
+// newRound clears what a round decided about the run, finds the candidates
+// again (their balances may have changed), and fires the next round's
+// splits. What moved, was paid and was learned is kept.
+func (r *AbstractRebalance) newRound() {
+	r.failStreak, r.streakStopped, r.targetStopped = 0, false, false
+	r.halt.Store(false)
+	r.firstStop, r.Result.Stopped = "", ""
+	r.gone = nil
+	r.retried = map[string]bool{}
+	r.targetCap, r.capSuccesses, r.capSetAt, r.probing, r.probeSeq, r.capBackoff = 0, 0, 0, false, 0, 0
+	r.busyRefusals = nil
+	r.targetRechecked, r.refusedAlone = false, ""
+	r.earnings = nil // what channels earned may have changed: read again (the node caches it)
+	find := r.refind
+	if find == nil {
+		find = func() error { return r.FindCandidates(r.excludePeer) }
+	}
+	if err := find(); err != nil {
+		r.Node.Logln(glightning.Unusual, "round ", r.rounds+1, ": unable to find the candidates again: ", err)
+	}
+	r.prefetchEarnings()
+	r.FireCandidates()
 }

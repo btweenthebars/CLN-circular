@@ -1607,3 +1607,142 @@ func TestRunNodeDefaults(t *testing.T) {
 	assert.True(t, streak(-1, 100), "the call's own limit wins")
 	assert.False(t, streak(0, 0), "the built-in 300")
 }
+
+// refillQueue puts candidates back for a slow-mode round, as FindCandidates
+// would.
+func refillQueue(f *fakeSplits, candidates int) func() error {
+	return func() error {
+		f.QueueLock.Lock()
+		defer f.QueueLock.Unlock()
+		f.Candidates = deque.New[*graph.Channel]()
+		for i := 0; i < candidates; i++ {
+			c, _ := f.Node.Graph.GetChannel(fmt.Sprintf("%dx1x1/0", i+1))
+			f.Candidates.PushBack(c)
+		}
+		return nil
+	}
+}
+
+// A run that found no route within maxppm gave up at once, though routes
+// and fees change through the day. In slow mode it waits and tries again,
+// round after round, until its target, time limit, fee budget or
+// circular-stop.
+func TestSlowMode(t *testing.T) {
+	// round 1: every candidate fails; round 2: the target is reached
+	f := splitsOn(t, 3, func(call int, amount uint64) uint64 {
+		if call < 3 {
+			return 0
+		}
+		return amount
+	})
+	f.splits, f.amount = 1, 200000000
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 3)
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	assert.Equal(t, 2, res.Rounds)
+	assert.Equal(t, uint64(200000), res.RebalancedAmount)
+	assert.Empty(t, res.Stopped)
+	assert.Equal(t, 5, len(f.asked))
+	assert.Equal(t, 3, res.SplitsFailed, "totals across rounds")
+
+	// never: rounds until the time limit
+	f = splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 200*time.Millisecond
+	f.refind = refillQueue(f, 2)
+	begin := time.Now()
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	res = result.(*Result)
+	assert.Less(t, time.Since(begin), 2*time.Second)
+	assert.GreaterOrEqual(t, res.Rounds, 2)
+	assert.Contains(t, res.Stopped, "time limit")
+	assert.Equal(t, 2*res.Rounds, len(f.asked), "each round tries every candidate once")
+
+	// the fee budget ends it: no other round
+	f = splitsOn(t, 2, func(_ int, amount uint64) uint64 { return amount })
+	f.maxPPM = 100
+	f.setMaxFee(5)
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 2)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, result.(*Result).Rounds)
+	assert.Contains(t, result.(*Result).Stopped, "fee budget")
+
+	// circular-stop while it waits: it ends, and says so
+	f = splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
+	f.retryEvery, f.maxTime = 300*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 1)
+	go func(n *node.Node) {
+		time.Sleep(50 * time.Millisecond)
+		n.Stopped.Store(true)
+	}(f.Node)
+	begin = time.Now()
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Less(t, time.Since(begin), 280*time.Millisecond, "not the whole wait")
+	assert.Equal(t, 1, result.(*Result).Rounds)
+	assert.Equal(t, "circular was stopped (circular-stop): firing no more splits", result.(*Result).Stopped)
+
+	// a round the fail streak stopped is followed by one that fires again
+	f = splitsOn(t, 3, func(call int, amount uint64) uint64 {
+		if call < 2 {
+			return 0
+		}
+		return amount
+	})
+	f.splits, f.amount, f.payments, f.maxFailStreak = 1, 100000000, 100, 150
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 3)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	res = result.(*Result)
+	assert.Equal(t, uint64(100000), res.RebalancedAmount, "round 2 fired")
+	assert.Equal(t, 2, res.Rounds)
+	assert.Contains(t, res.LastRound, "maxfailstreak 150")
+	assert.Empty(t, res.Stopped)
+
+	// the time limit while it waits after such a round: that ends the run,
+	// and the round's own stop is in last_round
+	f = splitsOn(t, 3, func(int, uint64) uint64 { return 0 })
+	f.splits, f.payments, f.maxFailStreak = 1, 100, 150
+	f.retryEvery, f.maxTime = 150*time.Millisecond, 100*time.Millisecond
+	f.refind = refillQueue(f, 3)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	res = result.(*Result)
+	assert.Equal(t, 1, res.Rounds)
+	assert.Contains(t, res.Stopped, "time limit")
+	assert.Contains(t, res.LastRound, "maxfailstreak 150")
+
+	// without slow mode: one round, no rounds field
+	f = splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	out, _ := json.Marshal(result)
+	assert.NotContains(t, string(out), "rounds")
+	assert.Equal(t, 1, len(f.asked))
+}
+
+func TestSetRetryEvery(t *testing.T) {
+	a := &AbstractRebalance{}
+	a.setRetryEvery(0)
+	assert.Equal(t, time.Duration(0), a.retryEvery)
+	assert.Equal(t, time.Duration(0), a.maxTime)
+	a.setRetryEvery(30)
+	assert.Equal(t, MIN_RETRY_EVERY, a.retryEvery)
+	assert.Equal(t, DEFAULT_SLOW_MAXTIME, a.maxTime, "slow mode always ends")
+	a = &AbstractRebalance{maxTime: time.Hour}
+	a.setRetryEvery(600)
+	assert.Equal(t, 10*time.Minute, a.retryEvery)
+	assert.Equal(t, time.Hour, a.maxTime)
+}

@@ -30,9 +30,10 @@ type RebalancePush struct {
 	MaxNodeFails    int      `json:"maxnodefails,omitempty"`
 	MaxFailStreak   int      `json:"maxfailstreak,omitempty"`
 	RiskPPM         int      `json:"riskppm,omitempty"`
-	MaxTime         int      `json:"maxtime,omitempty"`  // seconds; 0: the node's default (circular-max-time); below 0: no limit
-	MaxFee          int      `json:"maxfee,omitempty"`   // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
-	FeeRatio        float64  `json:"feeratio,omitempty"` // splits pay at most this share of what the filled channel earns, less our fee on the drained one; 0: circular-fee-ratio; below 0: off
+	MaxTime         int      `json:"maxtime,omitempty"`    // seconds; 0: the node's default (circular-max-time); below 0: no limit
+	MaxFee          int      `json:"maxfee,omitempty"`     // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
+	FeeRatio        float64  `json:"feeratio,omitempty"`   // splits pay at most this share of what the filled channel earns, less our fee on the drained one; 0: circular-fee-ratio; below 0: off
+	RetryEvery      int      `json:"retryevery,omitempty"` // seconds; slow mode: when a round falls short, wait this long and try again (min 60; maxtime 6h if none)
 	AbstractRebalance
 }
 
@@ -66,6 +67,7 @@ func (r *RebalancePush) prepare() error {
 	r.setMaxTime(r.MaxTime)
 	r.setMaxFee(r.MaxFee)
 	r.setFeeRatio(r.FeeRatio)
+	r.setRetryEvery(r.RetryEvery)
 
 	r.CandidatesList = r.InList
 	if r.CandidatesList != nil {
@@ -86,7 +88,8 @@ func (r *RebalancePush) prepare() error {
 	}
 	r.TargetChannel = outgoingChannel
 
-	if err = r.FindCandidates(r.TargetChannel.Destination); err != nil {
+	r.excludePeer = r.TargetChannel.Destination
+	if err = r.FindCandidates(r.excludePeer); err != nil {
 		return err
 	}
 	r.prefetchEarnings()

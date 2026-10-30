@@ -135,6 +135,15 @@ type AbstractRebalance struct {
 	// refresh reads our channels with peers again; tests replace
 	// Node.RefreshPeerChannels with it
 	refresh func(peerIds ...string) error
+	// retryEvery (slow mode; 0: off): when a round falls short, the run
+	// waits this long and fires another, until its target, maxTime, its fee
+	// budget or circular-stop. rounds counts them. refind finds the
+	// candidates again for a new round (FindCandidates; tests replace it),
+	// skipping excludePeer, the target's peer.
+	retryEvery  time.Duration
+	rounds      int
+	refind      func() error
+	excludePeer string
 	RebalanceMethods
 }
 
