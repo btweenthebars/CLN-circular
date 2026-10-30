@@ -49,14 +49,14 @@ func (r *Rebalance) checkLiquidity(inChannel, outChannel *glightning.PeerChannel
 	return nil
 }
 
-// checkFirstHop checks that our out channel can send what the route's first
-// hop carries: the amount plus the fees of the hops after it.
 // SetPay makes the rebalance send its payments with pay instead of through
 // lightningd (tests of the runs that split it into rebalances).
 func (r *Rebalance) SetPay(pay func(route *graph.Route) (*graph.PrettyRoute, error)) {
 	r.pay = pay
 }
 
+// checkFirstHop checks that our out channel can send what the route's first
+// hop carries: the amount plus the fees of the hops after it.
 func (r *Rebalance) checkFirstHop(route *graph.Route) error {
 	outChannel, err := r.Node.GetPeerChannelFromGraphChannel(r.OutChannel)
 	if err != nil {
