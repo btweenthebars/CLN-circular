@@ -53,6 +53,7 @@ func TestSplitEconomics(t *testing.T) {
 	a.forwards = fw.read
 
 	assert.Equal(t, uint64(1000), a.splitEconomics(cheap).limit, "no fee ratio: maxppm")
+	assert.Zero(t, a.splitEconomics(cheap).most, "no fee ratio: no bound")
 
 	a.feeRatio = 0.8
 	e := a.splitEconomics(cheap)
@@ -60,11 +61,20 @@ func TestSplitEconomics(t *testing.T) {
 	assert.Equal(t, earning{ppm: 500, basis: "earned"}, e.earn)
 	assert.Equal(t, uint64(100), e.drain)
 	assert.Equal(t, "the filled channel earns 500 ppm (earned), the drained one charges 100 ppm: limit 300 ppm", e.String())
+	assert.Equal(t, uint64(300), e.most)
 	assert.Equal(t, uint64(0), a.splitEconomics(dear).limit, "0.8 × 500 − 450 < 1: not worth it")
+	assert.Zero(t, a.splitEconomics(dear).most)
 	assert.Equal(t, 1, fw.reads["9x1x1"], "the target's forwards read once")
 
 	a.maxPPM = 200
 	assert.Equal(t, uint64(200), a.splitEconomics(cheap).limit, "never above maxppm")
+	assert.Equal(t, uint64(300), a.splitEconomics(cheap).most, "what it could pay at a higher maxppm")
+
+	// the round keeps the highest limit and the most its splits could pay
+	a.roundTopLimit, a.roundMost = 0, 0
+	a.newSplit(cheap, target, cheap, 100000000)
+	assert.Equal(t, uint64(200), a.roundTopLimit)
+	assert.Equal(t, uint64(300), a.roundMost)
 
 	// a split is fired with its limit, and the run's other settings
 	a.maxPPM, a.minSplit, a.maxNodeFails, a.riskPPM = 1000, 50000000, 7, -1

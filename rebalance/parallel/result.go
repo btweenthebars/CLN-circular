@@ -843,6 +843,9 @@ func (r *AbstractRebalance) progress(start time.Time) string {
 			if r.stepProbe {
 				line += " (probe)"
 			}
+			if held := r.heldLimit(); held > 0 {
+				line += fmt.Sprintf(", splits held to %d ppm by feeratio", held)
+			}
 		}
 	}
 	if r.failStreak > 0 {
@@ -894,10 +897,16 @@ func (r *AbstractRebalance) anotherRound(start time.Time, tick, deadline <-chan 
 		if why == "" {
 			why = r.ranOut()
 		}
+		if held := r.heldLimit(); held > 0 {
+			why += fmt.Sprintf("; feeratio held its splits to at most %d ppm", held)
+		}
 		r.Result.LastRound = why // it fell short
 	}
 	price, probe, wait := r.nextStep()
 	next := fmt.Sprintf("next round at %d ppm", price)
+	if r.stepPPM > 0 && price == r.stepCap() && price < r.capPPM {
+		next += " (the most its splits can pay at feeratio)"
+	}
 	if probe {
 		next += fmt.Sprintf(", probing %d sats", r.probeSize()/1000)
 	}
@@ -924,6 +933,9 @@ type RoundInfo struct {
 	PaidPPM    uint64 `json:"paid_ppm,omitempty"`
 	MaxPaidPPM uint64 `json:"max_paid_ppm,omitempty"`
 	Probe      bool   `json:"probe,omitempty"`
+	// LimitPPM: feeratio held every split of the round below its maxppm, to
+	// at most this
+	LimitPPM uint64 `json:"limit_ppm,omitempty"`
 }
 
 // roundGoal is what this round fires up to: the run's amount, or a probe's
@@ -944,7 +956,7 @@ func (r *AbstractRebalance) closeRound() {
 	r.history = append(r.history, &RoundInfo{Round: r.rounds, MaxPPM: r.maxPPM,
 		Asked: (r.roundGoal() - r.roundStartMoved) / 1000, Moved: moved / 1000,
 		PaidPPM: avgPPM(r.Result.FeesPaidMsat-r.roundStartFees, moved), MaxPaidPPM: r.roundMaxPaid,
-		Probe: r.stepProbe})
+		Probe: r.stepProbe, LimitPPM: r.heldLimit()})
 }
 
 // probeSize is what a stepped-up round tries: probeMsat, or 20% of what is
@@ -992,11 +1004,12 @@ func (r *AbstractRebalance) nextStep() (uint64, bool, bool) {
 		return r.maxPPM, false, true
 	}
 	moved := r.AmountRebalanced - r.roundStartMoved
+	limit := r.stepCap()
 	switch {
 	case moved > 0 && r.stepProbe:
 		price := r.roundMaxPaid + r.stepPPM/2
-		if price > r.capPPM {
-			price = r.capPPM
+		if price > limit {
+			price = limit
 		}
 		if price == 0 {
 			price = r.maxPPM
@@ -1007,14 +1020,33 @@ func (r *AbstractRebalance) nextStep() (uint64, bool, bool) {
 	case !r.roundPriced:
 		// not the price: the same round again, after the wait
 		return r.maxPPM, r.stepProbe, true
-	case r.maxPPM < r.capPPM:
+	case r.maxPPM < limit:
 		price := r.maxPPM + r.stepPPM
-		if price > r.capPPM {
-			price = r.capPPM
+		if price > limit {
+			price = limit
 		}
 		return price, true, false
 	}
-	return r.capPPM, true, true
+	return r.maxPPM, true, true // at the cap: probe again after the wait
+}
+
+// stepCap is the highest maxppm stepping goes to: capppm or, with a fee
+// ratio, the most any split of the round could pay (roundMost) if lower:
+// above it, no split's limit rises.
+func (r *AbstractRebalance) stepCap() uint64 {
+	if r.roundMost > 0 && r.roundMost < r.capPPM {
+		return r.roundMost
+	}
+	return r.capPPM
+}
+
+// heldLimit is the highest limit a split of the round had when a fee ratio
+// held them all below the round's maxppm; 0 otherwise.
+func (r *AbstractRebalance) heldLimit() uint64 {
+	if r.roundTopLimit > 0 && r.roundTopLimit < r.maxPPM {
+		return r.roundTopLimit
+	}
+	return 0
 }
 
 // setStepping turns the step-up on: stepppm per round up to capppm (which
@@ -1083,6 +1115,7 @@ func (r *AbstractRebalance) newRound(price uint64, probe bool) {
 		r.roundGoalMsat = r.AmountRebalanced + r.probeSize()
 	}
 	r.roundStartMoved, r.roundStartFees, r.roundMaxPaid = r.AmountRebalanced, r.Result.FeesPaidMsat, 0
+	r.roundTopLimit, r.roundMost = 0, 0
 	r.roundPriced = false // the refind below may set it (circular-push)
 	r.failStreak, r.streakStopped, r.targetStopped = 0, false, false
 	r.halt.Store(false)

@@ -12,6 +12,10 @@ import (
 	"github.com/elementsproject/glightning/glightning"
 )
 
+// MAX_PPM_LIMIT bounds what a fee ratio can come to (a channel that earned
+// at an absurd rate)
+const MAX_PPM_LIMIT = 1000000000
+
 // notWorthIt is why a candidate is skipped when, at the run's feeratio, what
 // the filled channel earns does not cover our fee on the drained one.
 const notWorthIt = "not worth it at feeratio"
@@ -29,6 +33,10 @@ type economics struct {
 	limit uint64 // ppm; 0: not worth it
 	earn  earning
 	drain uint64 // our fee on the drained channel, ppm
+	// most is, with a fee ratio, the most a split over the candidate could
+	// pay at any maxppm (ratio × earned − drain; limit is it, capped at
+	// maxppm); 0 without a ratio, or when not worth it
+	most uint64
 }
 
 func (e economics) String() string {
@@ -119,11 +127,15 @@ func (r *AbstractRebalance) splitEconomics(candidate *graph.Channel) economics {
 	limit := r.feeRatio*float64(e.earn.ppm) - float64(e.drain)
 	switch {
 	case !(limit >= 1): // NaN too
-		e.limit = 0
-	case limit >= float64(r.maxPPM):
-		e.limit = r.maxPPM
+		return e
+	case limit > MAX_PPM_LIMIT:
+		e.most = MAX_PPM_LIMIT
 	default:
-		e.limit = uint64(limit)
+		e.most = uint64(limit)
+	}
+	e.limit = e.most
+	if e.limit > r.maxPPM {
+		e.limit = r.maxPPM
 	}
 	return e
 }

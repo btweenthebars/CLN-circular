@@ -163,6 +163,12 @@ type AbstractRebalance struct {
 	// pay, when set, sends every split's payments instead of lightningd
 	// (tests)
 	pay func(route *graph.Route) (*graph.PrettyRoute, error)
+	// roundTopLimit is the highest limit a split of this round had (below
+	// maxPPM when a fee ratio held them all lower); roundMost, with a fee
+	// ratio, the most any of them could pay at any maxppm (economics.most):
+	// stepping goes no higher
+	roundTopLimit uint64
+	roundMost     uint64
 	// roundPriced: something in this round shows its maxppm held it back
 	// (priceHeld; in circular-push, a candidate left out for its peer's
 	// fee): only then does a round that moved nothing step the price up
@@ -229,7 +235,14 @@ func (r *AbstractRebalance) launch(out, in, candidate *graph.Channel, amount uin
 // candidate: with the run's settings, and with a fee ratio, the most the
 // candidate's economics allow.
 func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount uint64) *rebalance2.Rebalance {
-	limit := r.splitEconomics(candidate).limit
+	e := r.splitEconomics(candidate)
+	limit := e.limit
+	if limit > r.roundTopLimit {
+		r.roundTopLimit = limit
+	}
+	if e.most > r.roundMost {
+		r.roundMost = e.most
+	}
 	rebalance := rebalance2.NewRebalance(out, in, amount, limit, r.attempts, r.maxHops)
 	if r.feeRatio > 0 && limit < r.maxPPM {
 		rebalance.RunMaxPPM = r.maxPPM

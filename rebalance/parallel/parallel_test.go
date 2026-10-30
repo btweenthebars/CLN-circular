@@ -1987,6 +1987,35 @@ func TestPriceHeld(t *testing.T) {
 	}
 }
 
+// With a fee ratio, stepping goes no higher than the most any split of the
+// round could pay, and waits there as at the cap.
+func TestStepCapAtTheFeeRatio(t *testing.T) {
+	a := &AbstractRebalance{maxPPM: 1100, stepPPM: 300, capPPM: 1700, roundPriced: true}
+	price, probe, wait := a.nextStep()
+	assert.Equal(t, []any{uint64(1400), true, false}, []any{price, probe, wait}, "no fee ratio: a step")
+	a.roundMost = 1274
+	price, probe, wait = a.nextStep()
+	assert.Equal(t, []any{uint64(1274), true, false}, []any{price, probe, wait}, "up to 1274, not 1400")
+	a.maxPPM, a.stepProbe = 1274, true
+	price, probe, wait = a.nextStep()
+	assert.Equal(t, []any{uint64(1274), true, true}, []any{price, probe, wait}, "there: probe again after the wait")
+	a.roundMost = 5000
+	price, _, _ = a.nextStep()
+	assert.Equal(t, uint64(1574), price, "above: capppm decides")
+
+	// a probe that moved: the rest at what it paid + half a step, no higher
+	a = &AbstractRebalance{maxPPM: 1274, stepPPM: 300, capPPM: 1700, stepProbe: true, roundMost: 1274,
+		roundMaxPaid: 1250, AmountRebalanced: 100000000}
+	price, probe, wait = a.nextStep()
+	assert.Equal(t, []any{uint64(1274), false, false}, []any{price, probe, wait})
+
+	// what a round reports: its splits' highest limit when below its maxppm
+	a = &AbstractRebalance{maxPPM: 1400, roundTopLimit: 1274}
+	assert.Equal(t, uint64(1274), a.heldLimit())
+	a.roundTopLimit = 1400
+	assert.Zero(t, a.heldLimit())
+}
+
 func TestSetStepping(t *testing.T) {
 	a := &AbstractRebalance{maxPPM: 1100}
 	assert.NoError(t, a.setStepping(0, 0, 0))
@@ -2170,12 +2199,63 @@ func TestSteppingWithRealSplits(t *testing.T) {
 		}
 	}
 
+	// feeratio 0.9 of a target that earned 1416 ppm: no split pays more than
+	// 1274, so a step goes there, not to 1400; a way at 1250 works there,
+	// and the rest goes at 1274 too
+	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 650, ppm2: 600})
+	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) { return 1416, 200000000, nil }
+	res = stepRun(t, r)
+	assert.Equal(t, uint64(300000), res.RebalancedAmount, res.Stopped)
+	got := []uint64{}
+	for _, h := range res.RoundHistory {
+		got = append(got, h.MaxPPM)
+	}
+	assert.Equal(t, []uint64{1100, 1274, 1274}, got)
+
+	// and when nothing goes through below that: it waits at 1274, and a
+	// round started above it says feeratio held its splits
+	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
+	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) { return 1416, 200000000, nil }
+	res = stepRun(t, r)
+	assert.Equal(t, uint64(0), res.RebalancedAmount)
+	if assert.GreaterOrEqual(t, len(res.RoundHistory), 3) {
+		for _, h := range res.RoundHistory[1:] {
+			assert.Equal(t, uint64(1274), h.MaxPPM, "no higher than its splits can pay")
+		}
+	}
+	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
+	r.maxPPM = 1400
+	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) { return 1416, 200000000, nil }
+	res = stepRun(t, r)
+	if assert.NotEmpty(t, res.RoundHistory) {
+		assert.Equal(t, uint64(1274), res.RoundHistory[0].LimitPPM, "held below its 1400")
+		assert.Equal(t, uint64(1400), res.RoundHistory[0].MaxPPM, "not priced: no step")
+	}
+	assert.Contains(t, res.LastRound, "feeratio held its splits to at most 1274 ppm")
+
+	// what a round reports is its own: the target's forwards are read again
+	// each round, and earned less (1000 ppm) after the first
+	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
+	reads := 0
+	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) {
+		reads++
+		if reads == 1 {
+			return 1416, 200000000, nil
+		}
+		return 1000, 200000000, nil
+	}
+	res = stepRun(t, r)
+	if assert.GreaterOrEqual(t, len(res.RoundHistory), 2) {
+		assert.Equal(t, uint64(1274), res.RoundHistory[1].MaxPPM)
+		assert.Equal(t, uint64(900), res.RoundHistory[1].LimitPPM, "0.9 × 1000, not round 1's 1100")
+	}
+
 	// the in-peer alone charges 1500 ppm: no route at 1100 or 1400, then
 	// at the cap a probe goes, and the rest at the cap (its rate + 150 is
 	// above it)
 	res = stepRun(t, stepPull(t, 1500, stepWay{via: "02a", ppm1: 50, ppm2: 50}))
 	assert.Equal(t, uint64(300000), res.RebalancedAmount, res.Stopped)
-	var got []uint64
+	got = nil
 	for _, h := range res.RoundHistory {
 		got = append(got, h.MaxPPM)
 	}
