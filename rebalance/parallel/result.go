@@ -787,6 +787,12 @@ func (r *AbstractRebalance) timeUp() {
 	}
 	r.timeStopped = true
 	r.halt.Store(true)
+	if r.retryEvery > 0 && r.firstStop != "" {
+		// in slow mode, the round's own stop would have led to another
+		// round: the time limit is what ends the run
+		r.Result.LastRound = r.firstStop
+		r.firstStop, r.Result.Stopped = "", ""
+	}
 	r.noteStop(fmt.Sprintf("the run reached its time limit (maxtime %.0fs): firing no more splits", r.maxTime.Seconds()))
 }
 
@@ -922,6 +928,11 @@ func (r *AbstractRebalance) newRound() {
 	r.busyRefusals = nil
 	r.targetRechecked, r.refusedAlone = false, ""
 	r.earnings = nil // what channels earned may have changed: read again (the node caches it)
+	if r.TargetChannel != nil {
+		if fresh, err := r.Node.Graph.GetChannel(candidateId(r.TargetChannel)); err == nil {
+			r.TargetChannel = fresh // its fees, as last read
+		}
+	}
 	find := r.refind
 	if find == nil {
 		find = func() error { return r.FindCandidates(r.excludePeer) }

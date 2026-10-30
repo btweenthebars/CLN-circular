@@ -7,6 +7,7 @@ import (
 	"circular/rebalance"
 	"circular/util"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/gammazero/deque"
@@ -1722,6 +1723,41 @@ func TestSlowMode(t *testing.T) {
 	assert.Equal(t, 1, res.Rounds)
 	assert.Contains(t, res.Stopped, "time limit")
 	assert.Contains(t, res.LastRound, "maxfailstreak 150")
+
+	// the time limit while a round's last split finishes, after the fail
+	// streak stopped the round: the time limit ended the run
+	f = splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.payments, f.maxFailStreak = 100, 100
+	f.retryEvery, f.maxTime = 50*time.Millisecond, 200*time.Millisecond
+	f.failureDelay = func(call int) time.Duration {
+		if call == 1 {
+			return 400 * time.Millisecond
+		}
+		return 0
+	}
+	f.refind = refillQueue(f, 2)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	res = result.(*Result)
+	assert.Equal(t, 1, res.Rounds)
+	assert.Contains(t, res.Stopped, "time limit")
+	assert.Contains(t, res.LastRound, "maxfailstreak 100")
+
+	// a round that finds no candidate fires nothing, and waits for the next
+	f = splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 150*time.Millisecond
+	f.refind = func() error {
+		f.Candidates = deque.New[*graph.Channel]()
+		return errors.New("no peers")
+	}
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	res = result.(*Result)
+	assert.Equal(t, 1, len(f.asked), "only round 1 had a candidate")
+	assert.GreaterOrEqual(t, res.Rounds, 2)
+	assert.Contains(t, res.Stopped, "time limit")
 
 	// without slow mode: one round, no rounds field
 	f = splitsOn(t, 1, func(int, uint64) uint64 { return 0 })
