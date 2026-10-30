@@ -36,7 +36,7 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 		if own {
 			return nil, fmt.Errorf("%w (%w)", err, errOwnLimit)
 		}
-		return nil, onIn(err, RetryNo)
+		return nil, onIn(inOverMax{err}, RetryNo)
 	}
 	route, err := r.Node.Graph.GetLikelyCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops, maxFee, r.riskPPM())
 	if err == util.ErrNoRoute {

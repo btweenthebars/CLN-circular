@@ -160,6 +160,10 @@ type AbstractRebalance struct {
 	roundStartFees  uint64
 	roundMaxPaid    uint64
 	history         []*RoundInfo
+	// roundPriced: something in this round shows its maxppm held it back
+	// (priceHeld; in circular-push, a candidate left out for its peer's
+	// fee): only then does a round that moved nothing step the price up
+	roundPriced bool
 	RebalanceMethods
 }
 

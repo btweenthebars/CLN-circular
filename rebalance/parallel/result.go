@@ -227,6 +227,9 @@ func (r *AbstractRebalance) waitForRound(start time.Time, tick, deadline <-chan 
 			if rebalanceResult.HeldByOwnLimit {
 				r.Result.FeeratioHeld++
 			}
+			if priceHeld(rebalanceResult) {
+				r.roundPriced = true
+			}
 			if p := rebalanceResult.CheapestPPM; p > 0 && (r.Result.CheapestPPMOverMax == 0 || p < r.Result.CheapestPPMOverMax) {
 				r.Result.CheapestPPMOverMax = p
 			}
@@ -961,13 +964,27 @@ func (r *AbstractRebalance) probeSize() uint64 {
 	return p
 }
 
+// priceHeld says whether a failed split shows that its run's maxppm held it
+// back, so that a higher one may let it through: payments failed on the way
+// (the routes within the limit had no liquidity), every route found cost
+// more, or the in-peer alone did. A split held by a limit of its own
+// (feeratio, below maxppm: a higher maxppm does not raise it), or that tried
+// nothing (depleted, disconnected, refused by the target), does not.
+func priceHeld(res *rebalance.Result) bool {
+	if res.CheapestPPM > 0 && !res.HeldByOwnLimit || res.InOverMax {
+		return true // above the run's maxppm, whatever the split's own limit
+	}
+	return len(res.FailedNodes) > 0 && !res.OwnLimit
+}
+
 // nextStep is the next round's limit, whether it is a probe, and whether to
 // wait retryEvery first. Without stepping: the same limit, after the wait.
 // With it: a probe that moved something sets the limit to the highest rate
 // it paid plus half a step, for the rest, at once; a round that moved
-// nothing is followed at once by a probe a step higher, or at the cap, by a
-// probe at the cap after the wait; a full round that moved some waits, at
-// the same limit.
+// nothing because of its price (roundPriced) is followed at once by a probe
+// a step higher, or at the cap, by a probe at the cap after the wait; a
+// round that moved nothing for other reasons (nothing could be tried), or a
+// full round that moved some, waits, at the same limit.
 func (r *AbstractRebalance) nextStep() (uint64, bool, bool) {
 	if r.stepPPM == 0 {
 		return r.maxPPM, false, true
@@ -985,6 +1002,9 @@ func (r *AbstractRebalance) nextStep() (uint64, bool, bool) {
 		return price, false, false
 	case moved > 0:
 		return r.maxPPM, false, true
+	case !r.roundPriced:
+		// not the price: the same round again, after the wait
+		return r.maxPPM, r.stepProbe, true
 	case r.maxPPM < r.capPPM:
 		price := r.maxPPM + r.stepPPM
 		if price > r.capPPM {
@@ -1061,6 +1081,7 @@ func (r *AbstractRebalance) newRound(price uint64, probe bool) {
 		r.roundGoalMsat = r.AmountRebalanced + r.probeSize()
 	}
 	r.roundStartMoved, r.roundStartFees, r.roundMaxPaid = r.AmountRebalanced, r.Result.FeesPaidMsat, 0
+	r.roundPriced = false // the refind below may set it (circular-push)
 	r.failStreak, r.streakStopped, r.targetStopped = 0, false, false
 	r.halt.Store(false)
 	r.firstStop, r.Result.Stopped = "", ""

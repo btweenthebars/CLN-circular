@@ -128,9 +128,15 @@ func (r *RebalancePush) IsGoodCandidate(peerChannel *glightning.PeerChannel) boo
 // inPeerFeeFits reports whether what the peer charges to send a split to us
 // over in, from the target channel's peer, with the best of its inbound
 // discounts, is within maxppm. Its fee for in alone used to rule out
-// candidates whose discounts made them fit.
+// candidates whose discounts made them fit. A peer that does not fit marks
+// the round as held back by its price (roundPriced): at a higher maxppm, it
+// could be a candidate.
 func (r *RebalancePush) inPeerFeeFits(in *graph.Channel) bool {
-	return r.Node.Graph.LeastForwardFee(in, r.TargetChannel, r.splitAmount) <= graph.MaxFeeForPPM(r.splitAmount, r.maxPPM)
+	if r.Node.Graph.LeastForwardFee(in, r.TargetChannel, r.splitAmount) <= graph.MaxFeeForPPM(r.splitAmount, r.maxPPM) {
+		return true
+	}
+	r.roundPriced = true
+	return false
 }
 
 // CanUseChannel checks that the channel keeps at least the fill threshold as

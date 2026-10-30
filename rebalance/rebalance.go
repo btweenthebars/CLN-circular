@@ -77,6 +77,12 @@ type Rebalance struct {
 // limit, though not more than its run's maxppm.
 var errOwnLimit = errors.New("this split's own limit")
 
+// inOverMax marks the in-peer alone charging more than the run's maxppm: the
+// price, not a channel, held the split back (Result.InOverMax).
+type inOverMax struct{ error }
+
+func (e inOverMax) Unwrap() error { return e.error }
+
 // errRunStopped ends a split whose run stopped firing splits: neither of
 // its channels is to blame.
 var errRunStopped = errors.New("the run stopped: no more payments for this split")
@@ -243,6 +249,8 @@ func (r *Rebalance) Run() *Result {
 	if errors.Is(lastErr, errOwnLimit) {
 		failure.HeldByOwnLimit = true
 	}
+	failure.InOverMax = errors.As(lastErr, new(inOverMax))
+	failure.OwnLimit = r.RunMaxPPM > r.MaxPPM
 	failure.Message = "rebalance failed after " + strconv.Itoa(int(failure.Attempts)) + " payments."
 	if lastError == "" && lastErr != nil {
 		// the attempts ran out: say how the last one failed

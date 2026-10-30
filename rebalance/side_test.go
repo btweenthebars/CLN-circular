@@ -102,6 +102,8 @@ func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
 	assert.Contains(t, result.Message, "charges at least 5000 ppm to send 100000 sats to us over 5x1x1, more than maxppm 1000")
 	assert.NotContains(t, result.Message, "Unable to find a route", "the in-peer's own fee is not a lack of routes")
 	assert.Empty(t, n.paid)
+	assert.True(t, result.InOverMax, "the price held it back")
+	assert.False(t, result.OwnLimit)
 
 	// below a split's own limit (feeratio), the split is not worth it: no
 	// channel is to blame, so a circular-pull goes on with other candidates
@@ -115,6 +117,8 @@ func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
 	assert.Contains(t, result.Message, "charges at least 500 ppm to send 100000 sats to us over 5x1x1, more than maxppm 300 (this split's own limit)")
 	assert.Empty(t, n.paid)
 	assert.True(t, result.HeldByOwnLimit)
+	assert.False(t, result.InOverMax, "within the run's maxppm")
+	assert.True(t, result.OwnLimit)
 
 	// above the run's maxppm too, it is the in channel refusing, as before
 	n, out, in = shortRoute()
@@ -125,6 +129,7 @@ func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
 	assert.Equal(t, SideIn, result.FailedAt)
 	assert.NotContains(t, result.Message, "own limit")
 	assert.False(t, result.HeldByOwnLimit, "above the run's maxppm too")
+	assert.True(t, result.InOverMax, "above the run's maxppm too")
 	assert.Contains(t, result.Message, "charges at least 5000 ppm to send 100000 sats to us over 5x1x1, more than maxppm 1000",
 		"the run's maxppm, the one it is above")
 }

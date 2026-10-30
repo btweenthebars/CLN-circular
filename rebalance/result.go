@@ -33,6 +33,12 @@ type Result struct {
 	// its run's maxppm would have let it go on: every route cost more than
 	// the limit but one cost no more than maxppm, or the in-peer alone did
 	HeldByOwnLimit bool `json:"-"`
+	// InOverMax: the in-peer alone charges more than the run's maxppm (the
+	// split's, without a run): no route could do at that price
+	InOverMax bool `json:"-"`
+	// OwnLimit: the split had a limit of its own, below its run's maxppm
+	// (feeratio)
+	OwnLimit bool `json:"-"`
 	// FailedNodes counts, per node, the payments it failed, leaving out
 	// failures on our own channels
 	FailedNodes map[string]int `json:"-"`

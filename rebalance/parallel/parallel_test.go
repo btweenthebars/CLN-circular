@@ -941,7 +941,9 @@ func TestPushCandidateFeeCountsInboundDiscounts(t *testing.T) {
 	r := &RebalancePush{AbstractRebalance: abstract()}
 	r.Node.Graph = g
 	r.TargetChannel = graph.NewChannel(&glightning.Channel{Source: "02self", Destination: "02target", ShortChannelId: "9x1x1"}, 0, 0)
+	assert.False(t, r.roundPriced)
 	assert.False(t, r.inPeerFeeFits(in), "150 ppm, maxppm 100")
+	assert.True(t, r.roundPriced, "left out for its price: a step up could make it a candidate")
 	// a discount on our own channel to the peer: no route of ours arrives on it
 	g.SetInboundFee("1x1x1/"+util.GetDirection("02self", "02peer"), 0, -100)
 	assert.False(t, r.inPeerFeeFits(in))
@@ -1801,7 +1803,16 @@ func TestSteppingUpTheFee(t *testing.T) {
 			return 0
 		}
 	}
+	overFrom := func(ppm uint64) func(int) uint64 {
+		return func(int) uint64 {
+			if f.maxPPM < ppm {
+				return ppm // every route found costs more than maxppm
+			}
+			return 0
+		}
+	}
 	f = splitsOn(t, 3, routesFrom(1300))
+	f.cheapest = overFrom(1300)
 	f.splits, f.amount, f.maxPPM = 1, 500000000, 1100
 	f.stepPPM, f.capPPM, f.probeMsat = 300, 1700, 100000000
 	f.retryEvery, f.maxTime = time.Hour, 5*time.Second // steps don't wait
@@ -1831,6 +1842,7 @@ func TestSteppingUpTheFee(t *testing.T) {
 	// nothing at any price up to the cap: probes a step higher, then at the
 	// cap after each wait, until the time limit
 	f = splitsOn(t, 2, routesFrom(5000))
+	f.cheapest = overFrom(5000)
 	f.splits, f.amount, f.maxPPM = 1, 500000000, 1100
 	f.stepPPM, f.capPPM = 300, 1500
 	f.retryEvery, f.maxTime = 20*time.Millisecond, 300*time.Millisecond
@@ -1852,6 +1864,7 @@ func TestSteppingUpTheFee(t *testing.T) {
 
 	// a probe that paid near the cap: the rest goes at the cap, not above
 	f = splitsOn(t, 2, routesFrom(1300))
+	f.cheapest = overFrom(1300)
 	f.splits, f.amount, f.maxPPM = 1, 300000000, 1100
 	f.stepPPM, f.capPPM, f.probeMsat = 300, 1450, 100000000
 	f.retryEvery, f.maxTime = time.Hour, 5*time.Second
@@ -1864,6 +1877,102 @@ func TestSteppingUpTheFee(t *testing.T) {
 	if assert.Equal(t, 3, len(res.RoundHistory)) {
 		assert.Equal(t, uint64(1400), res.RoundHistory[1].MaxPPM)
 		assert.Equal(t, uint64(1450), res.RoundHistory[2].MaxPPM, "1390 + 150, capped at 1450")
+	}
+
+	// payments that failed on the way (no liquidity on the routes within
+	// maxppm): a step up may find others
+	f = splitsOn(t, 2, routesFrom(1300))
+	f.failedNodes = func(int) map[string]int { return map[string]int{"02middle": 3} }
+	f.splits, f.amount, f.maxPPM = 1, 300000000, 1100
+	f.stepPPM, f.capPPM, f.probeMsat = 300, 1700, 100000000
+	f.retryEvery, f.maxTime = time.Hour, 5*time.Second
+	f.refind = refillQueue(f, 2)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	res = result.(*Result)
+	assert.Equal(t, uint64(300000), res.RebalancedAmount)
+	if assert.GreaterOrEqual(t, len(res.RoundHistory), 2) {
+		assert.Equal(t, uint64(1400), res.RoundHistory[1].MaxPPM)
+	}
+
+	// nothing could be tried (no sign of the price: depleted, disconnected,
+	// refused): the same round again, after the wait, not a step up
+	for name, fail := range map[string]func(*fakeSplits){
+		"our channels": func(f *fakeSplits) {
+			f.failure = func(int) (rebalance.Side, rebalance.Retry) { return rebalance.SideOut, rebalance.RetryNo }
+		},
+		"held by its own limit": func(f *fakeSplits) {
+			// the cheapest route within the run's maxppm, above the split's
+			// own (feeratio) limit: a higher maxppm does not raise that
+			f.cheapest = func(int) uint64 { return 900 }
+			f.held = func(int) bool { return true }
+		},
+	} {
+		f = splitsOn(t, 2, routesFrom(1300))
+		fail(f)
+		f.splits, f.amount, f.maxPPM = 1, 300000000, 1100
+		f.stepPPM, f.capPPM = 300, 1700
+		f.retryEvery, f.maxTime = 30*time.Millisecond, 200*time.Millisecond
+		f.refind = refillQueue(f, 2)
+		f.FireCandidates()
+		result, err = f.WaitForResult()
+		assert.NoError(t, err, name)
+		res = result.(*Result)
+		assert.Equal(t, uint64(0), res.RebalancedAmount, name)
+		if assert.GreaterOrEqual(t, len(res.RoundHistory), 2, name) {
+			for _, h := range res.RoundHistory {
+				assert.Equal(t, uint64(1100), h.MaxPPM, name)
+				assert.False(t, h.Probe, name)
+			}
+			assert.LessOrEqual(t, len(res.RoundHistory), 8, name+": rounds wait")
+		}
+	}
+}
+
+// What a round learned of its price is its own: a probe that could try
+// nothing after a round held back by the price is tried again at its price.
+func TestRoundPricedIsPerRound(t *testing.T) {
+	var f *fakeSplits
+	f = splitsOn(t, 2, func(int, uint64) uint64 { return 0 })
+	f.cheapest = func(int) uint64 {
+		if f.maxPPM == 1100 {
+			return 1300
+		}
+		return 0 // at 1400: nothing tried, nothing learned
+	}
+	f.splits, f.amount, f.maxPPM = 1, 300000000, 1100
+	f.stepPPM, f.capPPM = 300, 1700
+	f.retryEvery, f.maxTime = 30*time.Millisecond, 200*time.Millisecond
+	f.refind = refillQueue(f, 2)
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	if assert.GreaterOrEqual(t, len(res.RoundHistory), 3) {
+		assert.Equal(t, uint64(1100), res.RoundHistory[0].MaxPPM)
+		for _, h := range res.RoundHistory[1:] {
+			assert.Equal(t, uint64(1400), h.MaxPPM, "no higher without a sign of the price")
+			assert.True(t, h.Probe)
+		}
+	}
+}
+
+func TestPriceHeld(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		res  rebalance.Result
+		want bool
+	}{
+		{"nothing tried", rebalance.Result{}, false},
+		{"every route above maxppm", rebalance.Result{CheapestPPM: 1300}, true},
+		{"a route within maxppm, above its own limit", rebalance.Result{CheapestPPM: 900, HeldByOwnLimit: true, OwnLimit: true}, false},
+		{"above the run's maxppm, with a limit of its own", rebalance.Result{CheapestPPM: 1300, OwnLimit: true}, true},
+		{"the in-peer above maxppm", rebalance.Result{InOverMax: true}, true},
+		{"payments failed on the way", rebalance.Result{FailedNodes: map[string]int{"02x": 1}}, true},
+		{"failed on the way, within its own limit", rebalance.Result{FailedNodes: map[string]int{"02x": 1}, OwnLimit: true}, false},
+	} {
+		assert.Equal(t, c.want, priceHeld(&c.res), c.name)
 	}
 }
 
