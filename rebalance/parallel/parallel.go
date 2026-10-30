@@ -160,6 +160,9 @@ type AbstractRebalance struct {
 	roundStartFees  uint64
 	roundMaxPaid    uint64
 	history         []*RoundInfo
+	// pay, when set, sends every split's payments instead of lightningd
+	// (tests)
+	pay func(route *graph.Route) (*graph.PrettyRoute, error)
 	// roundPriced: something in this round shows its maxppm held it back
 	// (priceHeld; in circular-push, a candidate left out for its peer's
 	// fee): only then does a round that moved nothing step the price up
@@ -241,6 +244,9 @@ func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount u
 		rebalance.MinAmount = amount
 	}
 	rebalance.Route = r.routes[candidate.ShortChannelId]
+	if r.pay != nil {
+		rebalance.SetPay(r.pay)
+	}
 	return rebalance
 }
 

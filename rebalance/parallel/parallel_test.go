@@ -2000,3 +2000,184 @@ func TestSetStepping(t *testing.T) {
 	assert.Equal(t, DEFAULT_STEP_RETRY_EVERY, a.retryEvery, "slow mode on")
 	assert.Equal(t, DEFAULT_SLOW_MAXTIME, a.maxTime)
 }
+
+// realSplits fires real splits (rebalance.Run: route search, payments through
+// pay, learning from what failed) over a small network; the candidate queue
+// is the fake's.
+type realSplits struct{ *fakeSplits }
+
+func (r *realSplits) Fire(candidate *graph.Channel, amount uint64) {
+	r.launch(candidate, r.TargetChannel, candidate, amount)
+}
+
+func (r *realSplits) EnqueueCandidate(result *rebalance.Result) {
+	r.QueueLock.Lock()
+	r.Candidates.PushFront(r.launched[result.Candidate])
+	r.QueueLock.Unlock()
+}
+
+// netChannel adds a public channel from -> to charging ppm.
+func netChannel(g *graph.Graph, scid, from, to string, ppm uint64) *graph.Channel {
+	c := graph.NewChannel(&glightning.Channel{Source: from, Destination: to, ShortChannelId: scid, IsActive: true,
+		AmountMsat: glightning.AmountFromMSat(10000000000), FeePerMillionth: ppm, Delay: 10,
+		HtlcMinimumMilliSatoshis: glightning.AmountFromMSat(0),
+		HtlcMaximumMilliSatoshis: glightning.AmountFromMSat(10000000000)}, 5000000000, 0)
+	g.AddChannel(c)
+	g.Channels[scid+"/"+util.GetDirection(from, to)] = c
+	return c
+}
+
+// stepWay is a way from the out-peer to the in-peer through via, at ppm1
+// (out-peer -> via) and ppm2 (via -> in-peer); empty: the hop (1 or 2)
+// that cannot carry a split.
+type stepWay struct {
+	via        string
+	ppm1, ppm2 uint64
+	empty      int
+}
+
+// stepPull is a circular-pull of 300k sats in splits of 100k, one at a
+// time, from our channel to 02out into the target from 02in (charging
+// inPPM), with fee stepping from 1100 by 300 up to 1700, probing 100k.
+func stepPull(t *testing.T, inPPM uint64, ways ...stepWay) *realSplits {
+	const self, outP, inP = "02self", "02out", "02in"
+	g := graph.NewGraph()
+	out := netChannel(g, "1x1x1", self, outP, 0)
+	in := netChannel(g, "9x1x1", inP, self, inPPM)
+	var lock sync.Mutex
+	full := map[string]bool{}
+	for i, w := range ways {
+		a := netChannel(g, fmt.Sprintf("%dx2x1", i+1), outP, w.via, w.ppm1)
+		b := netChannel(g, fmt.Sprintf("%dx3x1", i+1), w.via, inP, w.ppm2)
+		switch w.empty {
+		case 1:
+			full[candidateId(a)] = true
+		case 2:
+			full[candidateId(b)] = true
+		}
+	}
+	pay := func(route *graph.Route) (*graph.PrettyRoute, error) {
+		lock.Lock()
+		defer lock.Unlock()
+		for i, id := range route.ChannelIds() {
+			if full[id] {
+				hop := route.Hops[i]
+				return nil, &glightning.PaymentError{Data: &glightning.PaymentErrorData{
+					ErringNode: hop.Source, ErringChannel: hop.ShortChannelId,
+					ErringDirection: int(id[len(id)-1] - '0'), ErringIndex: uint64(i),
+					FailCode: 0x1007, FailCodeName: "WIRE_TEMPORARY_CHANNEL_FAILURE"}}
+			}
+		}
+		return graph.NewPrettyRoute(route, ""), nil
+	}
+	peer := func(id, scid string) *glightning.Peer {
+		return &glightning.Peer{Id: id, Connected: true, Channels: []*glightning.PeerChannel{{
+			PeerId: id, ShortChannelId: scid, State: rebalance.NORMAL, PeerConnected: true,
+			TotalMsat: glightning.AmountFromMSat(10000000000), ToUsMsat: glightning.AmountFromMSat(5000000000),
+			SpendableMsat: glightning.AmountFromMSat(5000000000), ReceivableMsat: glightning.AmountFromMSat(5000000000),
+		}}}
+	}
+	n := &node.Node{Id: self, Graph: g, PeersLock: &sync.RWMutex{},
+		Peers: map[string]*glightning.Peer{outP: peer(outP, "1x1x1"), inP: peer(inP, "9x1x1")}}
+	a := &AbstractRebalance{Node: n, Candidates: deque.New[*graph.Channel](), AmountLock: &sync.Mutex{},
+		QueueLock: &sync.Mutex{}, RebalanceResultChan: make(chan *rebalance.Result, 1),
+		amount: 300000000, splitAmount: 100000000, splits: 1, attempts: 10, maxHops: 6, maxNodeFails: 5,
+		maxPPM: 1100, routes: map[string][]string{}, candidateSide: rebalance.SideOut,
+		launched: map[string]*graph.Channel{}, retried: map[string]bool{}, TargetChannel: in, pay: pay}
+	a.stepPPM, a.capPPM, a.probeMsat = 300, 1700, 100000000
+	a.retryEvery, a.maxTime = 30*time.Millisecond, 300*time.Millisecond
+	a.Candidates.PushBack(out)
+	a.refind = func() error {
+		a.QueueLock.Lock()
+		defer a.QueueLock.Unlock()
+		a.Candidates = deque.New[*graph.Channel]()
+		a.Candidates.PushBack(out)
+		return nil
+	}
+	r := &realSplits{&fakeSplits{AbstractRebalance: a}}
+	a.RebalanceMethods = r
+	return r
+}
+
+func stepRun(t *testing.T, r *realSplits) *Result {
+	r.FireCandidates()
+	result, err := r.WaitForResult()
+	assert.NoError(t, err)
+	return result.(*Result)
+}
+
+// Fee stepping on what real splits learn: the route search, the payments
+// that fail and where, the in-peer's own fee.
+func TestSteppingWithRealSplits(t *testing.T) {
+	// the cheap way (1000 ppm) fails in the middle, the dear one (1300 ppm)
+	// works: 1100 tries the cheap one and finds the dear one over maxppm; a
+	// probe at 1400 goes the dear way; the rest at what it paid + 150
+	res := stepRun(t, stepPull(t, 0,
+		stepWay{via: "02cheap", ppm1: 500, ppm2: 500, empty: 2},
+		stepWay{via: "02dear", ppm1: 700, ppm2: 600}))
+	assert.Equal(t, uint64(300000), res.RebalancedAmount, res.Stopped)
+	if assert.Equal(t, 3, len(res.RoundHistory)) {
+		h := res.RoundHistory
+		assert.Equal(t, uint64(1100), h[0].MaxPPM)
+		assert.Equal(t, uint64(0), h[0].Moved)
+		assert.Equal(t, uint64(1400), h[1].MaxPPM)
+		assert.True(t, h[1].Probe)
+		assert.Equal(t, uint64(100000), h[1].Moved)
+		assert.InDelta(t, 1300, float64(h[1].MaxPaidPPM), 2, "the dear way")
+		assert.Equal(t, h[1].MaxPaidPPM+150, h[2].MaxPPM, "what the probe paid + half a step")
+		assert.Equal(t, uint64(200000), h[2].Moved)
+	}
+	assert.GreaterOrEqual(t, res.CheapestPPMOverMax, uint64(1300), "round 1 found the dear way over 1100")
+
+	// as on the node: the ways within maxppm fail in the middle until the
+	// split's attempts run out, before any search finds the way over it;
+	// those failures alone step up (the failed channels are believed short
+	// afterwards, so the probe tries the last cheap way, then the dear one)
+	r := stepPull(t, 0,
+		stepWay{via: "02a", ppm1: 500, ppm2: 500, empty: 2},
+		stepWay{via: "02b", ppm1: 500, ppm2: 500, empty: 2},
+		stepWay{via: "02c", ppm1: 500, ppm2: 500, empty: 2},
+		stepWay{via: "02dear", ppm1: 700, ppm2: 600})
+	r.attempts = 2
+	res = stepRun(t, r)
+	assert.Equal(t, uint64(300000), res.RebalancedAmount, res.Stopped)
+	assert.Zero(t, res.CheapestPPMOverMax, "no search found a way over maxppm: the payments' failures stepped")
+	if assert.GreaterOrEqual(t, len(res.RoundHistory), 2) {
+		assert.Equal(t, uint64(0), res.RoundHistory[0].Moved)
+		assert.Equal(t, uint64(1400), res.RoundHistory[1].MaxPPM)
+		assert.True(t, res.RoundHistory[1].Probe)
+	}
+
+	// only a way at 1300 ppm, which works: 1100 sends nothing and finds it
+	// over maxppm, which alone steps up
+	res = stepRun(t, stepPull(t, 0, stepWay{via: "02dear", ppm1: 700, ppm2: 600}))
+	assert.Equal(t, uint64(300000), res.RebalancedAmount, res.Stopped)
+	if assert.Equal(t, 3, len(res.RoundHistory)) {
+		assert.Equal(t, uint64(1400), res.RoundHistory[1].MaxPPM)
+	}
+
+	// both ways (1000, 1050 ppm) within maxppm, but the out-peer cannot
+	// send on either: no route avoids it, so no step up, the same round
+	// after each wait
+	res = stepRun(t, stepPull(t, 0,
+		stepWay{via: "02a", ppm1: 500, ppm2: 500, empty: 1},
+		stepWay{via: "02b", ppm1: 550, ppm2: 500, empty: 1}))
+	assert.Equal(t, uint64(0), res.RebalancedAmount)
+	if assert.GreaterOrEqual(t, len(res.RoundHistory), 2) {
+		for _, h := range res.RoundHistory {
+			assert.Equal(t, uint64(1100), h.MaxPPM)
+			assert.False(t, h.Probe)
+		}
+	}
+
+	// the in-peer alone charges 1500 ppm: no route at 1100 or 1400, then
+	// at the cap a probe goes, and the rest at the cap (its rate + 150 is
+	// above it)
+	res = stepRun(t, stepPull(t, 1500, stepWay{via: "02a", ppm1: 50, ppm2: 50}))
+	assert.Equal(t, uint64(300000), res.RebalancedAmount, res.Stopped)
+	var got []uint64
+	for _, h := range res.RoundHistory {
+		got = append(got, h.MaxPPM)
+	}
+	assert.Equal(t, []uint64{1100, 1400, 1700, 1700}, got)
+}
