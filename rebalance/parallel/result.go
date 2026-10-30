@@ -99,6 +99,9 @@ type Result struct {
 	// and LastRound why the last one that fell short did
 	Rounds    int    `json:"rounds,omitempty"`
 	LastRound string `json:"last_round,omitempty"`
+	// RoundHistory, in slow mode, is each round's limit, what it asked for
+	// and moved, and the rate it paid
+	RoundHistory []*RoundInfo `json:"round_history,omitempty"`
 	// WorstNodes are the nodes that failed the most of the run's payments,
 	// most first, at most WORST_NODES of them; failures on our own channels
 	// are not counted
@@ -175,6 +178,7 @@ func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 
 	for r.rounds = 1; ; r.rounds++ {
 		r.waitForRound(start, progress.C, deadline)
+		r.closeRound()
 		if !r.anotherRound(start, progress.C, deadline) {
 			break
 		}
@@ -208,6 +212,9 @@ func (r *AbstractRebalance) waitForRound(start time.Time, tick, deadline <-chan 
 			r.AddSuccess(rebalanceResult)
 			r.Result.SplitsSucceeded++
 			r.Result.FeesPaidMsat += rebalanceResult.Fee
+			if rebalanceResult.PPM > r.roundMaxPaid {
+				r.roundMaxPaid = rebalanceResult.PPM
+			}
 			r.movedMsat += rebalanceResult.AmountMsat
 
 			// put the candidate back in front of the queue
@@ -246,6 +253,7 @@ func (r *AbstractRebalance) endRun(start time.Time) (jrpc2.Result, error) {
 	r.Result.Attempts = r.TotalAttempts
 	if r.retryEvery > 0 {
 		r.Result.Rounds = r.rounds
+		r.Result.RoundHistory = r.history
 	}
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
@@ -827,6 +835,12 @@ func (r *AbstractRebalance) progress(start time.Time) string {
 	line += fmt.Sprintf(", %d splits in flight", inFlight)
 	if r.retryEvery > 0 {
 		line += fmt.Sprintf(", round %d", r.rounds)
+		if r.stepPPM > 0 {
+			line += fmt.Sprintf(" at %d ppm", r.maxPPM)
+			if r.stepProbe {
+				line += " (probe)"
+			}
+		}
 	}
 	if r.failStreak > 0 {
 		line += fmt.Sprintf(", %d payments failed in a row", r.failStreak)
@@ -837,8 +851,9 @@ func (r *AbstractRebalance) progress(start time.Time) string {
 // DEFAULT_SLOW_MAXTIME is the time limit of a run in slow mode that has none
 // of its own; MIN_RETRY_EVERY the shortest wait between its rounds.
 const (
-	DEFAULT_SLOW_MAXTIME = 6 * time.Hour
-	MIN_RETRY_EVERY      = time.Minute
+	DEFAULT_SLOW_MAXTIME     = 6 * time.Hour
+	MIN_RETRY_EVERY          = time.Minute
+	DEFAULT_STEP_RETRY_EVERY = 10 * time.Minute
 )
 
 // setRetryEvery turns slow mode on with a wait of seconds between rounds
@@ -868,18 +883,138 @@ func (r *AbstractRebalance) anotherRound(start time.Time, tick, deadline <-chan 
 		r.held() || r.Node.Stopped.Load() {
 		return false
 	}
-	why := r.firstStop
-	if why == "" {
-		why = r.ranOut()
+	var why string
+	if r.roundGoalMsat != 0 && r.AmountRebalanced >= r.roundGoal() {
+		why = fmt.Sprintf("the probe moved %d sats", (r.AmountRebalanced-r.roundStartMoved)/1000)
+	} else {
+		why = r.firstStop
+		if why == "" {
+			why = r.ranOut()
+		}
+		r.Result.LastRound = why // it fell short
 	}
-	r.Result.LastRound = why
-	r.Node.Logf(glightning.Info, "%s: round %d: %s; next round in %s",
-		r.progress(start), r.rounds, why, r.retryEvery)
-	if !r.waitRetry(start, tick, deadline) {
+	price, probe, wait := r.nextStep()
+	next := fmt.Sprintf("next round at %d ppm", price)
+	if probe {
+		next += fmt.Sprintf(", probing %d sats", r.probeSize()/1000)
+	}
+	if wait {
+		next += " in " + r.retryEvery.String()
+	} else {
+		next += " now"
+	}
+	r.Node.Logf(glightning.Info, "%s: round %d: %s; %s", r.progress(start), r.rounds, why, next)
+	if wait && !r.waitRetry(start, tick, deadline) {
 		return false
 	}
-	r.newRound()
+	r.newRound(price, probe)
 	return true
+}
+
+// RoundInfo is one round of a run in slow mode: its limit, what it asked
+// for and moved (sats), and the rate it paid on average and at most.
+type RoundInfo struct {
+	Round      int    `json:"round"`
+	MaxPPM     uint64 `json:"maxppm"`
+	Asked      uint64 `json:"asked"`
+	Moved      uint64 `json:"moved"`
+	PaidPPM    uint64 `json:"paid_ppm,omitempty"`
+	MaxPaidPPM uint64 `json:"max_paid_ppm,omitempty"`
+	Probe      bool   `json:"probe,omitempty"`
+}
+
+// roundGoal is what this round fires up to: the run's amount, or a probe's
+// goal.
+func (r *AbstractRebalance) roundGoal() uint64 {
+	if r.roundGoalMsat == 0 || r.roundGoalMsat > r.amount {
+		return r.amount
+	}
+	return r.roundGoalMsat
+}
+
+// closeRound notes, in slow mode, what the round that just ended did.
+func (r *AbstractRebalance) closeRound() {
+	if r.retryEvery <= 0 {
+		return
+	}
+	moved := r.AmountRebalanced - r.roundStartMoved
+	r.history = append(r.history, &RoundInfo{Round: r.rounds, MaxPPM: r.maxPPM,
+		Asked: (r.roundGoal() - r.roundStartMoved) / 1000, Moved: moved / 1000,
+		PaidPPM: avgPPM(r.Result.FeesPaidMsat-r.roundStartFees, moved), MaxPaidPPM: r.roundMaxPaid,
+		Probe: r.stepProbe})
+}
+
+// probeSize is what a stepped-up round tries: probeMsat, or 20% of what is
+// left, but at least a split (or what is left).
+func (r *AbstractRebalance) probeSize() uint64 {
+	left := r.amount - r.AmountRebalanced
+	p := r.probeMsat
+	if p == 0 {
+		p = left / 5
+	}
+	if p < r.splitAmount {
+		p = r.splitAmount
+	}
+	if p > left {
+		p = left
+	}
+	return p
+}
+
+// nextStep is the next round's limit, whether it is a probe, and whether to
+// wait retryEvery first. Without stepping: the same limit, after the wait.
+// With it: a probe that moved something sets the limit to the highest rate
+// it paid plus half a step, for the rest, at once; a round that moved
+// nothing is followed at once by a probe a step higher, or at the cap, by a
+// probe at the cap after the wait; a full round that moved some waits, at
+// the same limit.
+func (r *AbstractRebalance) nextStep() (uint64, bool, bool) {
+	if r.stepPPM == 0 {
+		return r.maxPPM, false, true
+	}
+	moved := r.AmountRebalanced - r.roundStartMoved
+	switch {
+	case moved > 0 && r.stepProbe:
+		price := r.roundMaxPaid + r.stepPPM/2
+		if price > r.capPPM {
+			price = r.capPPM
+		}
+		if price == 0 {
+			price = r.maxPPM
+		}
+		return price, false, false
+	case moved > 0:
+		return r.maxPPM, false, true
+	case r.maxPPM < r.capPPM:
+		price := r.maxPPM + r.stepPPM
+		if price > r.capPPM {
+			price = r.capPPM
+		}
+		return price, true, false
+	}
+	return r.capPPM, true, true
+}
+
+// setStepping turns the step-up on: stepppm per round up to capppm (which
+// must be at least the run's maxppm), probing probe sats (0: 20% of what is
+// left). It turns slow mode on too (10 minutes between rounds when the call
+// sets no retryevery). Call after setRetryEvery and the defaults.
+func (r *AbstractRebalance) setStepping(step, cap, probe int) error {
+	r.stepPPM, r.capPPM, r.probeMsat = 0, 0, 0
+	if step <= 0 {
+		return nil
+	}
+	if cap <= 0 || uint64(cap) < r.maxPPM {
+		return fmt.Errorf("stepppm needs capppm, the highest maxppm it may step up to, at least maxppm %d", r.maxPPM)
+	}
+	r.stepPPM, r.capPPM = uint64(step), uint64(cap)
+	if probe > 0 {
+		r.probeMsat = uint64(probe) * 1000
+	}
+	if r.retryEvery <= 0 {
+		r.setRetryEvery(int(DEFAULT_STEP_RETRY_EVERY / time.Second))
+	}
+	return nil
 }
 
 // waitRetry waits retryEvery before another round: false if the run's time
@@ -915,10 +1050,17 @@ func (r *AbstractRebalance) waitRetry(start time.Time, tick, deadline <-chan tim
 	}
 }
 
-// newRound clears what a round decided about the run, finds the candidates
-// again (their balances may have changed), and fires the next round's
-// splits. What moved, was paid and was learned is kept.
-func (r *AbstractRebalance) newRound() {
+// newRound clears what a round decided about the run, sets its limit and,
+// for a probe, its goal, finds the candidates again (their balances may have
+// changed), and fires the next round's splits. What moved, was paid and was
+// learned is kept.
+func (r *AbstractRebalance) newRound(price uint64, probe bool) {
+	r.maxPPM, r.stepProbe = price, probe
+	r.roundGoalMsat = 0
+	if probe {
+		r.roundGoalMsat = r.AmountRebalanced + r.probeSize()
+	}
+	r.roundStartMoved, r.roundStartFees, r.roundMaxPaid = r.AmountRebalanced, r.Result.FeesPaidMsat, 0
 	r.failStreak, r.streakStopped, r.targetStopped = 0, false, false
 	r.halt.Store(false)
 	r.firstStop, r.Result.Stopped = "", ""

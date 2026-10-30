@@ -34,6 +34,9 @@ type RebalancePush struct {
 	MaxFee          int      `json:"maxfee,omitempty"`     // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
 	FeeRatio        float64  `json:"feeratio,omitempty"`   // splits pay at most this share of what the filled channel earns, less our fee on the drained one; 0: circular-fee-ratio; below 0: off
 	RetryEvery      int      `json:"retryevery,omitempty"` // seconds; slow mode: when a round falls short, wait this long and try again (min 60; maxtime 6h if none)
+	StepPPM         int      `json:"stepppm,omitempty"`    // slow mode: after a round moved nothing, probe this much higher, up to capppm
+	CapPPM          int      `json:"capppm,omitempty"`     // the highest maxppm stepppm may reach (required with it)
+	Probe           int      `json:"probe,omitempty"`      // sats a stepped-up round tries (default 20% of what is left)
 	AbstractRebalance
 }
 
@@ -77,6 +80,9 @@ func (r *RebalancePush) prepare() error {
 	}
 
 	r.setDefaults()
+	if err := r.setStepping(r.StepPPM, r.CapPPM, r.Probe); err != nil {
+		return err
+	}
 
 	if err := r.validateParameters(); err != nil {
 		return err

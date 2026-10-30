@@ -144,6 +144,22 @@ type AbstractRebalance struct {
 	rounds      int
 	refind      func() error
 	excludePeer string
+	// Stepping (stepPPM, 0: off): after a round that moved nothing, the
+	// next probes stepPPM higher (up to capPPM) with probeMsat (0: 20% of
+	// what is left); after a probe that moved something, the rest goes at
+	// the highest rate it paid plus half a step. roundGoal (0: amount) is
+	// what this round fires up to, as an AmountRebalanced level; stepProbe
+	// says it is a probe; roundStartMoved/Fees and roundMaxPaid are what the
+	// round moved and paid; history the rounds so far.
+	stepPPM         uint64
+	capPPM          uint64
+	probeMsat       uint64
+	roundGoalMsat   uint64
+	stepProbe       bool
+	roundStartMoved uint64
+	roundStartFees  uint64
+	roundMaxPaid    uint64
+	history         []*RoundInfo
 	RebalanceMethods
 }
 

@@ -132,7 +132,7 @@ func (r *AbstractRebalance) FireCandidates() {
 	r.Node.Logln(glightning.Debug, "AmountRebalanced: ", r.AmountRebalanced, ", InFlightAmount: ", r.InFlightAmount, ", Total amount:", r.amount)
 	// Splits may deliver less than they ask for, so each asks for what is
 	// left, up to the split amount.
-	for r.AmountRebalanced+r.InFlightAmount < r.amount && r.splitsInFlight < r.splits &&
+	for r.AmountRebalanced+r.InFlightAmount < r.roundGoal() && r.splitsInFlight < r.splits &&
 		!r.targetStopped && !r.streakStopped && !r.timeStopped && !r.feeStopped &&
 		(r.targetCap == 0 || r.splitsInFlight < r.targetCap) {
 		if r.Node.Stopped.Load() {
@@ -140,7 +140,7 @@ func (r *AbstractRebalance) FireCandidates() {
 			r.heldByStop = true
 			break
 		}
-		amount := r.amount - r.AmountRebalanced - r.InFlightAmount
+		amount := r.roundGoal() - r.AmountRebalanced - r.InFlightAmount
 		if amount > r.splitAmount {
 			amount = r.splitAmount
 		}

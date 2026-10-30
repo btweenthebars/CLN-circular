@@ -225,6 +225,8 @@ type fakeSplits struct {
 	fired func()
 	// held says whether a failing call failed on its own feeratio limit
 	held func(call int) bool
+	// ppm gives a successful call's fee rate (default 10)
+	ppm func(call int) uint64
 }
 
 func (f *fakeSplits) IsGoodCandidate(*glightning.PeerChannel) bool { return true }
@@ -280,6 +282,9 @@ func (f *fakeSplits) Fire(candidate *graph.Channel, amount uint64) {
 		result.Candidate, result.Fee = candidateId(candidate), delivered/100000
 		if f.fee != nil {
 			result.Fee = f.fee(f.calls-1, delivered)
+		}
+		if f.ppm != nil {
+			result.PPM = f.ppm(f.calls - 1)
 		}
 		result.CheapestPPM = cheapest
 		result.FailedNodes = failed
@@ -1781,4 +1786,97 @@ func TestSetRetryEvery(t *testing.T) {
 	a.setRetryEvery(600)
 	assert.Equal(t, 10*time.Minute, a.retryEvery)
 	assert.Equal(t, time.Hour, a.maxTime)
+}
+
+// The user's way to find a price: nothing goes through at 1100, so try a
+// small amount a step higher; once it goes through, send the rest at what
+// it paid plus a little.
+func TestSteppingUpTheFee(t *testing.T) {
+	var f *fakeSplits
+	routesFrom := func(ppm uint64) func(int, uint64) uint64 {
+		return func(_ int, amount uint64) uint64 {
+			if f.maxPPM >= ppm {
+				return amount
+			}
+			return 0
+		}
+	}
+	f = splitsOn(t, 3, routesFrom(1300))
+	f.splits, f.amount, f.maxPPM = 1, 500000000, 1100
+	f.stepPPM, f.capPPM, f.probeMsat = 300, 1700, 100000000
+	f.retryEvery, f.maxTime = time.Hour, 5*time.Second // steps don't wait
+	f.refind = refillQueue(f, 3)
+	f.ppm = func(int) uint64 { return 1310 }
+	f.fee = func(_ int, delivered uint64) uint64 { return delivered * 1310 / 1000000 }
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	assert.Equal(t, uint64(500000), res.RebalancedAmount)
+	assert.Empty(t, res.Stopped)
+	type round struct {
+		ppm, asked, moved uint64
+		probe             bool
+	}
+	var got []round
+	for _, h := range res.RoundHistory {
+		got = append(got, round{h.MaxPPM, h.Asked, h.Moved, h.Probe})
+	}
+	assert.Equal(t, []round{{1100, 500000, 0, false}, {1400, 100000, 100000, true}, {1460, 400000, 400000, false}}, got,
+		"1100: nothing; probe 100k at 1400: paid 1310; the rest at 1310 + 150")
+	assert.Equal(t, uint64(1310), res.RoundHistory[1].PaidPPM)
+	assert.Equal(t, uint64(1310), res.RoundHistory[1].MaxPaidPPM)
+	assert.Contains(t, res.LastRound, "no candidates left", "round 1 fell short; the probe didn't")
+
+	// nothing at any price up to the cap: probes a step higher, then at the
+	// cap after each wait, until the time limit
+	f = splitsOn(t, 2, routesFrom(5000))
+	f.splits, f.amount, f.maxPPM = 1, 500000000, 1100
+	f.stepPPM, f.capPPM = 300, 1500
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 300*time.Millisecond
+	f.refind = refillQueue(f, 2)
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	res = result.(*Result)
+	assert.Contains(t, res.Stopped, "time limit")
+	if assert.GreaterOrEqual(t, len(res.RoundHistory), 4) {
+		assert.Equal(t, uint64(1100), res.RoundHistory[0].MaxPPM)
+		assert.Equal(t, uint64(1400), res.RoundHistory[1].MaxPPM)
+		assert.True(t, res.RoundHistory[1].Probe)
+		assert.Equal(t, uint64(100000), res.RoundHistory[1].Asked, "20% of what is left")
+		for _, h := range res.RoundHistory[2:] {
+			assert.Equal(t, uint64(1500), h.MaxPPM, "the cap")
+		}
+	}
+
+	// a probe that paid near the cap: the rest goes at the cap, not above
+	f = splitsOn(t, 2, routesFrom(1300))
+	f.splits, f.amount, f.maxPPM = 1, 300000000, 1100
+	f.stepPPM, f.capPPM, f.probeMsat = 300, 1450, 100000000
+	f.retryEvery, f.maxTime = time.Hour, 5*time.Second
+	f.refind = refillQueue(f, 2)
+	f.ppm = func(int) uint64 { return 1390 }
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	res = result.(*Result)
+	if assert.Equal(t, 3, len(res.RoundHistory)) {
+		assert.Equal(t, uint64(1400), res.RoundHistory[1].MaxPPM)
+		assert.Equal(t, uint64(1450), res.RoundHistory[2].MaxPPM, "1390 + 150, capped at 1450")
+	}
+}
+
+func TestSetStepping(t *testing.T) {
+	a := &AbstractRebalance{maxPPM: 1100}
+	assert.NoError(t, a.setStepping(0, 0, 0))
+	assert.Equal(t, uint64(0), a.stepPPM)
+	assert.Error(t, a.setStepping(300, 0, 0), "capppm is required")
+	assert.Error(t, a.setStepping(300, 1000, 0), "capppm below maxppm")
+	assert.NoError(t, a.setStepping(300, 1700, 1000000))
+	assert.Equal(t, uint64(300), a.stepPPM)
+	assert.Equal(t, uint64(1700), a.capPPM)
+	assert.Equal(t, uint64(1000000000), a.probeMsat)
+	assert.Equal(t, DEFAULT_STEP_RETRY_EVERY, a.retryEvery, "slow mode on")
+	assert.Equal(t, DEFAULT_SLOW_MAXTIME, a.maxTime)
 }

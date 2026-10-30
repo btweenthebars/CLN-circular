@@ -41,6 +41,9 @@ type RebalanceQuote struct {
 	MaxFee             int      `json:"maxfee,omitempty"`  // accepted, like maxfailstreak
 	FeeRatio           float64  `json:"feeratio,omitempty"`
 	RetryEvery         int      `json:"retryevery,omitempty"` // accepted, like maxfailstreak
+	StepPPM            int      `json:"stepppm,omitempty"`    // accepted, like maxfailstreak
+	CapPPM             int      `json:"capppm,omitempty"`     // accepted, like maxfailstreak
+	Probe              int      `json:"probe,omitempty"`      // accepted, like maxfailstreak
 }
 
 func (q *RebalanceQuote) Name() string {
