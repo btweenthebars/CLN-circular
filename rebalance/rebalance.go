@@ -93,6 +93,11 @@ var errRunStopped = errors.New("the run stopped: no more payments for this split
 
 // riskPPM is the risk rate for this rebalance's searches: r.RiskPPM, or the
 // node's circular-risk-ppm.
+// RiskRate is the risk rate its route search uses (0: fees only).
+func (r *Rebalance) RiskRate() uint64 {
+	return r.riskPPM()
+}
+
 func (r *Rebalance) riskPPM() uint64 {
 	switch {
 	case r.RiskPPM > 0:

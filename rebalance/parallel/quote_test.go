@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/gammazero/deque"
@@ -160,4 +161,37 @@ func TestOwnFeeCost(t *testing.T) {
 	assert.Equal(t, 50.0, a.ownFeeCost(out), "circular-pull: the candidate is our out channel")
 	assert.Equal(t, -50.0, a.ownFeeCost(in), "circular-push: the candidate is our in channel")
 	assert.Equal(t, 0.0, a.ownFeeCost(graph.NewChannel(&glightning.Channel{ShortChannelId: "9x9x9", Source: "02self", Destination: "02z"}, 0, 0)), "unknown")
+}
+
+// A quoted route lists the nodes on it remembered for failing payments
+// (circular-node-memory), and what each adds to it in the search.
+func TestQuoteShowsRememberedNodes(t *testing.T) {
+	n, add, peer := quoteNetwork()
+	n.Graph.Aliases["02m"] = "Middle"
+	n.RiskPPM = 200
+	cheap := add("1x1x1", "02self", "02p0", 0)
+	target := add("9x1x1", "02in", "02self", 0)
+	add("4x1x1", "02p0", "02m", 0)
+	add("5x1x1", "02m", "02in", 1000) // the only way
+	peer("02p0", "1x1x1")
+	peer("02in", "9x1x1")
+
+	quote := quoteRun(n, target, "", cheap).quote("pull", true)
+	assert.Empty(t, quote.Candidates[0].Remembered, "the memory is off")
+
+	n.Graph.SetNodeMemory(24 * time.Hour)
+	for i := 0; i < 100; i++ {
+		n.Graph.NodeFailed("02m")
+	}
+	n.Graph.NodeFailed("02in") // the in-peer: its channel on the route is ours, never charged
+	quote = quoteRun(n, target, "", cheap).quote("pull", true)
+	assert.Equal(t, []RememberedHop{{NodeId: "02m", Alias: "Middle", Score: 100, PenaltyPPM: 400}},
+		quote.Candidates[0].Remembered, "100/50 x 200 ppm")
+	assert.Contains(t, quote.Summary, "1 of 1 candidates have a route within 100 ppm (cheapest 10 ppm), "+
+		"1 of them through nodes remembered for failing payments")
+
+	a := quoteRun(n, target, "", cheap)
+	a.riskPPM = -1 // fees only: the search charges nothing
+	assert.Equal(t, uint64(0), a.quote("pull", true).Candidates[0].Remembered[0].PenaltyPPM)
+	assert.Equal(t, uint64(1000), graph.NodePenaltyPPM(1e6, 200), "capped at NODE_SCORE_MAX")
 }

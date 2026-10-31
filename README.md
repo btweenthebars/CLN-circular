@@ -238,7 +238,7 @@ lightning-cli circular-quote -k inscid=123456x1x1 splitamount=20000 maxppm=500 m
   ]
 }
 ```
-`estimate` is a rough chance that the route can carry the payment: the product of each channel's chance, as `circular-risk-ppm` describes. `guessed_hops` counts the channels no payment has told circular about, for which any balance up to the capacity is taken as equally likely. It is a guide for comparing routes, not a promise. A quote reflects what circular knows at that moment: what earlier payments taught it and the nodes it is avoiding.
+`estimate` is a rough chance that the route can carry the payment: the product of each channel's chance, as `circular-risk-ppm` describes. `guessed_hops` counts the channels no payment has told circular about, for which any balance up to the capacity is taken as equally likely. It is a guide for comparing routes, not a promise. A quote reflects what circular knows at that moment: what earlier payments taught it and the nodes it is avoiding. `remembered` lists the nodes on the route remembered for failing payments (`circular-node-memory`), with their score and what each adds to the route in the search (`penalty_ppm`); the summary counts the routes through any.
 
 ### Get stats about the usage of the plugin
 ```bash

@@ -142,6 +142,12 @@ func (g *Graph) nodePenalties() map[string]float64 {
 	return out
 }
 
+// NodePenaltyPPM is what a node's score adds, in ppm of the amount, to a
+// route through it in a search at riskPPM.
+func NodePenaltyPPM(score float64, riskPPM uint64) uint64 {
+	return uint64(math.Round(math.Min(score, NODE_SCORE_MAX) / NODE_SCORE_SCALE * float64(riskPPM)))
+}
+
 // nodeCost is what the search adds for sending amount out of a node with
 // penalty units (nodePenalties) at riskPPM: penalty × riskPPM ppm of amount,
 // in msat.

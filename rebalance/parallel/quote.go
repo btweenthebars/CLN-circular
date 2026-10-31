@@ -146,6 +146,38 @@ type QuoteCandidate struct {
 	Economics string  `json:"economics,omitempty"`
 	Error     string  `json:"error,omitempty"`   // why its first payment would not be sent
 	Skipped   string  `json:"skipped,omitempty"` // why a run would not use it
+	// Remembered lists the nodes on its route remembered for failing
+	// payments (circular-node-memory), with what each adds to it
+	Remembered []RememberedHop `json:"remembered,omitempty"`
+}
+
+// RememberedHop is a node on a quoted route remembered for failing
+// payments: its score, and what it adds to the route in the search, in ppm
+// of the amount (0 with routes chosen by fees alone).
+type RememberedHop struct {
+	NodeId     string  `json:"node_id"`
+	Alias      string  `json:"alias"`
+	Score      float64 `json:"score"`
+	PenaltyPPM uint64  `json:"penalty_ppm"`
+}
+
+// rememberedOn lists the nodes of route that the search charges for their
+// remembered failures: those forwarding over its channels between our out
+// channel and our in channel.
+func rememberedOn(g *graph.Graph, route *graph.Route, riskPPM uint64) []RememberedHop {
+	scores := g.NodeScores()
+	if len(scores) == 0 {
+		return nil
+	}
+	var out []RememberedHop
+	for i := 1; i < len(route.Hops)-1; i++ {
+		id := route.Hops[i].Source
+		if s, ok := scores[id]; ok {
+			out = append(out, RememberedHop{NodeId: id, Alias: g.GetAlias(id), Score: math.Round(s.Score*10) / 10,
+				PenaltyPPM: graph.NodePenaltyPPM(s.Score, riskPPM)})
+		}
+	}
+	return out
 }
 
 // quote quotes the candidates found by prepare, in the order a run tries
@@ -222,6 +254,7 @@ func quoteCandidate(g *graph.Graph, candidate *graph.Channel, peer string, rebal
 		chance, guessed := g.Estimate(route)
 		chance = math.Round(chance*100) / 100
 		c.Estimate, c.GuessedHops = &chance, &guessed
+		c.Remembered = rememberedOn(g, route, rebalance.RiskRate())
 	}
 	if err != nil {
 		c.Error = err.Error()
@@ -240,7 +273,7 @@ func (q *Quote) add(c *QuoteCandidate) {
 // summarize says in one line how many candidates would send a payment, at
 // what cost, and why the others would not.
 func (q *Quote) summarize() {
-	var routed, failed, skipped int
+	var routed, failed, skipped, remembered int
 	var cheapest, cheapestAbove uint64
 	for _, c := range q.Candidates {
 		switch {
@@ -248,6 +281,9 @@ func (q *Quote) summarize() {
 			skipped++
 		case c.Error == "" && c.PPM != nil:
 			routed++
+			if len(c.Remembered) > 0 {
+				remembered++
+			}
 			if routed == 1 || *c.PPM < cheapest {
 				cheapest = *c.PPM
 			}
@@ -261,6 +297,9 @@ func (q *Quote) summarize() {
 	parts := []string{fmt.Sprintf("%d of %d candidates have a route within %d ppm", routed, len(q.Candidates), q.MaxPPM)}
 	if routed > 0 {
 		parts[0] += fmt.Sprintf(" (cheapest %d ppm)", cheapest)
+	}
+	if remembered > 0 {
+		parts[0] += fmt.Sprintf(", %d of them through nodes remembered for failing payments", remembered)
 	}
 	if failed > 0 {
 		part := fmt.Sprintf("%d would fail", failed)

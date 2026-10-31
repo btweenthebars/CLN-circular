@@ -51,9 +51,8 @@ func (n *Node) rememberedNodes(limit int) *nodesResult {
 	out := &nodesResult{HalfLifeHours: int(n.nodeMemory.Hours()), RiskPPM: n.RiskPPM, Count: len(scores),
 		Nodes: make([]RememberedNode, 0, len(scores))}
 	for id, s := range scores {
-		capped := math.Min(s.Score, graph.NODE_SCORE_MAX)
 		out.Nodes = append(out.Nodes, RememberedNode{NodeId: id, Alias: n.Graph.GetAlias(id),
-			Score: math.Round(s.Score*10) / 10, PenaltyPPM: uint64(math.Round(capped / graph.NODE_SCORE_SCALE * float64(n.RiskPPM)))})
+			Score: math.Round(s.Score*10) / 10, PenaltyPPM: graph.NodePenaltyPPM(s.Score, n.RiskPPM)})
 	}
 	sort.Slice(out.Nodes, func(i, j int) bool {
 		if out.Nodes[i].Score != out.Nodes[j].Score {
