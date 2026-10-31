@@ -230,6 +230,9 @@ func (r *AbstractRebalance) waitForRound(start time.Time, tick, deadline <-chan 
 			if priceHeld(rebalanceResult) {
 				r.roundPriced = true
 			}
+			if p := rebalanceResult.CheapestPPM; p > 0 && (r.roundCheapest == 0 || p < r.roundCheapest) {
+				r.roundCheapest = p
+			}
 			if p := rebalanceResult.CheapestPPM; p > 0 && (r.Result.CheapestPPMOverMax == 0 || p < r.Result.CheapestPPMOverMax) {
 				r.Result.CheapestPPMOverMax = p
 			}
@@ -860,6 +863,9 @@ const (
 	DEFAULT_SLOW_MAXTIME     = 6 * time.Hour
 	MIN_RETRY_EVERY          = time.Minute
 	DEFAULT_STEP_RETRY_EVERY = 10 * time.Minute
+	// DEFAULT_MAX_IDLE_ROUNDS is maxidlerounds with stepping when the call
+	// gives none
+	DEFAULT_MAX_IDLE_ROUNDS = 3
 )
 
 // setRetryEvery turns slow mode on with a wait of seconds between rounds
@@ -902,6 +908,15 @@ func (r *AbstractRebalance) anotherRound(start time.Time, tick, deadline <-chan 
 		}
 		r.Result.LastRound = why // it fell short
 	}
+	if r.idleAtTop() {
+		r.idleRounds++
+	} else {
+		r.idleRounds = 0
+	}
+	if r.maxIdleRounds > 0 && r.idleRounds >= r.maxIdleRounds {
+		r.giveUp()
+		return false
+	}
 	price, probe, wait := r.nextStep()
 	next := fmt.Sprintf("next round at %d ppm", price)
 	if r.stepPPM > 0 && price == r.stepCap() && price < r.capPPM {
@@ -914,6 +929,9 @@ func (r *AbstractRebalance) anotherRound(start time.Time, tick, deadline <-chan 
 		next += " in " + r.retryEvery.String()
 	} else {
 		next += " now"
+	}
+	if r.maxIdleRounds > 0 && r.idleRounds > 0 {
+		next += fmt.Sprintf(" (%d of %d rounds at the most it can pay moved nothing)", r.idleRounds, r.maxIdleRounds)
 	}
 	r.Node.Logf(glightning.Info, "%s: round %d: %s; %s", r.progress(start), r.rounds, why, next)
 	if wait && !r.waitRetry(start, tick, deadline) {
@@ -1030,6 +1048,52 @@ func (r *AbstractRebalance) nextStep() (uint64, bool, bool) {
 	return r.maxPPM, true, true // at the cap: probe again after the wait
 }
 
+// setMaxIdleRounds sets how many rounds in a row that moved nothing at the
+// most the run can pay end it: n, or with stepping DEFAULT_MAX_IDLE_ROUNDS
+// when n is 0; below 0, or 0 without stepping: never. Call after
+// setStepping.
+func (r *AbstractRebalance) setMaxIdleRounds(n int) {
+	r.maxIdleRounds, r.idleRounds = n, 0
+	switch {
+	case n < 0:
+		r.maxIdleRounds = 0
+	case n == 0 && r.stepPPM > 0:
+		r.maxIdleRounds = DEFAULT_MAX_IDLE_ROUNDS
+	}
+}
+
+// idleAtTop says whether the round that just ended moved nothing at the
+// most the run can pay (its maxppm without stepping; with it, stepCap) and
+// its price held it back (roundPriced, or a fee ratio held its splits lower):
+// waiting may not help.
+func (r *AbstractRebalance) idleAtTop() bool {
+	if r.AmountRebalanced > r.roundStartMoved || !(r.roundPriced || r.heldLimit() > 0) {
+		return false
+	}
+	return r.stepPPM == 0 || r.maxPPM >= r.stepCap()
+}
+
+// giveUp ends a slow-mode run whose last maxIdleRounds rounds moved nothing
+// at the most it can pay, saying at what price and what the routes cost.
+func (r *AbstractRebalance) giveUp() {
+	what := "maxppm"
+	switch {
+	case r.heldLimit() > 0:
+		what = fmt.Sprintf("feeratio held its splits to %d ppm", r.heldLimit())
+	case r.stepPPM > 0 && r.stepCap() < r.capPPM:
+		what = "feeratio"
+	case r.stepPPM > 0:
+		what = "capppm"
+	}
+	why := fmt.Sprintf("gave up: %d rounds in a row at the most this run can pay (%d ppm, %s) moved nothing",
+		r.idleRounds, r.maxPPM, what)
+	if r.roundCheapest > 0 {
+		why += fmt.Sprintf("; the cheapest route found cost %d ppm", r.roundCheapest)
+	}
+	r.firstStop, r.Result.Stopped = "", "" // the last round's stop is in last_round
+	r.noteStop(why)
+}
+
 // stepCap is the highest maxppm stepping goes to: capppm or, with a fee
 // ratio, the most any split of the round could pay (roundMost) if lower:
 // above it, no split's limit rises.
@@ -1115,7 +1179,7 @@ func (r *AbstractRebalance) newRound(price uint64, probe bool) {
 		r.roundGoalMsat = r.AmountRebalanced + r.probeSize()
 	}
 	r.roundStartMoved, r.roundStartFees, r.roundMaxPaid = r.AmountRebalanced, r.Result.FeesPaidMsat, 0
-	r.roundTopLimit, r.roundMost = 0, 0
+	r.roundTopLimit, r.roundMost, r.roundCheapest = 0, 0, 0
 	r.roundPriced = false // the refind below may set it (circular-push)
 	r.failStreak, r.streakStopped, r.targetStopped = 0, false, false
 	r.halt.Store(false)

@@ -169,6 +169,13 @@ type AbstractRebalance struct {
 	// stepping goes no higher
 	roundTopLimit uint64
 	roundMost     uint64
+	// maxIdleRounds (0: off): this many rounds in a row that moved nothing
+	// at the most the run can pay, held back by the price, end the run;
+	// idleRounds counts them; roundCheapest is the cheapest route over its
+	// limit a split of this round found
+	maxIdleRounds int
+	idleRounds    int
+	roundCheapest uint64
 	// roundPriced: something in this round shows its maxppm held it back
 	// (priceHeld; in circular-push, a candidate left out for its peer's
 	// fee): only then does a round that moved nothing step the price up

@@ -2028,6 +2028,114 @@ func TestSetStepping(t *testing.T) {
 	assert.Equal(t, uint64(1000000000), a.probeMsat)
 	assert.Equal(t, DEFAULT_STEP_RETRY_EVERY, a.retryEvery, "slow mode on")
 	assert.Equal(t, DEFAULT_SLOW_MAXTIME, a.maxTime)
+
+	a.setMaxIdleRounds(0)
+	assert.Equal(t, DEFAULT_MAX_IDLE_ROUNDS, a.maxIdleRounds, "stepping: 3 by default")
+	a.setMaxIdleRounds(5)
+	assert.Equal(t, 5, a.maxIdleRounds)
+	a.setMaxIdleRounds(-1)
+	assert.Zero(t, a.maxIdleRounds, "-1: never")
+	b := &AbstractRebalance{}
+	b.setMaxIdleRounds(0)
+	assert.Zero(t, b.maxIdleRounds, "no stepping: never by default")
+	b.setMaxIdleRounds(2)
+	assert.Equal(t, 2, b.maxIdleRounds, "plain slow mode, when asked")
+}
+
+// A run that keeps moving nothing at the most it can pay, held back by the
+// price, ends after maxidlerounds such rounds instead of retrying until
+// maxtime; rounds below the top, or that could try nothing, don't count,
+// and one that moves something starts the count over.
+func TestGiveUpAtTheTop(t *testing.T) {
+	var f *fakeSplits
+	never := func(int, uint64) uint64 { return 0 }
+	priced := func(int) uint64 { return 5000 } // every route costs 5000 ppm
+	run := func() (*Result, time.Duration) {
+		start := time.Now()
+		f.FireCandidates()
+		result, err := f.WaitForResult()
+		assert.NoError(t, err)
+		return result.(*Result), time.Since(start)
+	}
+
+	// stepping: 1100 and 1400 are below the cap; two rounds at 1500, then done
+	// (below the cap the cheapest route is just above maxppm: what the last
+	// round found is said)
+	f = splitsOn(t, 2, never)
+	f.cheapest = func(int) uint64 {
+		if f.maxPPM < 1500 {
+			return f.maxPPM + 50
+		}
+		return 5000
+	}
+	f.splits, f.amount, f.maxPPM = 1, 500000000, 1100
+	f.stepPPM, f.capPPM, f.maxIdleRounds = 300, 1500, 2
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 2)
+	res, took := run()
+	assert.Less(t, took, 2*time.Second, "not until maxtime")
+	assert.Equal(t, "gave up: 2 rounds in a row at the most this run can pay (1500 ppm, capppm) moved nothing; "+
+		"the cheapest route found cost 5000 ppm", res.Stopped)
+	got := []uint64{}
+	for _, h := range res.RoundHistory {
+		got = append(got, h.MaxPPM)
+	}
+	assert.Equal(t, []uint64{1100, 1400, 1500, 1500}, got)
+	assert.NotEmpty(t, res.LastRound, "why the last round fell short")
+
+	// plain slow mode, when asked: every round is at the top; its rounds end
+	// on the fail streak, as on the node: that goes to last_round, the
+	// giving up to stopped
+	f = splitsOn(t, 2, never)
+	f.cheapest = priced
+	f.payments, f.maxFailStreak = 10, 5
+	f.splits, f.amount, f.maxPPM, f.maxIdleRounds = 1, 500000000, 1100, 2
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 2)
+	res, _ = run()
+	assert.Contains(t, res.Stopped, "gave up: 2 rounds in a row at the most this run can pay (1100 ppm, maxppm)")
+	assert.Contains(t, res.LastRound, "maxfailstreak")
+	assert.Equal(t, 2, len(res.RoundHistory))
+
+	// rounds that could try nothing (no sign of the price) don't count
+	f = splitsOn(t, 2, never)
+	f.splits, f.amount, f.maxPPM, f.maxIdleRounds = 1, 500000000, 1100, 2
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 200*time.Millisecond
+	f.refind = refillQueue(f, 2)
+	res, _ = run()
+	assert.Contains(t, res.Stopped, "time limit")
+	assert.GreaterOrEqual(t, len(res.RoundHistory), 3)
+
+	// a round that moves something starts the count over: the third split
+	// (round 2's first) goes through
+	f = splitsOn(t, 2, func(call int, amount uint64) uint64 {
+		if call == 2 {
+			return amount
+		}
+		return 0
+	})
+	f.cheapest = func(call int) uint64 {
+		if call == 2 {
+			return 0
+		}
+		return 5000
+	}
+	f.splits, f.amount, f.maxPPM, f.maxIdleRounds = 1, 500000000, 1100, 2
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 2)
+	res, _ = run()
+	if assert.Equal(t, 4, len(res.RoundHistory), res.Stopped) {
+		assert.Equal(t, uint64(100000), res.RoundHistory[1].Moved)
+	}
+	assert.Contains(t, res.Stopped, "gave up: 2 rounds")
+}
+
+func TestSetMaxIdleRoundsFollowsStepping(t *testing.T) {
+	r := &RebalancePull{}
+	r.Node = &node.Node{}
+	assert.NoError(t, r.setStepping(300, 1700, 0))
+	r.setMaxIdleRounds(r.MaxIdleRounds)
+	assert.Equal(t, DEFAULT_MAX_IDLE_ROUNDS, r.maxIdleRounds)
 }
 
 // realSplits fires real splits (rebalance.Run: route search, payments through
@@ -2223,6 +2331,15 @@ func TestSteppingWithRealSplits(t *testing.T) {
 			assert.Equal(t, uint64(1274), h.MaxPPM, "no higher than its splits can pay")
 		}
 	}
+	// it gives up there after maxidlerounds rounds, saying why
+	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
+	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) { return 1416, 200000000, nil }
+	r.maxIdleRounds, r.maxTime = 2, 5*time.Second
+	res = stepRun(t, r)
+	assert.Equal(t, "gave up: 2 rounds in a row at the most this run can pay (1274 ppm, feeratio) moved nothing; "+
+		"the cheapest route found cost 1300 ppm", res.Stopped)
+	assert.Equal(t, 3, len(res.RoundHistory), "1100, then two at 1274")
+
 	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
 	r.maxPPM = 1400
 	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) { return 1416, 200000000, nil }

@@ -30,13 +30,14 @@ type RebalancePull struct {
 	MaxNodeFails       int      `json:"maxnodefails,omitempty"`
 	MaxFailStreak      int      `json:"maxfailstreak,omitempty"`
 	RiskPPM            int      `json:"riskppm,omitempty"`
-	MaxTime            int      `json:"maxtime,omitempty"`    // seconds; 0: the node's default (circular-max-time); below 0: no limit
-	MaxFee             int      `json:"maxfee,omitempty"`     // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
-	FeeRatio           float64  `json:"feeratio,omitempty"`   // splits pay at most this share of what the filled channel earns, less our fee on the drained one; 0: circular-fee-ratio; below 0: off
-	RetryEvery         int      `json:"retryevery,omitempty"` // seconds; slow mode: when a round falls short, wait this long and try again (min 60; maxtime 6h if none)
-	StepPPM            int      `json:"stepppm,omitempty"`    // slow mode: after a round moved nothing, probe this much higher, up to capppm
-	CapPPM             int      `json:"capppm,omitempty"`     // the highest maxppm stepppm may reach (required with it)
-	Probe              int      `json:"probe,omitempty"`      // sats a stepped-up round tries (default 20% of what is left)
+	MaxTime            int      `json:"maxtime,omitempty"`       // seconds; 0: the node's default (circular-max-time); below 0: no limit
+	MaxFee             int      `json:"maxfee,omitempty"`        // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
+	FeeRatio           float64  `json:"feeratio,omitempty"`      // splits pay at most this share of what the filled channel earns, less our fee on the drained one; 0: circular-fee-ratio; below 0: off
+	RetryEvery         int      `json:"retryevery,omitempty"`    // seconds; slow mode: when a round falls short, wait this long and try again (min 60; maxtime 6h if none)
+	StepPPM            int      `json:"stepppm,omitempty"`       // slow mode: after a round moved nothing, probe this much higher, up to capppm
+	CapPPM             int      `json:"capppm,omitempty"`        // the highest maxppm stepppm may reach (required with it)
+	Probe              int      `json:"probe,omitempty"`         // sats a stepped-up round tries (default 20% of what is left)
+	MaxIdleRounds      int      `json:"maxidlerounds,omitempty"` // slow mode: end after this many rounds in a row at the most the run can pay that moved nothing (default 3 with stepppm; -1 never)
 	AbstractRebalance
 }
 
@@ -83,6 +84,7 @@ func (r *RebalancePull) prepare() error {
 	if err := r.setStepping(r.StepPPM, r.CapPPM, r.Probe); err != nil {
 		return err
 	}
+	r.setMaxIdleRounds(r.MaxIdleRounds)
 
 	if err := r.validateParameters(); err != nil {
 		r.Node.Logf(glightning.Unusual, "RebalancePull validateParameters failed: %v", err)
