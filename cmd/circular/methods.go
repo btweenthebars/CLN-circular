@@ -54,6 +54,11 @@ func registerMethods(p *glightning.Plugin) {
 	rpcStop.Category = "utility"
 	p.RegisterMethod(rpcStop)
 
+	rpcNodes := glightning.NewRpcMethod(&node.NodesCmd{}, "Nodes remembered for failing rebalances' payments")
+	rpcNodes.LongDesc = "The nodes that failed rebalances' payments, most first: their failure score (failed payments, fading by half every circular-node-memory hours, halved by each payment they forwarded) and what it adds to routes through them in the route search"
+	rpcNodes.Category = "utility"
+	p.RegisterMethod(rpcNodes)
+
 	rpcResume := glightning.NewRpcMethod(&node.Resume{}, "Resume circular")
 	rpcResume.LongDesc = "Resume activity after a stop command. Allows htlcs to be fired"
 	rpcResume.Category = "utility"

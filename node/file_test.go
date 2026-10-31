@@ -149,3 +149,37 @@ func TestCloseBeforeTheFirstRefreshKeepsWhatWasSaved(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(9), state.Liquidity[id("1x1x1")].Liquidity)
 }
+
+// The nodes remembered for failing payments are saved, and given back to
+// the graph once the first refresh has built it.
+func TestNodeScoresAreSaved(t *testing.T) {
+	dir := t.TempDir()
+	g := graphWithChannel("1x1x1", 123, time.Now().Unix())
+	g.SetNodeMemory(24 * time.Hour)
+	for i := 0; i < 40; i++ {
+		g.NodeFailed("02coingate")
+	}
+	n := &Node{Graph: g, dataDir: dir}
+	assert.NoError(t, n.SaveLearned(dir))
+
+	fresh := &Node{Graph: graphWithChannel("1x1x1", 500000, 0), dataDir: dir, nodeMemory: 24 * time.Hour}
+	fresh.Graph.SetNodeMemory(fresh.nodeMemory)
+	fresh.loadLearned()
+	fresh.applyLearned()
+	assert.InDelta(t, 40, fresh.Graph.NodeScores()["02coingate"].Score, 0.1)
+
+	// what circular-nodes shows: most first, and what the search adds at
+	// the node's risk rate: 40/50 x 200 = 160 ppm
+	fresh.RiskPPM = 200
+	fresh.Graph.NodeFailed("02okx")
+	got := fresh.rememberedNodes(0)
+	assert.Equal(t, 24, got.HalfLifeHours)
+	assert.Equal(t, 2, got.Count)
+	if assert.Len(t, got.Nodes, 2) {
+		assert.Equal(t, "02coingate", got.Nodes[0].NodeId)
+		assert.Equal(t, uint64(160), got.Nodes[0].PenaltyPPM)
+		assert.Equal(t, "02okx", got.Nodes[1].NodeId)
+		assert.Equal(t, uint64(4), got.Nodes[1].PenaltyPPM)
+	}
+	assert.Len(t, fresh.rememberedNodes(1).Nodes, 1, "limit")
+}

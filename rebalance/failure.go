@@ -105,6 +105,9 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		r.failedAt[failure.ErringNode]++
 		if k > 1 {
 			r.midFailures++ // past our out-peer
+			if failsTheNode(failure.FailCode) {
+				g.NodeFailed(failure.ErringNode) // remembered across runs
+			}
 		}
 	}
 
@@ -205,6 +208,22 @@ func (r *Rebalance) learnFromSuccess(route *graph.Route) {
 	for i := 1; i < len(route.Hops)-1; i++ {
 		r.Node.Graph.LearnPayment(channelId(route.Hops[i].Channel), route.Hops[i].MilliSatoshi)
 	}
+	// every node that forwarded it is less suspect
+	for i := 1; i < len(route.Hops); i++ {
+		r.Node.Graph.NodeForwarded(route.Hops[i].Source)
+	}
+}
+
+// failsTheNode says whether a failure at a node in the middle of a route
+// counts against the node across runs (graph.NodeFailed): it could not
+// forward (liquidity, a channel down, the node itself), as opposed to our
+// copy of its policy being out of date.
+func failsTheNode(code int) bool {
+	switch code {
+	case failFeeInsufficient, failIncorrectCltvExpiry, failAmountBelowMinimum, failExpiryTooSoon:
+		return false
+	}
+	return true
 }
 
 // refreshPolicy reloads a channel's policy from lightningd, which applies the

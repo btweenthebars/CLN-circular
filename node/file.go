@@ -29,6 +29,8 @@ type learnedState struct {
 	Avoid map[string]int64 `json:"avoid,omitempty"`
 	// Candidates records how our channels did as pull/push candidates
 	Candidates map[string]CandidateRecord `json:"candidates,omitempty"`
+	// Nodes remembers the nodes that failed rebalances' payments (graph/nodes.go)
+	Nodes map[string]graph.NodeScore `json:"nodes,omitempty"`
 }
 
 // LoadLearned reads what earlier runs learned from dir/learned.json, falling
@@ -137,7 +139,7 @@ func (n *Node) SaveLearned(dir string) error {
 		}
 	}
 	data, err := json.Marshal(learnedState{Version: learnedVersion, Liquidity: n.Graph.Beliefs(),
-		Avoid: n.Graph.AvoidList(), Candidates: n.candidateList()})
+		Avoid: n.Graph.AvoidList(), Candidates: n.candidateList(), Nodes: n.Graph.NodeScores()})
 	if err != nil {
 		return err
 	}

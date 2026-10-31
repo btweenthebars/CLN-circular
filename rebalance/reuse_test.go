@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // network is a test graph whose channels really hold liquidity[id] msat.
@@ -659,5 +660,66 @@ func TestFailuresAreCountedByNode(t *testing.T) {
 		assert.Equal(t, 1, len(n.paid))
 		assert.Empty(t, result.FailedNodes, erring.ErringNode)
 		assert.Zero(t, result.MiddleFailures, erring.ErringNode)
+	}
+}
+
+// Nodes that fail payments in the middle of a route are remembered across
+// runs (graph.NodeFailed); our out-peer's failures, and failures that only
+// show our copy of a policy is out of date, are not; every node of a
+// successful route is less suspect.
+func TestNodesAreRemembered(t *testing.T) {
+	network := func() (*network, *graph.Channel, *graph.Channel) {
+		n := &network{Graph: graph.NewGraph(), liquidity: map[string]uint64{}}
+		out := addChannel(n.Graph, "1x1x1", self, outP, 0)
+		in := addChannel(n.Graph, "9x1x1", inP, self, 0)
+		addChannel(n.Graph, "2x1x1", outP, "02a", 0)
+		addChannel(n.Graph, "3x1x1", "02a", inP, 0)
+		addChannel(n.Graph, "4x1x1", outP, "02b", 1)
+		addChannel(n.Graph, "5x1x1", "02b", inP, 0)
+		addChannel(n.Graph, "6x1x1", outP, "02c", 2)
+		addChannel(n.Graph, "7x1x1", "02c", inP, 0)
+		n.Graph.SetNodeMemory(24 * time.Hour)
+		return n, out, in
+	}
+
+	// 02a cannot forward (in the middle), then the out-peer cannot send to
+	// 02b (our peer: not counted); 02c works
+	n, out, in := network()
+	n.liquidity[id("3x1x1", "02a", inP)] = 0
+	n.liquidity[id("4x1x1", outP, "02b")] = 0
+	r := rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 3
+	result := r.Run()
+	assert.Equal(t, "success", result.Status, result.Message)
+	scores := n.Graph.NodeScores()
+	assert.InDelta(t, 1, scores["02a"].Score, 0.01)
+	assert.NotContains(t, scores, outP)
+	assert.NotContains(t, scores, "02c")
+
+	// it forwarded later: halved, then forgotten
+	n.Graph.ApplyNodeScores(map[string]graph.NodeScore{"02c": {Score: 0.8, At: time.Now().Unix() - 1}})
+	r = rebalanceOn(n, out, in, 100000000)
+	r.Attempts = 3
+	assert.Equal(t, "success", r.Run().Status)
+	assert.NotContains(t, n.Graph.NodeScores(), "02c", "0.8 halved: below 0.5")
+
+	// the node itself failed it, in the middle: counted
+	n, out, in = network()
+	r = rebalanceOn(n, out, in, 100000000)
+	r.pay = func(route *graph.Route) (*graph.PrettyRoute, error) {
+		return nil, &glightning.PaymentError{Data: &glightning.PaymentErrorData{
+			ErringNode: route.Hops[2].Source, ErringIndex: 2, FailCode: failTemporaryNodeFailure}}
+	}
+	r.Run()
+	assert.Len(t, n.Graph.NodeScores(), 1)
+
+	// a failure that shows our copy of a policy is out of date is not the
+	// node's fault (those reload the channel from lightningd: classified here)
+	for _, code := range []int{failFeeInsufficient, failIncorrectCltvExpiry, failAmountBelowMinimum, failExpiryTooSoon} {
+		assert.False(t, failsTheNode(code), "failcode %x", code)
+	}
+	for _, code := range []int{failTemporaryChannelFailure, failChannelDisabled, failUnknownNextPeer,
+		failPermanentChannelFailure, failTemporaryNodeFailure} {
+		assert.True(t, failsTheNode(code), "failcode %x", code)
 	}
 }

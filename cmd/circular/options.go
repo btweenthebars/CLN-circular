@@ -38,6 +38,13 @@ func registerOptions(p *glightning.Plugin) {
 		log.Fatalln("error registering option circular-liquidity-halflife:", err)
 	}
 
+	if err := p.RegisterNewIntOption("circular-node-memory",
+		"How long nodes that failed rebalances' payments are remembered: their failure score halves every this many hours, and with circular-risk-ppm routes through them cost more (0: off)",
+		node.DEFAULT_NODE_MEMORY); err != nil {
+
+		log.Fatalln("error registering option circular-node-memory:", err)
+	}
+
 	if err := p.RegisterNewIntOption("circular-risk-ppm",
 		"How much a route's chance of success weighs against its fees: each unit of -ln(chance) of a channel costs this many ppm of its amount (0: choose by fees and hops alone)",
 		node.DEFAULT_RISK_PPM); err != nil {

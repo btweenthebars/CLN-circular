@@ -56,6 +56,19 @@ type searchRequest struct {
 	maxFee   uint64   // total fees allowed
 	exclude  map[string]bool
 	riskPPM  uint64 // what each unit of -ln(chance) costs, in ppm of a channel's amount; 0: fees only
+	// nodePenalty is, with riskPPM, each remembered node's extra -ln(chance)
+	// units for the channels out of it (nodes.go)
+	nodePenalty map[string]float64
+}
+
+// channelCost is the uncertainty cost of sending amount over channel: its
+// own chance, and its node's remembered failures.
+func (req *searchRequest) channelCost(channel *Channel, amount uint64) uint64 {
+	cost := uncertaintyCost(channel, amount, req.riskPPM)
+	if cost == math.MaxUint64 || req.nodePenalty == nil {
+		return cost
+	}
+	return addSaturating(cost, nodeCost(req.nodePenalty[channel.Source], amount, req.riskPPM))
 }
 
 // GetRoute finds the cheapest route from src, which pays, to dst, which
@@ -118,6 +131,8 @@ func (g *Graph) GetLikelyCircularRoute(out, in *Channel, amount uint64, exclude 
 			maxFee:   maxFee,
 			exclude:  exclude,
 			riskPPM:  riskPPM,
+			// the nodes that failed earlier runs' payments cost more
+			nodePenalty: g.nodePenalties(),
 		})
 		if err != util.ErrNoRoute {
 			return route, err
@@ -305,7 +320,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 				if !ok || req.exclude[id] || !channel.CanForward(req.amount) {
 					continue
 				}
-				cost := uncertaintyCost(channel, req.amount, req.riskPPM)
+				cost := req.channelCost(channel, req.amount)
 				if pathHops < 1 || cost == math.MaxUint64 || dominated(id, 1, 0, cost, false) {
 					continue
 				}
@@ -388,7 +403,7 @@ func (g *Graph) search(req searchRequest) ([]*Channel, error) {
 					continue
 				}
 
-				uncertainty := uncertaintyCost(channel, amount, req.riskPPM)
+				uncertainty := req.channelCost(channel, amount)
 				cost := addSaturating(addSaturating(current.cost, fee), uncertainty)
 				if cost == math.MaxUint64 {
 					continue

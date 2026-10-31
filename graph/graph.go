@@ -42,6 +42,11 @@ type Graph struct {
 	// feeMedians holds each node's median fee rate (ppm) over its active
 	// channels, from MarkDearChannels, under channelsLock
 	feeMedians map[string]uint64
+	// nodeScores remembers the nodes that failed rebalances' payments, across
+	// runs (nodes.go); nodeHalfLife 0: off
+	nodeScores     map[string]NodeScore
+	nodeHalfLife   time.Duration
+	nodeScoresLock sync.Mutex
 }
 
 func NewGraph() *Graph {

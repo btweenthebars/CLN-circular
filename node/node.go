@@ -20,6 +20,7 @@ const (
 	DEFAULT_LIQUIDITY_RESET_INTERVAL = 300 // minutes
 	DEFAULT_LIQUIDITY_HALF_LIFE      = 60  // minutes
 	DEFAULT_RISK_PPM                 = 200 // ppm per unit of -ln(chance)
+	DEFAULT_NODE_MEMORY              = 24  // hours: nodes' failure scores halve this often
 	DEFAULT_RPC_TIMEOUT              = 60  // seconds
 )
 
@@ -33,6 +34,7 @@ type Node struct {
 	plugin            *glightning.Plugin
 	liquidityRefresh  time.Duration
 	liquidityHalfLife time.Duration
+	nodeMemory        time.Duration // circular-node-memory: nodes' failure scores halve this often; 0 off
 	// RiskPPM is how much a route's chance of success weighs against its
 	// fees: each unit of -ln(chance) of a channel costs this many ppm of its
 	// amount (circular-risk-ppm; 0: routes are chosen by fees and hops alone)
@@ -102,6 +104,7 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 
 	n.Logln(glightning.Debug, "loading from file")
 	n.Graph = graph.NewGraph()
+	n.Graph.SetNodeMemory(n.nodeMemory)
 	n.dataDir = config.LightningDir + "/" + CIRCULAR_DIR
 	n.loadLearned()
 
@@ -183,6 +186,10 @@ func (n *Node) applyLearned() {
 			n.Graph.Avoid(key, until)
 		}
 		n.restoreCandidates(n.pendingBeliefs.Candidates)
+		if len(n.pendingBeliefs.Nodes) > 0 {
+			n.Logf(glightning.Info, "remembered %d of %d nodes that failed payments",
+				n.Graph.ApplyNodeScores(n.pendingBeliefs.Nodes), len(n.pendingBeliefs.Nodes))
+		}
 		n.pendingBeliefs = nil
 	}
 	// records of channels that closed would otherwise stay forever; with no
@@ -215,6 +222,11 @@ func (n *Node) setOptions(lightning *glightning.Lightning, plugin *glightning.Pl
 
 	n.liquidityHalfLife = time.Duration(options["circular-liquidity-halflife"].GetValue().(int)) * time.Minute
 	n.Logln(glightning.Debug, "liquidity half-life: ", int(n.liquidityHalfLife.Minutes()), " minutes")
+
+	if hours := options["circular-node-memory"].GetValue().(int); hours > 0 {
+		n.nodeMemory = time.Duration(hours) * time.Hour
+	}
+	n.Logln(glightning.Debug, "node memory half-life: ", int(n.nodeMemory.Hours()), " hours")
 
 	if risk := options["circular-risk-ppm"].GetValue().(int); risk > 0 {
 		n.RiskPPM = uint64(risk)
