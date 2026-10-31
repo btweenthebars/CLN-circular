@@ -911,8 +911,13 @@ func (r *AbstractRebalance) anotherRound(start time.Time, tick, deadline <-chan 
 	switch {
 	case r.idleAtTop():
 		r.idleRounds++
-	case r.AmountRebalanced > r.roundStartMoved || !r.atTop():
+	case r.AmountRebalanced > r.roundStartMoved:
 		r.idleRounds = 0
+	case r.roundTopLimit == 0:
+		// it fired no split: nothing learned, of the price or of the top
+		// (stepCap would fall back to capppm): the count stays
+	case !r.atTop():
+		r.idleRounds = 0 // below a top that rose since
 	} // a round at the top that could try nothing leaves the count as it is
 	if r.maxIdleRounds > 0 && r.idleRounds >= r.maxIdleRounds {
 		r.giveUp()

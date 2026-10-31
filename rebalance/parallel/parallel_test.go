@@ -2387,6 +2387,30 @@ func TestSteppingWithRealSplits(t *testing.T) {
 	assert.Equal(t, []uint64{1100, 1274, 1274, 1530, 1530}, got, res.Stopped)
 	assert.Contains(t, res.Stopped, "gave up: 2 rounds in a row at the most this run can pay (1530 ppm, feeratio)")
 
+	// at the feeratio ceiling, a round that fires no split (no candidate
+	// left) learns nothing of the top: the count stays
+	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
+	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) { return 1416, 200000000, nil }
+	r.maxIdleRounds, r.maxTime = 2, 3*time.Second
+	refill, refinds := r.refind, 0
+	r.refind = func() error {
+		refinds++
+		if refinds == 2 { // round 3: nothing to fire
+			r.QueueLock.Lock()
+			r.Candidates = deque.New[*graph.Channel]()
+			r.QueueLock.Unlock()
+			return nil
+		}
+		return refill()
+	}
+	res = stepRun(t, r)
+	got = nil
+	for _, h := range res.RoundHistory {
+		got = append(got, h.MaxPPM)
+	}
+	assert.Equal(t, []uint64{1100, 1274, 1274, 1274}, got, res.Stopped)
+	assert.Contains(t, res.Stopped, "gave up: 2 rounds in a row at the most this run can pay (1274 ppm, feeratio)")
+
 	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
 	r.maxPPM = 1400
 	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) { return 1416, 200000000, nil }
