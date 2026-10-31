@@ -2156,6 +2156,52 @@ func TestGiveUpAtTheTop(t *testing.T) {
 	assert.Contains(t, res.Stopped, "gave up: 2 rounds")
 }
 
+func TestCountIdle(t *testing.T) {
+	stepping := func(maxPPM uint64) *AbstractRebalance {
+		return &AbstractRebalance{maxPPM: maxPPM, stepPPM: 300, capPPM: 1700, idleRounds: 2}
+	}
+	for _, c := range []struct {
+		name string
+		r    *AbstractRebalance
+		want int
+	}{
+		{"price held at the feeratio ceiling", func() *AbstractRebalance {
+			r := stepping(1274)
+			r.roundPriced, r.roundTopLimit, r.roundMost = true, 1274, 1274
+			return r
+		}(), 3},
+		{"moved something", func() *AbstractRebalance {
+			r := stepping(1274)
+			r.roundPriced, r.roundTopLimit, r.roundMost, r.AmountRebalanced = true, 1274, 1274, 1000
+			return r
+		}(), 0},
+		{"fired no split: nothing learned", stepping(1274), 2},
+		{"tried, no sign of the price, at the top", func() *AbstractRebalance {
+			r := stepping(1274)
+			r.roundTopLimit, r.roundMost = 1274, 1274
+			return r
+		}(), 2},
+		{"below a top that rose", func() *AbstractRebalance {
+			r := stepping(1274)
+			r.roundTopLimit, r.roundMost = 1274, 1530
+			return r
+		}(), 0},
+		{"push left candidates out, below capppm: the top is capppm", func() *AbstractRebalance {
+			r := stepping(1274)
+			r.roundPriced, r.roundLeftOut = true, true
+			return r
+		}(), 0},
+		{"push left candidates out, at capppm", func() *AbstractRebalance {
+			r := stepping(1700)
+			r.roundPriced, r.roundLeftOut = true, true
+			return r
+		}(), 3},
+	} {
+		c.r.countIdle()
+		assert.Equal(t, c.want, c.r.idleRounds, c.name)
+	}
+}
+
 func TestSetMaxIdleRoundsFollowsStepping(t *testing.T) {
 	r := &RebalancePull{}
 	r.Node = &node.Node{}

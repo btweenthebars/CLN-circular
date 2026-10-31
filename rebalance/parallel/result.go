@@ -908,17 +908,7 @@ func (r *AbstractRebalance) anotherRound(start time.Time, tick, deadline <-chan 
 		}
 		r.Result.LastRound = why // it fell short
 	}
-	switch {
-	case r.idleAtTop():
-		r.idleRounds++
-	case r.AmountRebalanced > r.roundStartMoved:
-		r.idleRounds = 0
-	case r.roundTopLimit == 0:
-		// it fired no split: nothing learned, of the price or of the top
-		// (stepCap would fall back to capppm): the count stays
-	case !r.atTop():
-		r.idleRounds = 0 // below a top that rose since
-	} // a round at the top that could try nothing leaves the count as it is
+	r.countIdle()
 	if r.maxIdleRounds > 0 && r.idleRounds >= r.maxIdleRounds {
 		r.giveUp()
 		return false
@@ -1077,6 +1067,24 @@ func (r *AbstractRebalance) idleAtTop() bool {
 		return false
 	}
 	return r.atTop()
+}
+
+// countIdle counts the round that just ended towards maxIdleRounds: one
+// more when it was idle at the top; a round that moved something, or ran
+// below the top (one that rose since, or capppm in a circular-push that
+// left candidates out for their peer's fee), starts it over; a round at
+// the top that could try nothing, or that fired no split and so learned
+// nothing of the top (stepCap would fall back to capppm), leaves it.
+func (r *AbstractRebalance) countIdle() {
+	switch {
+	case r.idleAtTop():
+		r.idleRounds++
+	case r.AmountRebalanced > r.roundStartMoved:
+		r.idleRounds = 0
+	case r.roundTopLimit == 0 && !r.roundLeftOut:
+	case !r.atTop():
+		r.idleRounds = 0
+	}
 }
 
 // atTop says whether the round ran at the most the run can pay: its maxppm
