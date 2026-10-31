@@ -296,6 +296,11 @@ func (r *AbstractRebalance) endRun(start time.Time) (jrpc2.Result, error) {
 // reach within maxppm used to go on through every candidate's attempts.
 const DEFAULT_MAX_FAIL_STREAK = 300
 
+// DEFAULT_PROBE_FAIL_STREAK is a probe round's fail streak limit with
+// stepping when the call gives none: a probe tests a price, it needs no
+// more payments than that
+const DEFAULT_PROBE_FAIL_STREAK = 100
+
 // countFailStreak counts the failed payments of result toward the run's
 // streak, which a success ends, and stops firing splits once the streak
 // reaches its limit.
@@ -313,13 +318,31 @@ func (r *AbstractRebalance) countFailStreak(result *rebalance.Result) {
 	if limit == 0 {
 		limit = DEFAULT_MAX_FAIL_STREAK
 	}
+	name := "maxfailstreak"
+	if p := r.probeFailStreak; r.stepProbe && p > 0 && (limit < 0 || p < limit) {
+		limit, name = p, "probefailstreak"
+	}
 	if limit < 0 || r.failStreak < limit || r.streakStopped {
 		return
 	}
 	r.streakStopped = true
 	r.halt.Store(true)
-	r.noteStop(fmt.Sprintf("%d payments failed in a row without a split succeeding (maxfailstreak %d): firing no more splits",
-		r.failStreak, limit))
+	r.noteStop(fmt.Sprintf("%d payments failed in a row without a split succeeding (%s %d): firing no more splits",
+		r.failStreak, name, limit))
+}
+
+// setProbeFailStreak sets a probe round's fail streak limit: n, or with
+// stepping DEFAULT_PROBE_FAIL_STREAK when n is 0; below 0, none (the run's
+// maxfailstreak). Call after setStepping.
+func (r *AbstractRebalance) setProbeFailStreak(n int) {
+	switch {
+	case n < 0:
+		r.probeFailStreak = 0
+	case n == 0 && r.stepPPM > 0:
+		r.probeFailStreak = DEFAULT_PROBE_FAIL_STREAK
+	default:
+		r.probeFailStreak = n
+	}
 }
 
 // noteStop logs why the run stopped firing splits, and keeps the first such

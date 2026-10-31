@@ -178,7 +178,10 @@ type AbstractRebalance struct {
 	// limit a split of this round found
 	maxIdleRounds int
 	idleRounds    int
-	roundCheapest uint64
+	// probeFailStreak (0: none): a probe round's fail streak limit, when
+	// lower than the run's
+	probeFailStreak int
+	roundCheapest   uint64
 	// roundPriced: something in this round shows its maxppm held it back
 	// (priceHeld; in circular-push, a candidate left out for its peer's
 	// fee): only then does a round that moved nothing step the price up

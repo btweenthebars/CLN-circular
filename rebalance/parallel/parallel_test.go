@@ -2202,6 +2202,60 @@ func TestCountIdle(t *testing.T) {
 	}
 }
 
+// A probe round stops after probefailstreak failed payments in a row, not
+// maxfailstreak: it only tests a price.
+func TestProbeFailStreak(t *testing.T) {
+	f := splitsOn(t, 10, func(int, uint64) uint64 { return 0 })
+	f.cheapest = func(int) uint64 { return 5000 }
+	f.payments = 10 // per failed split
+	f.splits, f.amount, f.maxPPM = 1, 2000000000, 1400
+	f.stepPPM, f.capPPM, f.maxIdleRounds = 300, 1400, 1 // at the cap: one probe round, then it gives up
+	f.maxFailStreak, f.probeFailStreak = 300, 30
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 10)
+	f.stepProbe = true // a probe from the start
+	f.roundGoalMsat = 100000000
+	f.FireCandidates()
+	result, err := f.WaitForResult()
+	assert.NoError(t, err)
+	res := result.(*Result)
+	assert.Equal(t, 3, f.calls, "3 splits of 10 payments: 30")
+	assert.Contains(t, res.LastRound, "30 payments failed in a row without a split succeeding (probefailstreak 30)")
+
+	// a full round keeps maxfailstreak
+	f = splitsOn(t, 10, func(int, uint64) uint64 { return 0 })
+	f.payments, f.splits, f.amount, f.maxPPM = 10, 1, 2000000000, 1100
+	f.maxFailStreak, f.probeFailStreak = 50, 30
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 5, f.calls)
+	assert.Contains(t, result.(*Result).Stopped, "(maxfailstreak 50)")
+
+	// and when the run's own limit is lower, it holds for probes too
+	f = splitsOn(t, 10, func(int, uint64) uint64 { return 0 })
+	f.payments, f.splits, f.amount, f.maxPPM = 10, 1, 2000000000, 1100
+	f.maxFailStreak, f.probeFailStreak, f.stepProbe, f.roundGoalMsat = 20, 30, true, 100000000
+	f.FireCandidates()
+	result, err = f.WaitForResult()
+	assert.NoError(t, err)
+	assert.Equal(t, 2, f.calls)
+	assert.Contains(t, result.(*Result).Stopped, "(maxfailstreak 20)")
+}
+
+func TestSetProbeFailStreak(t *testing.T) {
+	a := &AbstractRebalance{stepPPM: 300}
+	a.setProbeFailStreak(0)
+	assert.Equal(t, DEFAULT_PROBE_FAIL_STREAK, a.probeFailStreak, "stepping: 100 by default")
+	a.setProbeFailStreak(40)
+	assert.Equal(t, 40, a.probeFailStreak)
+	a.setProbeFailStreak(-1)
+	assert.Zero(t, a.probeFailStreak, "-1: the run's maxfailstreak")
+	b := &AbstractRebalance{}
+	b.setProbeFailStreak(0)
+	assert.Zero(t, b.probeFailStreak, "no stepping: none")
+}
+
 func TestSetMaxIdleRoundsFollowsStepping(t *testing.T) {
 	r := &RebalancePull{}
 	r.Node = &node.Node{}
