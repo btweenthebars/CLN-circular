@@ -15,30 +15,30 @@ const (
 )
 
 type RebalancePush struct {
-	OutScid         string   `json:"outscid"`
-	InList          []string `json:"inlist,omitempty"`
-	MinOutPPM       uint64   `json:"minoutppm,omitempty"`
-	Amount          uint64   `json:"amount,omitempty"`
-	MaxPPM          uint64   `json:"maxppm,omitempty"`
-	Splits          int      `json:"splits,omitempty"`
-	SplitAmount     uint64   `json:"splitamount,omitempty"`
-	MinSplit        uint64   `json:"minsplit,omitempty"`
-	Attempts        int      `json:"attempts,omitempty"`
-	MaxHops         int      `json:"maxhops,omitempty"`
-	FillUpToPercent float64  `json:"filluptopercent,omitempty"`
-	FillUpToAmount  uint64   `json:"filluptoamount,omitempty"`
-	MaxNodeFails    int      `json:"maxnodefails,omitempty"`
-	MaxFailStreak   int      `json:"maxfailstreak,omitempty"`
-	RiskPPM         int      `json:"riskppm,omitempty"`
-	MaxTime         int      `json:"maxtime,omitempty"`         // seconds; 0: the node's default (circular-max-time); below 0: no limit
-	MaxFee          int      `json:"maxfee,omitempty"`          // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
-	FeeRatio        float64  `json:"feeratio,omitempty"`        // splits pay at most this share of what the filled channel earns, less our fee on the drained one; 0: circular-fee-ratio; below 0: off
-	RetryEvery      int      `json:"retryevery,omitempty"`      // seconds; slow mode: when a round falls short, wait this long and try again (min 60; maxtime 6h if none)
-	StepPPM         int      `json:"stepppm,omitempty"`         // slow mode: after a round moved nothing, probe this much higher, up to capppm
-	CapPPM          int      `json:"capppm,omitempty"`          // the highest maxppm stepppm may reach (required with it)
-	Probe           int      `json:"probe,omitempty"`           // sats a stepped-up round tries (default 20% of what is left)
-	MaxIdleRounds   int      `json:"maxidlerounds,omitempty"`   // slow mode: end after this many rounds in a row at the most the run can pay that moved nothing (default 3 with stepppm; -1 never)
-	ProbeFailStreak int      `json:"probefailstreak,omitempty"` // slow mode: a probe round stops after this many failed payments in a row (default 100 with stepppm; -1: as maxfailstreak)
+	OutScid         string     `json:"outscid"`
+	InList          []string   `json:"inlist,omitempty"`
+	MinOutPPM       uint64     `json:"minoutppm,omitempty"`
+	Amount          uint64     `json:"amount,omitempty"`
+	MaxPPM          uint64     `json:"maxppm,omitempty"`
+	Splits          int        `json:"splits,omitempty"`
+	SplitAmount     uint64     `json:"splitamount,omitempty"`
+	MinSplit        uint64     `json:"minsplit,omitempty"`
+	Attempts        int        `json:"attempts,omitempty"`
+	MaxHops         int        `json:"maxhops,omitempty"`
+	FillUpToPercent float64    `json:"filluptopercent,omitempty"`
+	FillUpToAmount  uint64     `json:"filluptoamount,omitempty"`
+	MaxNodeFails    int        `json:"maxnodefails,omitempty"`
+	MaxFailStreak   util.Int   `json:"maxfailstreak,omitempty"`
+	RiskPPM         util.Int   `json:"riskppm,omitempty"`
+	MaxTime         util.Int   `json:"maxtime,omitempty"`         // seconds; 0: the node's default (circular-max-time); below 0: no limit
+	MaxFee          util.Int   `json:"maxfee,omitempty"`          // sats for the whole run; 0: the node's default (circular-max-fee); below 0: no budget
+	FeeRatio        util.Float `json:"feeratio,omitempty"`        // splits pay at most this share of what the filled channel earns, less our fee on the drained one; 0: circular-fee-ratio; below 0: off
+	RetryEvery      int        `json:"retryevery,omitempty"`      // seconds; slow mode: when a round falls short, wait this long and try again (min 60; maxtime 6h if none)
+	StepPPM         int        `json:"stepppm,omitempty"`         // slow mode: after a round moved nothing, probe this much higher, up to capppm
+	CapPPM          int        `json:"capppm,omitempty"`          // the highest maxppm stepppm may reach (required with it)
+	Probe           int        `json:"probe,omitempty"`           // sats a stepped-up round tries (default 20% of what is left)
+	MaxIdleRounds   util.Int   `json:"maxidlerounds,omitempty"`   // slow mode: end after this many rounds in a row at the most the run can pay that moved nothing (default 3 with stepppm; -1 never)
+	ProbeFailStreak util.Int   `json:"probefailstreak,omitempty"` // slow mode: a probe round stops after this many failed payments in a row (default 100 with stepppm; -1: as maxfailstreak)
 	AbstractRebalance
 }
 
@@ -67,11 +67,11 @@ func (r *RebalancePush) prepare() error {
 	}
 	r.Init(r.Amount, r.MaxPPM, r.SplitAmount, r.MinSplit, r.Splits, r.Attempts, r.MaxHops)
 	r.maxNodeFails = r.MaxNodeFails
-	r.maxFailStreak = r.MaxFailStreak
-	r.riskPPM = r.RiskPPM
-	r.setMaxTime(r.MaxTime)
-	r.setMaxFee(r.MaxFee)
-	r.setFeeRatio(r.FeeRatio)
+	r.maxFailStreak = int(r.MaxFailStreak)
+	r.riskPPM = int(r.RiskPPM)
+	r.setMaxTime(int(r.MaxTime))
+	r.setMaxFee(int(r.MaxFee))
+	r.setFeeRatio(r.FeeRatio.V)
 	r.setRetryEvery(r.RetryEvery)
 
 	r.CandidatesList = r.InList
@@ -85,8 +85,8 @@ func (r *RebalancePush) prepare() error {
 	if err := r.setStepping(r.StepPPM, r.CapPPM, r.Probe); err != nil {
 		return err
 	}
-	r.setMaxIdleRounds(r.MaxIdleRounds)
-	r.setProbeFailStreak(r.ProbeFailStreak)
+	r.setMaxIdleRounds(int(r.MaxIdleRounds))
+	r.setProbeFailStreak(int(r.ProbeFailStreak))
 
 	if err := r.validateParameters(); err != nil {
 		return err

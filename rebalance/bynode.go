@@ -17,7 +17,7 @@ type RebalanceByNode struct {
 	MaxHops  int    `json:"maxhops,omitempty"`
 	// MaxNodeFails: see Rebalance.MaxNodeFails
 	MaxNodeFails int        `json:"maxnodefails,omitempty"`
-	RiskPPM      int        `json:"riskppm,omitempty"` // see Rebalance.RiskPPM
+	RiskPPM      util.Int   `json:"riskppm,omitempty"` // see Rebalance.RiskPPM
 	Node         *node.Node `json:"-"`
 }
 
@@ -89,7 +89,7 @@ func (r *RebalanceByNode) Call() (jrpc2.Result, error) {
 
 	rebalance := NewRebalance(outgoingChannel, incomingChannel, r.Amount, r.MaxPPM, r.Attempts, r.MaxHops)
 	rebalance.MaxNodeFails = r.MaxNodeFails
-	rebalance.RiskPPM = r.RiskPPM
+	rebalance.RiskPPM = int(r.RiskPPM)
 
 	err = rebalance.Setup()
 	if err != nil {

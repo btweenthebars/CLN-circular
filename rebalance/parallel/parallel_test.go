@@ -2279,7 +2279,7 @@ func TestSetMaxIdleRoundsFollowsStepping(t *testing.T) {
 	r := &RebalancePull{}
 	r.Node = &node.Node{}
 	assert.NoError(t, r.setStepping(300, 1700, 0))
-	r.setMaxIdleRounds(r.MaxIdleRounds)
+	r.setMaxIdleRounds(int(r.MaxIdleRounds))
 	assert.Equal(t, DEFAULT_MAX_IDLE_ROUNDS, r.maxIdleRounds)
 }
 

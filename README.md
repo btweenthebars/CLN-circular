@@ -74,6 +74,8 @@ lightningd --plugin=/path/to/circularexecutable --circular-graph-refresh=5 --cir
 ```
 
 ## Usage
+The params that mean something below 0 (`riskppm`, `maxfailstreak`, `maxtime`, `maxfee`, `feeratio`, `maxidlerounds`, `probefailstreak`) also take a number written as a string: `lightning-cli -k` leaves a value unquoted only when it is all digits and dots, so `feeratio=-1` reaches the plugin as `"-1"`. (Before, such a call failed with `Incompatible types` or `Expecting float64 input`.)
+
 ### Rebalance one channel at a time
 via Short Channel ID:
 ```bash

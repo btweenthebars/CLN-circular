@@ -17,35 +17,35 @@ import (
 // circular-pull (inscid), circular-push (outscid) or circular (both), and
 // says what a run would try first, without paying anything.
 type RebalanceQuote struct {
-	InScid             string   `json:"inscid,omitempty"`
-	OutScid            string   `json:"outscid,omitempty"`
-	OutList            []string `json:"outlist,omitempty"`
-	InList             []string `json:"inlist,omitempty"`
-	MaxOutPPM          uint64   `json:"maxoutppm,omitempty"`
-	MinOutPPM          uint64   `json:"minoutppm,omitempty"`
-	Amount             uint64   `json:"amount,omitempty"`
-	MaxPPM             uint64   `json:"maxppm,omitempty"`
-	Splits             int      `json:"splits,omitempty"`
-	SplitAmount        uint64   `json:"splitamount,omitempty"`
-	MinSplit           uint64   `json:"minsplit,omitempty"`
-	DepleteUpToPercent float64  `json:"depleteuptopercent,omitempty"`
-	DepleteUpToAmount  uint64   `json:"depleteuptoamount,omitempty"`
-	FillUpToPercent    float64  `json:"filluptopercent,omitempty"`
-	FillUpToAmount     uint64   `json:"filluptoamount,omitempty"`
-	Attempts           int      `json:"attempts,omitempty"`
-	MaxHops            int      `json:"maxhops,omitempty"`
-	MaxNodeFails       int      `json:"maxnodefails,omitempty"`
-	MaxFailStreak      int      `json:"maxfailstreak,omitempty"` // accepted, so a run's call can be quoted; no payment is made
-	RiskPPM            int      `json:"riskppm,omitempty"`
-	MaxTime            int      `json:"maxtime,omitempty"` // accepted, like maxfailstreak
-	MaxFee             int      `json:"maxfee,omitempty"`  // accepted, like maxfailstreak
-	FeeRatio           float64  `json:"feeratio,omitempty"`
-	RetryEvery         int      `json:"retryevery,omitempty"`      // accepted, like maxfailstreak
-	StepPPM            int      `json:"stepppm,omitempty"`         // accepted, like maxfailstreak
-	CapPPM             int      `json:"capppm,omitempty"`          // accepted, like maxfailstreak
-	Probe              int      `json:"probe,omitempty"`           // accepted, like maxfailstreak
-	MaxIdleRounds      int      `json:"maxidlerounds,omitempty"`   // accepted, like maxfailstreak
-	ProbeFailStreak    int      `json:"probefailstreak,omitempty"` // accepted, like maxfailstreak
+	InScid             string     `json:"inscid,omitempty"`
+	OutScid            string     `json:"outscid,omitempty"`
+	OutList            []string   `json:"outlist,omitempty"`
+	InList             []string   `json:"inlist,omitempty"`
+	MaxOutPPM          uint64     `json:"maxoutppm,omitempty"`
+	MinOutPPM          uint64     `json:"minoutppm,omitempty"`
+	Amount             uint64     `json:"amount,omitempty"`
+	MaxPPM             uint64     `json:"maxppm,omitempty"`
+	Splits             int        `json:"splits,omitempty"`
+	SplitAmount        uint64     `json:"splitamount,omitempty"`
+	MinSplit           uint64     `json:"minsplit,omitempty"`
+	DepleteUpToPercent float64    `json:"depleteuptopercent,omitempty"`
+	DepleteUpToAmount  uint64     `json:"depleteuptoamount,omitempty"`
+	FillUpToPercent    float64    `json:"filluptopercent,omitempty"`
+	FillUpToAmount     uint64     `json:"filluptoamount,omitempty"`
+	Attempts           int        `json:"attempts,omitempty"`
+	MaxHops            int        `json:"maxhops,omitempty"`
+	MaxNodeFails       int        `json:"maxnodefails,omitempty"`
+	MaxFailStreak      util.Int   `json:"maxfailstreak,omitempty"` // accepted, so a run's call can be quoted; no payment is made
+	RiskPPM            util.Int   `json:"riskppm,omitempty"`
+	MaxTime            util.Int   `json:"maxtime,omitempty"` // accepted, like maxfailstreak
+	MaxFee             util.Int   `json:"maxfee,omitempty"`  // accepted, like maxfailstreak
+	FeeRatio           util.Float `json:"feeratio,omitempty"`
+	RetryEvery         int        `json:"retryevery,omitempty"`      // accepted, like maxfailstreak
+	StepPPM            int        `json:"stepppm,omitempty"`         // accepted, like maxfailstreak
+	CapPPM             int        `json:"capppm,omitempty"`          // accepted, like maxfailstreak
+	Probe              int        `json:"probe,omitempty"`           // accepted, like maxfailstreak
+	MaxIdleRounds      util.Int   `json:"maxidlerounds,omitempty"`   // accepted, like maxfailstreak
+	ProbeFailStreak    util.Int   `json:"probefailstreak,omitempty"` // accepted, like maxfailstreak
 }
 
 func (q *RebalanceQuote) Name() string {
@@ -61,25 +61,35 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 	case q.InScid != "" && q.OutScid != "":
 		return q.quotePair(node.GetNode())
 	case q.InScid != "":
-		pull := &RebalancePull{InScid: q.InScid, OutList: q.OutList, MaxOutPPM: q.MaxOutPPM, Amount: q.Amount,
-			MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
-			DepleteUpToPercent: q.DepleteUpToPercent, DepleteUpToAmount: q.DepleteUpToAmount,
-			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio}
+		pull := q.pull()
 		if err := pull.prepare(); err != nil {
 			return nil, err
 		}
 		return pull.quote("pull", true), nil
 	case q.OutScid != "":
-		push := &RebalancePush{OutScid: q.OutScid, InList: q.InList, MinOutPPM: q.MinOutPPM, Amount: q.Amount,
-			MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
-			FillUpToPercent: q.FillUpToPercent, FillUpToAmount: q.FillUpToAmount,
-			Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio}
+		push := q.push()
 		if err := push.prepare(); err != nil {
 			return nil, err
 		}
 		return push.quote("push", false), nil
 	}
 	return nil, util.ErrNoRequiredParameter
+}
+
+// pull is the circular-pull the quote is of.
+func (q *RebalanceQuote) pull() *RebalancePull {
+	return &RebalancePull{InScid: q.InScid, OutList: q.OutList, MaxOutPPM: q.MaxOutPPM, Amount: q.Amount,
+		MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
+		DepleteUpToPercent: q.DepleteUpToPercent, DepleteUpToAmount: q.DepleteUpToAmount,
+		Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio}
+}
+
+// push is the circular-push the quote is of.
+func (q *RebalanceQuote) push() *RebalancePush {
+	return &RebalancePush{OutScid: q.OutScid, InList: q.InList, MinOutPPM: q.MinOutPPM, Amount: q.Amount,
+		MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
+		FillUpToPercent: q.FillUpToPercent, FillUpToAmount: q.FillUpToAmount,
+		Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio}
 }
 
 // quotePair quotes one rebalance from OutScid to InScid, as circular would
@@ -108,7 +118,7 @@ func (q *RebalanceQuote) quotePair(n *node.Node) (*Quote, error) {
 		Amount: amount / 1000, MaxPPM: maxPPM}
 	rebalance := rebalance2.NewRebalance(out, in, amount, maxPPM, q.Attempts, maxHops)
 	rebalance.Node = n
-	rebalance.RiskPPM = q.RiskPPM
+	rebalance.RiskPPM = int(q.RiskPPM)
 	result.add(quoteCandidate(n.Graph, n.Graph.NodeScoresNow(), out, out.Destination, rebalance))
 	result.summarize()
 	return result, nil
