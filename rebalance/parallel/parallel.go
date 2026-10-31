@@ -169,6 +169,9 @@ type AbstractRebalance struct {
 	// stepping goes no higher
 	roundTopLimit uint64
 	roundMost     uint64
+	// roundLeftOut: a candidate was left out for its peer's fee
+	// (circular-push): roundMost says nothing of what it could pay
+	roundLeftOut bool
 	// maxIdleRounds (0: off): this many rounds in a row that moved nothing
 	// at the most the run can pay, held back by the price, end the run;
 	// idleRounds counts them; roundCheapest is the cheapest route over its

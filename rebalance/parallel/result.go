@@ -908,11 +908,12 @@ func (r *AbstractRebalance) anotherRound(start time.Time, tick, deadline <-chan 
 		}
 		r.Result.LastRound = why // it fell short
 	}
-	if r.idleAtTop() {
+	switch {
+	case r.idleAtTop():
 		r.idleRounds++
-	} else {
+	case r.AmountRebalanced > r.roundStartMoved || !r.atTop():
 		r.idleRounds = 0
-	}
+	} // a round at the top that could try nothing leaves the count as it is
 	if r.maxIdleRounds > 0 && r.idleRounds >= r.maxIdleRounds {
 		r.giveUp()
 		return false
@@ -1070,6 +1071,12 @@ func (r *AbstractRebalance) idleAtTop() bool {
 	if r.AmountRebalanced > r.roundStartMoved || !(r.roundPriced || r.heldLimit() > 0) {
 		return false
 	}
+	return r.atTop()
+}
+
+// atTop says whether the round ran at the most the run can pay: its maxppm
+// without stepping; with it, stepCap.
+func (r *AbstractRebalance) atTop() bool {
 	return r.stepPPM == 0 || r.maxPPM >= r.stepCap()
 }
 
@@ -1096,9 +1103,10 @@ func (r *AbstractRebalance) giveUp() {
 
 // stepCap is the highest maxppm stepping goes to: capppm or, with a fee
 // ratio, the most any split of the round could pay (roundMost) if lower:
-// above it, no split's limit rises.
+// above it, no split's limit rises. Not when a candidate was left out for
+// its peer's fee (roundLeftOut): a higher maxppm may let it in.
 func (r *AbstractRebalance) stepCap() uint64 {
-	if r.roundMost > 0 && r.roundMost < r.capPPM {
+	if r.roundMost > 0 && r.roundMost < r.capPPM && !r.roundLeftOut {
 		return r.roundMost
 	}
 	return r.capPPM
@@ -1180,7 +1188,7 @@ func (r *AbstractRebalance) newRound(price uint64, probe bool) {
 	}
 	r.roundStartMoved, r.roundStartFees, r.roundMaxPaid = r.AmountRebalanced, r.Result.FeesPaidMsat, 0
 	r.roundTopLimit, r.roundMost, r.roundCheapest = 0, 0, 0
-	r.roundPriced = false // the refind below may set it (circular-push)
+	r.roundPriced, r.roundLeftOut = false, false // the refind below may set them (circular-push)
 	r.failStreak, r.streakStopped, r.targetStopped = 0, false, false
 	r.halt.Store(false)
 	r.firstStop, r.Result.Stopped = "", ""

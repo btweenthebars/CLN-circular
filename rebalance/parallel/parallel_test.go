@@ -949,6 +949,7 @@ func TestPushCandidateFeeCountsInboundDiscounts(t *testing.T) {
 	assert.False(t, r.roundPriced)
 	assert.False(t, r.inPeerFeeFits(in), "150 ppm, maxppm 100")
 	assert.True(t, r.roundPriced, "left out for its price: a step up could make it a candidate")
+	assert.True(t, r.roundLeftOut, "what it could pay is not known")
 	// a discount on our own channel to the peer: no route of ours arrives on it
 	g.SetInboundFee("1x1x1/"+util.GetDirection("02self", "02peer"), 0, -100)
 	assert.False(t, r.inPeerFeeFits(in))
@@ -2003,6 +2004,15 @@ func TestStepCapAtTheFeeRatio(t *testing.T) {
 	price, _, _ = a.nextStep()
 	assert.Equal(t, uint64(1574), price, "above: capppm decides")
 
+	// circular-push left a candidate out for its peer's fee: what it could pay
+	// is not known, so the splits fired don't bound the step
+	a = &AbstractRebalance{maxPPM: 1100, stepPPM: 300, capPPM: 2000, roundPriced: true, roundMost: 900,
+		roundLeftOut: true}
+	price, _, wait = a.nextStep()
+	assert.Equal(t, uint64(1400), price)
+	assert.False(t, wait)
+	assert.False(t, a.atTop())
+
 	// a probe that moved: the rest at what it paid + half a step, no higher
 	a = &AbstractRebalance{maxPPM: 1274, stepPPM: 300, capPPM: 1700, stepProbe: true, roundMost: 1274,
 		roundMaxPaid: 1250, AmountRebalanced: 100000000}
@@ -2096,6 +2106,22 @@ func TestGiveUpAtTheTop(t *testing.T) {
 	assert.Contains(t, res.Stopped, "gave up: 2 rounds in a row at the most this run can pay (1100 ppm, maxppm)")
 	assert.Contains(t, res.LastRound, "maxfailstreak")
 	assert.Equal(t, 2, len(res.RoundHistory))
+
+	// a round at the top that could try nothing leaves the count as it is:
+	// priced, nothing tried, priced is two
+	f = splitsOn(t, 2, never)
+	f.cheapest = func(call int) uint64 {
+		if (call/2)%2 == 0 { // rounds 1, 3, ...: two calls each
+			return 5000
+		}
+		return 0
+	}
+	f.splits, f.amount, f.maxPPM, f.maxIdleRounds = 1, 500000000, 1100, 2
+	f.retryEvery, f.maxTime = 20*time.Millisecond, 5*time.Second
+	f.refind = refillQueue(f, 2)
+	res, _ = run()
+	assert.Contains(t, res.Stopped, "gave up: 2 rounds")
+	assert.Equal(t, 3, len(res.RoundHistory))
 
 	// rounds that could try nothing (no sign of the price) don't count
 	f = splitsOn(t, 2, never)
@@ -2340,6 +2366,27 @@ func TestSteppingWithRealSplits(t *testing.T) {
 		"the cheapest route found cost 1300 ppm", res.Stopped)
 	assert.Equal(t, 3, len(res.RoundHistory), "1100, then two at 1274")
 
+	// when what the splits can pay rises (the target earned more), the round
+	// at the old top is below the new one: the count starts over, and the
+	// run steps to the new top
+	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 800, ppm2: 800}) // 1600 ppm: never within
+	reads := 0
+	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) {
+		reads++
+		if reads <= 2 {
+			return 1416, 200000000, nil // 1274
+		}
+		return 1700, 200000000, nil // 1530
+	}
+	r.maxIdleRounds, r.maxTime = 2, 5*time.Second
+	res = stepRun(t, r)
+	got = nil
+	for _, h := range res.RoundHistory {
+		got = append(got, h.MaxPPM)
+	}
+	assert.Equal(t, []uint64{1100, 1274, 1274, 1530, 1530}, got, res.Stopped)
+	assert.Contains(t, res.Stopped, "gave up: 2 rounds in a row at the most this run can pay (1530 ppm, feeratio)")
+
 	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
 	r.maxPPM = 1400
 	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) { return 1416, 200000000, nil }
@@ -2353,7 +2400,7 @@ func TestSteppingWithRealSplits(t *testing.T) {
 	// what a round reports is its own: the target's forwards are read again
 	// each round, and earned less (1000 ppm) after the first
 	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 700, ppm2: 600})
-	reads := 0
+	reads = 0
 	r.feeRatio, r.forwards = 0.9, func(string, time.Time) (uint64, uint64, error) {
 		reads++
 		if reads == 1 {

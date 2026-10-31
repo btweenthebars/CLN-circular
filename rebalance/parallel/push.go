@@ -138,6 +138,7 @@ func (r *RebalancePush) inPeerFeeFits(in *graph.Channel) bool {
 		return true
 	}
 	r.roundPriced = true
+	r.roundLeftOut = true // what it could pay is not known: stepping may go to capppm
 	return false
 }
 
