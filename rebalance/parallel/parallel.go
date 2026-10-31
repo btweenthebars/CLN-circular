@@ -256,7 +256,11 @@ func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount u
 	if e.most > r.roundMost {
 		r.roundMost = e.most
 	}
-	rebalance := rebalance2.NewRebalance(out, in, amount, limit, r.attempts, r.maxHops)
+	attempts := r.attempts
+	if p := r.probeFailStreak; r.stepProbe && p > 0 && p < attempts {
+		attempts = p // a probe split makes no more payments than its round may fail in a row
+	}
+	rebalance := rebalance2.NewRebalance(out, in, amount, limit, attempts, r.maxHops)
 	if r.feeRatio > 0 && limit < r.maxPPM {
 		rebalance.RunMaxPPM = r.maxPPM
 	}

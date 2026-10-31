@@ -2243,6 +2243,23 @@ func TestProbeFailStreak(t *testing.T) {
 	assert.Contains(t, result.(*Result).Stopped, "(maxfailstreak 20)")
 }
 
+// A probe split makes at most probefailstreak payments: the streak is only
+// counted when a split finishes.
+func TestProbeSplitAttempts(t *testing.T) {
+	g := graph.NewGraph()
+	out := netChannel(g, "1x1x1", "02self", "02out", 0)
+	in := netChannel(g, "9x1x1", "02in", "02self", 0)
+	a := &AbstractRebalance{Node: &node.Node{Id: "02self", Graph: g}, maxPPM: 1000, attempts: 300,
+		maxHops: 6, routes: map[string][]string{}}
+	assert.Equal(t, 300, a.newSplit(out, in, out, 100000000).Attempts, "not a probe")
+	a.stepProbe, a.probeFailStreak = true, 100
+	assert.Equal(t, 100, a.newSplit(out, in, out, 100000000).Attempts)
+	a.attempts = 50
+	assert.Equal(t, 50, a.newSplit(out, in, out, 100000000).Attempts, "fewer attempts stay")
+	a.attempts, a.probeFailStreak = 300, 0
+	assert.Equal(t, 300, a.newSplit(out, in, out, 100000000).Attempts, "no probe limit")
+}
+
 func TestSetProbeFailStreak(t *testing.T) {
 	a := &AbstractRebalance{stepPPM: 300}
 	a.setProbeFailStreak(0)
