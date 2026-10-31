@@ -17,6 +17,8 @@ type Stats struct {
 	Successes      []glightning.SendPaySuccess `json:"successes"`
 	Failures       []glightning.SendPayFailure `json:"failures"`
 	Routes         []graph.PrettyRoute         `json:"routes"`
+	// Version is the running build
+	Version Version `json:"version"`
 }
 
 func (s *Stats) Name() string {
@@ -60,6 +62,7 @@ func (n *Node) GetStats() *Stats {
 		Successes:      successes,
 		Failures:       failures,
 		Routes:         routes,
+		Version:        BuildVersion(),
 	}
 }
 

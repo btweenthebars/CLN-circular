@@ -94,6 +94,7 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 	defer n.initLock.Unlock()
 
 	n.setOptions(lightning, plugin, options)
+	n.Logf(glightning.Info, "circular %s starting", BuildVersion())
 
 	n.Logln(glightning.Debug, "getting ID")
 	info, err := n.lightning.GetInfo()

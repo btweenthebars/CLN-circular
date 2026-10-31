@@ -252,6 +252,7 @@ This command will return the following stats:
 * `successes`: successful rebalances done by `circular`
 * `failures`: failed rebalances done by `circular`
 * `routes`: routes taken by `circular`
+* `version`: the running build: `commit` (as `git log --oneline` shows it), its `time`, `modified` when built from files changed since that commit, and `go`. The plugin also logs it when it starts: `circular 14f4b66 (2026-10-31T12:06:07Z, go1.22.1) starting`. To check a deploy: `lightning-cli circular-stats | jq .version`. It comes from what `go build ./cmd/circular` (or `make build`) stamps into the binary in a git checkout; `unknown` when the build had no git information.
 
 It's a good idea to pipe the output into a file, since it can be quite big.
 ⚠ To limit the size, `circular` will only keep the last 14 days of stats.
