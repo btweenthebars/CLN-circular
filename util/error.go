@@ -8,6 +8,10 @@ import (
 type ErrRouteTooExpensive struct {
 	FeePPM uint64
 	MaxPPM uint64
+	// OwnLimit, when set, says that MaxPPM is a split's own limit, below
+	// its run's maxppm, and how it came to it (feeratio): "1170 ppm
+	// (feeratio 0.9 × ...; maxppm 1600)"
+	OwnLimit string
 }
 
 func NewRouteTooExpensiveError(feePPM uint64, maxPPM uint64) ErrRouteTooExpensive {
@@ -18,6 +22,10 @@ func NewRouteTooExpensiveError(feePPM uint64, maxPPM uint64) ErrRouteTooExpensiv
 }
 
 func (e ErrRouteTooExpensive) Error() string {
+	if e.OwnLimit != "" {
+		return fmt.Sprintf("route too expensive. Cheapest route found was %d ppm, but this split's own limit is %s",
+			e.FeePPM, e.OwnLimit)
+	}
 	return fmt.Sprintf("route too expensive. Cheapest route found was %d ppm, but maxppm is %d", e.FeePPM, e.MaxPPM)
 }
 

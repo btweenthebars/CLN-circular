@@ -275,7 +275,7 @@ func (r *AbstractRebalance) endRun(start time.Time) (jrpc2.Result, error) {
 			r.Result.Stopped = r.firstStop
 		case !r.targetStopped && !r.streakStopped && !r.timeStopped && !r.feeStopped:
 			// nothing stopped it: no candidate was left to fire
-			r.Result.Stopped = r.ranOut()
+			r.Result.Stopped = r.ranOut() + r.feeratioHint()
 		}
 		if r.Result.Stopped != "" {
 			r.Node.Logln(glightning.Info, r.Result.Stopped)
@@ -783,6 +783,23 @@ func (r *AbstractRebalance) ranOut() string {
 		return "no candidates to try"
 	}
 	return "no candidates left: " + strings.Join(parts, ", ")
+}
+
+// feeratioHint says, when the run's fee ratio held every split of its last
+// round below maxppm and some failed where maxppm would have let them go on,
+// how far it held them, and what to change: "; feeratio held its splits to
+// at most 1170 ppm, and the cheapest route found cost 1519 ppm: raise
+// feeratio, or pass feeratio=-1 to pay up to maxppm 1600". "" otherwise.
+func (r *AbstractRebalance) feeratioHint() string {
+	held := r.heldLimit()
+	if held == 0 || r.Result.FeeratioHeld == 0 {
+		return ""
+	}
+	hint := fmt.Sprintf("; feeratio held its splits to at most %d ppm", held)
+	if p := r.Result.CheapestPPMOverMax; p > held {
+		hint += fmt.Sprintf(", and the cheapest route found cost %d ppm", p)
+	}
+	return hint + fmt.Sprintf(": raise feeratio, or pass feeratio=-1 to pay up to maxppm %d", r.maxPPM)
 }
 
 // PROGRESS_EVERY is how often a run in progress logs how it is going.

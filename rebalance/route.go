@@ -27,22 +27,22 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 		// above a limit of this split's own, but within the run's: the split
 		// is not worth it, which says nothing of either channel
 		own := r.RunMaxPPM > r.MaxPPM && inFee <= graph.MaxFeeForPPM(r.Amount, r.RunMaxPPM)
+		charges := fmt.Sprintf("%s charges at least %d ppm to send %d sats to us over %s",
+			r.Node.Graph.GetAlias(dst), feePPM(inFee, r.Amount), r.Amount/1000, r.InChannel.ShortChannelId)
+		if own {
+			return nil, fmt.Errorf("%s, more than %w: %s", charges, errOwnLimit, r.ownLimit())
+		}
 		limit := r.MaxPPM
-		if r.RunMaxPPM > r.MaxPPM && !own {
+		if r.RunMaxPPM > r.MaxPPM {
 			limit = r.RunMaxPPM // the one it is above
 		}
-		err := fmt.Errorf("%s charges at least %d ppm to send %d sats to us over %s, more than maxppm %d",
-			r.Node.Graph.GetAlias(dst), feePPM(inFee, r.Amount), r.Amount/1000, r.InChannel.ShortChannelId, limit)
-		if own {
-			return nil, fmt.Errorf("%w (%w)", err, errOwnLimit)
-		}
-		return nil, onIn(inOverMax{err}, RetryNo)
+		return nil, onIn(inOverMax{fmt.Errorf("%s, more than maxppm %d", charges, limit)}, RetryNo)
 	}
 	route, err := r.Node.Graph.GetLikelyCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops, maxFee, r.riskPPM())
 	if err == util.ErrNoRoute {
 		// Say how expensive the cheapest route is, if there is one, so maxppm can be tuned.
 		if cheapest, cerr := r.Node.Graph.GetCheapestCircularRoute(r.OutChannel, r.InChannel, r.Amount, exclude, r.MaxHops); cerr == nil {
-			return nil, util.NewRouteTooExpensiveError(cheapest.FeePPM(), r.MaxPPM)
+			return nil, r.tooExpensive(cheapest.FeePPM())
 		}
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (r *Rebalance) getRoute(exclude map[string]bool) (*graph.Route, error) {
 	}
 
 	if route.FeePPM() > r.MaxPPM {
-		return nil, util.NewRouteTooExpensiveError(route.FeePPM(), r.MaxPPM)
+		return nil, r.tooExpensive(route.FeePPM())
 	}
 
 	return route, nil

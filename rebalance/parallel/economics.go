@@ -39,6 +39,17 @@ type economics struct {
 	most uint64
 }
 
+// why says how a fee ratio came to the limit, for a split's messages:
+// "feeratio 0.9 × 1300 ppm earned by the filled channel − 0 ppm our fee on
+// the drained one".
+func (e economics) why(ratio float64) string {
+	earned := fmt.Sprintf("%d ppm earned by the filled channel", e.earn.ppm)
+	if e.earn.basis != "earned" {
+		earned = fmt.Sprintf("%d ppm, our fee on the filled channel (too few forwards to go by),", e.earn.ppm)
+	}
+	return fmt.Sprintf("feeratio %g × %s − %d ppm our fee on the drained one", ratio, earned, e.drain)
+}
+
 func (e economics) String() string {
 	return fmt.Sprintf("the filled channel earns %d ppm (%s), the drained one charges %d ppm: limit %d ppm",
 		e.earn.ppm, e.earn.basis, e.drain, e.limit)

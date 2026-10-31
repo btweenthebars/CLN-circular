@@ -263,6 +263,7 @@ func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount u
 	rebalance := rebalance2.NewRebalance(out, in, amount, limit, attempts, r.maxHops)
 	if r.feeRatio > 0 && limit < r.maxPPM {
 		rebalance.RunMaxPPM = r.maxPPM
+		rebalance.LimitWhy = e.why(r.feeRatio)
 	}
 	rebalance.Node = r.Node
 	rebalance.MaxNodeFails = r.maxNodeFails

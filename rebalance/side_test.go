@@ -114,11 +114,21 @@ func TestTargetFeeAboveMaxPPMIsTheTargetsFailure(t *testing.T) {
 	result = r.Run()
 	assert.Equal(t, "failure", result.Status)
 	assert.Equal(t, SideNone, result.FailedAt)
-	assert.Contains(t, result.Message, "charges at least 500 ppm to send 100000 sats to us over 5x1x1, more than maxppm 300 (this split's own limit)")
+	assert.Contains(t, result.Message, "charges at least 500 ppm to send 100000 sats to us over 5x1x1, more than this split's own limit: 300 ppm (maxppm 1000)")
 	assert.Empty(t, n.paid)
 	assert.True(t, result.HeldByOwnLimit)
 	assert.False(t, result.InOverMax, "within the run's maxppm")
 	assert.True(t, result.OwnLimit)
+	// it says how feeratio came to that limit, when the run said
+	n, out, in = shortRoute()
+	in.Channel.FeePerMillionth = 500
+	r = rebalanceOn(n, out, in, 100000000)
+	r.MaxPPM, r.RunMaxPPM = 300, 1000
+	r.LimitWhy = "feeratio 0.5 × 600 ppm earned by the filled channel − 0 ppm our fee on the drained one"
+	result = r.Run()
+	assert.Contains(t, result.Message, "more than this split's own limit: 300 ppm (feeratio 0.5 × 600 ppm earned by "+
+		"the filled channel − 0 ppm our fee on the drained one; maxppm 1000)")
+	assert.True(t, result.HeldByOwnLimit)
 
 	// above the run's maxppm too, it is the in channel refusing, as before
 	n, out, in = shortRoute()
@@ -224,4 +234,35 @@ func TestPeerNodeFailuresAreOnOurSide(t *testing.T) {
 	err = r.learnFromFailure(route, failureAt("02a", "3x1x1", 0, failNodeBit|2), map[string]bool{})
 	side, _ = failureSide(err)
 	assert.Equal(t, SideRoute, side)
+}
+
+// A route over a split's own limit (feeratio) said "but maxppm is 300", as if
+// the run's maxppm were 300: it names the split's own limit, and how it came
+// to it.
+func TestRouteOverAnOwnLimitSaysWhichLimit(t *testing.T) {
+	run := func(maxPPM, runMaxPPM uint64, why string) *Result {
+		n, out, in := shortRoute()
+		middle, err := n.Graph.GetChannel(id("3x1x1", "02a", "02b"))
+		assert.NoError(t, err)
+		middle.Channel.FeePerMillionth = 500
+		r := rebalanceOn(n, out, in, 10000000)
+		r.MaxPPM, r.RunMaxPPM, r.LimitWhy = maxPPM, runMaxPPM, why
+		result := r.Run()
+		assert.Empty(t, n.paid)
+		return result
+	}
+	why := "feeratio 0.5 × 600 ppm earned by the filled channel − 0 ppm our fee on the drained one"
+	result := run(300, 1000, why)
+	assert.True(t, result.HeldByOwnLimit, "within the run's maxppm")
+	assert.Contains(t, result.Message, fmt.Sprintf("Cheapest route found was %d ppm, but this split's own limit is "+
+		"300 ppm (%s; maxppm 1000)", result.CheapestPPM, why))
+	assert.NotContains(t, result.Message, "maxppm is")
+
+	result = run(300, 0, "")
+	assert.Contains(t, result.Message, fmt.Sprintf("Cheapest route found was %d ppm, but maxppm is 300", result.CheapestPPM),
+		"no limit of its own: as before")
+	result = run(300, 300, why)
+	assert.Contains(t, result.Message, "but maxppm is 300", "a limit at the run's maxppm is not its own")
+	result = run(300, 1000, "")
+	assert.Contains(t, result.Message, "but this split's own limit is 300 ppm (maxppm 1000)")
 }

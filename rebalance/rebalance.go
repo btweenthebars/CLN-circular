@@ -62,6 +62,10 @@ type Rebalance struct {
 	// than that limit, but not more than the run's, then blames neither
 	// channel
 	RunMaxPPM uint64
+	// LimitWhy says how the split came to its own limit, for its messages
+	// (with RunMaxPPM): "feeratio 0.9 × 1300 ppm earned by the filled
+	// channel − 0 ppm our fee on the drained one"
+	LimitWhy string
 
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity
@@ -80,6 +84,27 @@ type Rebalance struct {
 // errOwnLimit marks the in-peer charging more than a split's own feeratio
 // limit, though not more than its run's maxppm.
 var errOwnLimit = errors.New("this split's own limit")
+
+// ownLimit is the split's own limit, below its run's maxppm, with how it
+// came to it, for its messages: "300 ppm (feeratio 0.9 × ...; maxppm 1000)";
+// "" when its limit is the run's maxppm.
+func (r *Rebalance) ownLimit() string {
+	if r.RunMaxPPM <= r.MaxPPM {
+		return ""
+	}
+	if r.LimitWhy != "" {
+		return fmt.Sprintf("%d ppm (%s; maxppm %d)", r.MaxPPM, r.LimitWhy, r.RunMaxPPM)
+	}
+	return fmt.Sprintf("%d ppm (maxppm %d)", r.MaxPPM, r.RunMaxPPM)
+}
+
+// tooExpensive is the error for the cheapest route found costing feePPM,
+// more than the split may pay.
+func (r *Rebalance) tooExpensive(feePPM uint64) error {
+	err := util.NewRouteTooExpensiveError(feePPM, r.MaxPPM)
+	err.OwnLimit = r.ownLimit()
+	return err
+}
 
 // inOverMax marks the in-peer alone charging more than the run's maxppm: the
 // price, not a channel, held the split back (Result.InOverMax).

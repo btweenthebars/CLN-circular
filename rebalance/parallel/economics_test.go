@@ -62,6 +62,7 @@ func TestSplitEconomics(t *testing.T) {
 	assert.Equal(t, uint64(100), e.drain)
 	assert.Equal(t, "the filled channel earns 500 ppm (earned), the drained one charges 100 ppm: limit 300 ppm", e.String())
 	assert.Equal(t, uint64(300), e.most)
+	assert.Equal(t, "feeratio 0.8 × 500 ppm earned by the filled channel − 100 ppm our fee on the drained one", e.why(0.8))
 	assert.Equal(t, uint64(0), a.splitEconomics(dear).limit, "0.8 × 500 − 450 < 1: not worth it")
 	assert.Zero(t, a.splitEconomics(dear).most)
 	assert.Equal(t, 1, fw.reads["9x1x1"], "the target's forwards read once")
@@ -85,9 +86,16 @@ func TestSplitEconomics(t *testing.T) {
 	assert.Equal(t, 7, split.MaxNodeFails)
 	assert.Equal(t, -1, split.RiskPPM)
 	assert.True(t, split.Halt == &a.halt && split.Sent == &a.sent, "the run's stop and payment count")
+	assert.Equal(t, uint64(1000), split.RunMaxPPM)
+	assert.Equal(t, "feeratio 0.8 × 500 ppm earned by the filled channel − 100 ppm our fee on the drained one",
+		split.LimitWhy, "how its limit came about, for its messages")
 	a.feeRatio = 0
-	assert.Equal(t, uint64(1000), a.newSplit(cheap, target, cheap, 100000000).MaxPPM)
-	a.feeRatio = 0.8
+	split = a.newSplit(cheap, target, cheap, 100000000)
+	assert.Equal(t, uint64(1000), split.MaxPPM)
+	assert.Empty(t, split.LimitWhy, "no fee ratio: no limit of its own")
+	a.feeRatio, a.maxPPM = 0.8, 200
+	assert.Empty(t, a.newSplit(cheap, target, cheap, 100000000).LimitWhy, "held at maxppm: no limit of its own")
+	a.maxPPM = 1000
 
 	// too few forwards, or none readable: our fee on it stands in
 	for _, f := range []*forwardsOf{
@@ -99,6 +107,8 @@ func TestSplitEconomics(t *testing.T) {
 		e = a.splitEconomics(cheap)
 		assert.Equal(t, earning{ppm: 600, basis: "current fee"}, e.earn)
 		assert.Equal(t, uint64(380), e.limit, "0.8 × 600 − 100")
+		assert.Equal(t, "feeratio 0.8 × 600 ppm, our fee on the filled channel (too few forwards to go by), − 100 ppm "+
+			"our fee on the drained one", e.why(0.8))
 	}
 
 	// circular-push out of 1x1x1 (we charge 50 ppm) into 8x1x1, whose
@@ -305,4 +315,50 @@ func TestFeeratioCountsInTheResult(t *testing.T) {
 	out, err = json.Marshal(result)
 	assert.NoError(t, err)
 	assert.NotContains(t, string(out), "feeratio")
+}
+
+// The user's run: circular-pull into a channel that earned 1300 ppm, at
+// feeratio 0.9 and maxppm 1600, returned at once saying "Cheapest route found
+// was 1519 ppm, but maxppm is 1170", and nothing said that 1170 was the
+// feeratio limit. Its last error and stopped now say so, and what to change.
+func TestFeeratioHoldSaysWhy(t *testing.T) {
+	r := stepPull(t, 0, stepWay{via: "02a", ppm1: 760, ppm2: 760})
+	r.stepPPM, r.capPPM, r.probeMsat, r.retryEvery = 0, 0, 0, 0 // a plain run
+	r.maxPPM, r.feeRatio = 1600, 0.9
+	r.forwards = (&forwardsOf{ppm: map[string]uint64{"9x1x1": 1300}, sats: map[string]uint64{"9x1x1": 200000}}).read
+	res := stepRun(t, r)
+	assert.Zero(t, res.RebalancedAmount)
+	assert.Equal(t, 1, res.FeeratioHeld)
+	cheapest := res.CheapestPPMOverMax
+	assert.InDelta(t, 1520, float64(cheapest), 2)
+	assert.Contains(t, res.LastError, fmt.Sprintf("Cheapest route found was %d ppm, but this split's own limit is "+
+		"1170 ppm (feeratio 0.9 × 1300 ppm earned by the filled channel − 0 ppm our fee on the drained one; "+
+		"maxppm 1600)", cheapest))
+	assert.Equal(t, fmt.Sprintf("no candidates left: 1 failed; feeratio held its splits to at most 1170 ppm, and the "+
+		"cheapest route found cost %d ppm: raise feeratio, or pass feeratio=-1 to pay up to maxppm 1600", cheapest),
+		res.Stopped)
+
+	// a route over maxppm too: feeratio is not what held it
+	r = stepPull(t, 0, stepWay{via: "02a", ppm1: 900, ppm2: 900})
+	r.stepPPM, r.capPPM, r.probeMsat, r.retryEvery = 0, 0, 0, 0
+	r.maxPPM, r.feeRatio = 1600, 0.9
+	r.forwards = (&forwardsOf{ppm: map[string]uint64{"9x1x1": 1300}, sats: map[string]uint64{"9x1x1": 200000}}).read
+	res = stepRun(t, r)
+	assert.Zero(t, res.FeeratioHeld)
+	assert.Equal(t, "no candidates left: 1 failed", res.Stopped)
+}
+
+func TestFeeratioHint(t *testing.T) {
+	a := &AbstractRebalance{maxPPM: 1600, roundTopLimit: 1170, Result: &Result{FeeratioHeld: 2, CheapestPPMOverMax: 1519}}
+	assert.Equal(t, "; feeratio held its splits to at most 1170 ppm, and the cheapest route found cost 1519 ppm: "+
+		"raise feeratio, or pass feeratio=-1 to pay up to maxppm 1600", a.feeratioHint())
+	a.Result.CheapestPPMOverMax = 0
+	assert.Equal(t, "; feeratio held its splits to at most 1170 ppm: raise feeratio, or pass feeratio=-1 to pay up "+
+		"to maxppm 1600", a.feeratioHint(), "no route found over the limit")
+	a.Result.CheapestPPMOverMax = 1000
+	assert.NotContains(t, a.feeratioHint(), "cheapest", "over a lower limit than the highest: it would not tell")
+	a.Result.FeeratioHeld = 0
+	assert.Empty(t, a.feeratioHint(), "no split held by its own limit")
+	a.Result.FeeratioHeld, a.roundTopLimit = 2, 1600
+	assert.Empty(t, a.feeratioHint(), "a split could pay up to maxppm")
 }
