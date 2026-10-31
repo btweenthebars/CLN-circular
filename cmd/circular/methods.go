@@ -59,6 +59,11 @@ func registerMethods(p *glightning.Plugin) {
 	rpcNodes.Category = "utility"
 	p.RegisterMethod(rpcNodes)
 
+	rpcCandidates := glightning.NewRpcMethod(&node.CandidatesCmd{}, "How our channels did as rebalance candidates")
+	rpcCandidates.LongDesc = "How each of our channels did as a circular-pull (drained) or circular-push (filled) candidate, in the order runs rank them: successes, failures, the success rate the ranking orders by, what the successes moved and paid, and whether a recent failure puts it last for now. scid: only that channel; limit: how many (default 50)"
+	rpcCandidates.Category = "utility"
+	p.RegisterMethod(rpcCandidates)
+
 	rpcResume := glightning.NewRpcMethod(&node.Resume{}, "Resume circular")
 	rpcResume.LongDesc = "Resume activity after a stop command. Allows htlcs to be fired"
 	rpcResume.Category = "utility"

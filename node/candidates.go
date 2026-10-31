@@ -27,6 +27,19 @@ type CandidateRecord struct {
 	FeeMsat     uint64 `json:"fee_msat"`          // paid for them
 }
 
+// backingOff says whether the candidate failed within the last
+// candidateBackoff and has not succeeded since: runs try it after all the
+// others.
+func (r CandidateRecord) backingOff(now int64) bool {
+	return r.Failing && now-r.LastFailure < int64(candidateBackoff.Seconds())
+}
+
+// successRate is what the ranking orders by: (successes+1)/(attempts+2), so
+// a channel never tried counts as an even chance.
+func (r CandidateRecord) successRate() float64 {
+	return float64(r.Successes+1) / float64(r.Successes+r.Failures+2)
+}
+
 // candidateRecords holds the records by channel id ("scid/direction"),
 // safe for concurrent use.
 type candidateRecords struct {
@@ -155,8 +168,8 @@ func (n *Node) RankCandidates(ids []string, cost map[string]float64) []string {
 		r := n.candidates.get(id)
 		list[i] = ranked{
 			id:      id,
-			backoff: r.Failing && now-r.LastFailure < int64(candidateBackoff.Seconds()),
-			rate:    float64(r.Successes+1) / float64(r.Successes+r.Failures+2),
+			backoff: r.backingOff(now),
+			rate:    r.successRate(),
 			ppm:     cost[id],
 		}
 		if r.AmountMsat > 0 {
