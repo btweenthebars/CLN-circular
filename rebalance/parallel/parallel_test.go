@@ -2258,6 +2258,8 @@ func TestProbeSplitAttempts(t *testing.T) {
 	assert.Equal(t, 50, a.newSplit(out, in, out, 100000000).Attempts, "fewer attempts stay")
 	a.attempts, a.probeFailStreak = 300, 0
 	assert.Equal(t, 300, a.newSplit(out, in, out, 100000000).Attempts, "no probe limit")
+	a.stepProbe, a.probeFailStreak = false, 100
+	assert.Equal(t, 300, a.newSplit(out, in, out, 100000000).Attempts, "a full round keeps its attempts")
 }
 
 func TestSetProbeFailStreak(t *testing.T) {
