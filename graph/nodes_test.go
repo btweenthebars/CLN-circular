@@ -51,6 +51,21 @@ func TestNodeScores(t *testing.T) {
 	assert.Equal(t, 0, g.ApplyNodeScores(map[string]NodeScore{"02y": {Score: 5, At: now}}))
 }
 
+// A reader that changes nothing (a quote) sees the faded scores and
+// forgets none.
+func TestNodeScoresNowForgetsNothing(t *testing.T) {
+	g := NewGraph()
+	g.SetNodeMemory(24 * time.Hour)
+	now := time.Now().Unix()
+	g.ApplyNodeScores(map[string]NodeScore{"02old": {Score: 1, At: now - 72*3600}, "02new": {Score: 10, At: now}})
+	got := g.NodeScoresNow()
+	assert.NotContains(t, got, "02old", "faded below 0.5: not shown")
+	assert.InDelta(t, 10, got["02new"].Score, 0.01)
+	assert.Len(t, g.nodeScores, 2, "nothing forgotten")
+	g.NodeScores()
+	assert.Len(t, g.nodeScores, 1, "NodeScores, for saving, does forget")
+}
+
 func TestNodePenalties(t *testing.T) {
 	g := NewGraph()
 	assert.Nil(t, g.nodePenalties(), "nothing remembered")

@@ -100,6 +100,22 @@ func (g *Graph) NodeScores() map[string]NodeScore {
 	return out
 }
 
+// NodeScoresNow is NodeScores without forgetting anything: the scores faded
+// to now, of the nodes still above NODE_SCORE_FORGET, for a reader that
+// changes nothing (a quote).
+func (g *Graph) NodeScoresNow() map[string]NodeScore {
+	g.nodeScoresLock.Lock()
+	defer g.nodeScoresLock.Unlock()
+	now := time.Now().Unix()
+	out := make(map[string]NodeScore, len(g.nodeScores))
+	for id, s := range g.nodeScores {
+		if score := g.fadedLocked(s, now); score >= NODE_SCORE_FORGET {
+			out[id] = NodeScore{Score: score, At: now}
+		}
+	}
+	return out
+}
+
 // ApplyNodeScores keeps the scores saved by an earlier run, unless the graph
 // knows a newer one for the node.
 func (g *Graph) ApplyNodeScores(scores map[string]NodeScore) int {

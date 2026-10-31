@@ -109,7 +109,7 @@ func (q *RebalanceQuote) quotePair(n *node.Node) (*Quote, error) {
 	rebalance := rebalance2.NewRebalance(out, in, amount, maxPPM, q.Attempts, maxHops)
 	rebalance.Node = n
 	rebalance.RiskPPM = q.RiskPPM
-	result.add(quoteCandidate(n.Graph, out, out.Destination, rebalance))
+	result.add(quoteCandidate(n.Graph, n.Graph.NodeScoresNow(), out, out.Destination, rebalance))
 	result.summarize()
 	return result, nil
 }
@@ -164,8 +164,7 @@ type RememberedHop struct {
 // rememberedOn lists the nodes of route that the search charges for their
 // remembered failures: those forwarding over its channels between our out
 // channel and our in channel.
-func rememberedOn(g *graph.Graph, route *graph.Route, riskPPM uint64) []RememberedHop {
-	scores := g.NodeScores()
+func rememberedOn(g *graph.Graph, scores map[string]graph.NodeScore, route *graph.Route, riskPPM uint64) []RememberedHop {
 	if len(scores) == 0 {
 		return nil
 	}
@@ -190,6 +189,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 	}
 	result := &Quote{Mode: mode, Target: r.TargetChannel.ShortChannelId, TargetPeer: r.Node.Graph.GetAlias(targetPeer),
 		Amount: r.splitAmount / 1000, MaxPPM: r.maxPPM}
+	scores := r.Node.Graph.NodeScoresNow() // once, read only: a quote changes nothing
 	r.QueueLock.Lock()
 	candidates := make([]*graph.Channel, r.Candidates.Len())
 	for i := range candidates {
@@ -229,7 +229,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		rebalance := rebalance2.NewRebalance(out, in, r.splitAmount, e.limit, r.attempts, r.maxHops)
 		rebalance.Node = r.Node
 		rebalance.RiskPPM = r.riskPPM
-		c := quoteCandidate(r.Node.Graph, candidate, peer, rebalance)
+		c := quoteCandidate(r.Node.Graph, scores, candidate, peer, rebalance)
 		if r.feeRatio > 0 {
 			limit := e.limit
 			c.MaxPPM, c.Economics = &limit, e.String()
@@ -242,7 +242,8 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 
 // quoteCandidate quotes rebalance's first payment, for candidate, whose
 // peer is peer.
-func quoteCandidate(g *graph.Graph, candidate *graph.Channel, peer string, rebalance *rebalance2.Rebalance) *QuoteCandidate {
+func quoteCandidate(g *graph.Graph, scores map[string]graph.NodeScore, candidate *graph.Channel, peer string,
+	rebalance *rebalance2.Rebalance) *QuoteCandidate {
 	c := &QuoteCandidate{Scid: candidate.ShortChannelId, Alias: g.GetAlias(peer), NodeId: peer}
 	route, err := rebalance.Quote()
 	if route != nil {
@@ -254,7 +255,7 @@ func quoteCandidate(g *graph.Graph, candidate *graph.Channel, peer string, rebal
 		chance, guessed := g.Estimate(route)
 		chance = math.Round(chance*100) / 100
 		c.Estimate, c.GuessedHops = &chance, &guessed
-		c.Remembered = rememberedOn(g, route, rebalance.RiskRate())
+		c.Remembered = rememberedOn(g, scores, route, rebalance.RiskRate())
 	}
 	if err != nil {
 		c.Error = err.Error()
