@@ -54,8 +54,11 @@ func (r *RebalancePush) Call() (jrpc2.Result, error) {
 	if err := r.prepare(); err != nil {
 		return nil, err
 	}
+	run := startRun("push", r.OutScid, r.Amount, r.MaxPPM)
 	r.FireCandidates()
-	return r.WaitForResult()
+	res, err := r.WaitForResult()
+	endRun(run, res, err)
+	return res, err
 }
 
 // prepare reads the parameters and finds the candidates, in the order a run

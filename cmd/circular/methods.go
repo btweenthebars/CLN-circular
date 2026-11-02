@@ -64,6 +64,11 @@ func registerMethods(p *glightning.Plugin) {
 	rpcCandidates.Category = "utility"
 	p.RegisterMethod(rpcCandidates)
 
+	rpcResults := glightning.NewRpcMethod(&parallel.ResultsCmd{}, "The last circular-pull / circular-push runs and their results")
+	rpcResults.LongDesc = "The runs circular knows (the running ones and the last 20 finished, in memory since the plugin started), newest first: kind, target, amount, maxppm, started, ended, status and the result each call returned - for a caller that lost its connection meanwhile. target: only that channel's"
+	rpcResults.Category = "utility"
+	p.RegisterMethod(rpcResults)
+
 	rpcResume := glightning.NewRpcMethod(&node.Resume{}, "Resume circular")
 	rpcResume.LongDesc = "Resume activity after a stop command. Allows htlcs to be fired"
 	rpcResume.Category = "utility"

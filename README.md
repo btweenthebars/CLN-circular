@@ -28,6 +28,7 @@ Earlier versions settled rebalances from an `htlc_accepted` hook that released t
 * `circular-stop`: Stop `circular` from firing new HTLCs (active ones will complete)
 * `circular-resume`: Resume normal rebalancing activity after a `circular-stop`
 * `circular-nodes [limit]`: The nodes remembered for failing rebalances' payments (`circular-node-memory`), most first: their score and what it adds to routes through them, in ppm
+* `circular-results [target]`: The `circular-pull` / `circular-push` runs circular knows - the running ones and the last 20 finished, in memory since the plugin started - newest first: `kind`, `target`, `amount`, `maxppm`, `started`, `ended`, `status` (running / done / failed) and the `result` the call returned (or `error`). A caller whose connection was cut meanwhile (a `lightning-cli` killed with the program that started it) reads the result here; the run itself goes on inside the plugin either way
 * `circular-candidates [scid] [limit]`: How each of your channels did as a `circular-pull` or `circular-push` candidate, in the order runs rank them (see below)
 
 Detailed explanation of the endpoints follows in the Usage section.
