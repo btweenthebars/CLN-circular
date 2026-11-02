@@ -172,6 +172,13 @@ func (r *RebalancePush) CanUseChannel(channel *glightning.PeerChannel) error {
 	return nil
 }
 
+// room is how much a run may fill channel, our in channel: the peer's
+// balance above what it keeps for them (filluptopercent / filluptoamount), msat.
+func (r *RebalancePush) room(channel *glightning.PeerChannel) uint64 {
+	keep := util.Min(r.FillUpToAmount, uint64(float64(channel.TotalMsat.MSat())*r.FillUpToPercent))
+	return subSaturating(remoteBalance(channel), keep)
+}
+
 // Fire drains the target channel into candidate, our in channel.
 func (r *RebalancePush) Fire(candidate *graph.Channel, amount uint64) {
 	r.launch(r.TargetChannel, candidate, candidate, amount)

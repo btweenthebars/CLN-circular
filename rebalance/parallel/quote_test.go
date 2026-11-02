@@ -195,3 +195,71 @@ func TestQuoteShowsRememberedNodes(t *testing.T) {
 	assert.Equal(t, uint64(0), a.quote("pull", true).Candidates[0].Remembered[0].PenaltyPPM)
 	assert.Equal(t, uint64(1000), graph.NodePenaltyPPM(1e6, 200), "capped at NODE_SCORE_MAX")
 }
+
+// withRoom is a run whose candidates each have 300k sats of room.
+type withRoom struct{ *depletedOne }
+
+func (r *withRoom) room(*glightning.PeerChannel) uint64 { return 300000000 }
+
+func ppm(v uint64) *uint64 { return &v }
+
+// The whole amount: cheapest route first, each candidate up to its room.
+func TestWholeQuote(t *testing.T) {
+	cs := []*QuoteCandidate{
+		{Scid: "a", PPM: ppm(500), RoomSat: 1000000},
+		{Scid: "b", PPM: ppm(300), RoomSat: 600000},
+		{Scid: "c", PPM: ppm(900), Error: "no route"},
+		{Scid: "d", PPM: ppm(100), Skipped: "depleted", RoomSat: 9000000},
+		{Scid: "e", PPM: ppm(700), RoomSat: 2000000},
+		{Scid: "f", PPM: ppm(50), RoomSat: 0},
+	}
+	w := wholeQuote(2000000000, cs)
+	assert.Equal(t, uint64(2000000), w.Amount)
+	assert.Equal(t, uint64(2000000), w.Covered)
+	assert.Equal(t, 3, w.Candidates, "b 600k, a 1M, e the last 400k")
+	assert.Equal(t, uint64(300), w.MinPPM)
+	assert.Equal(t, uint64(700), w.TopPPM)
+	assert.Equal(t, uint64(180+500+280), w.FeeSat)
+	assert.Equal(t, uint64(480), w.AvgPPM)
+	assert.Contains(t, w.Verdict, "the whole 2000000 sat: 3 candidates, routes 300-700 ppm (avg 480)")
+
+	w = wholeQuote(5000000000, cs)
+	assert.Equal(t, uint64(3600000), w.Covered)
+	assert.Contains(t, w.Verdict, "only 3600000 of 5000000 sat")
+
+	w = wholeQuote(1000000000, cs[2:4])
+	assert.Equal(t, uint64(0), w.Covered)
+	assert.Equal(t, "no candidate has a route within maxppm and room to give", w.Verdict)
+}
+
+func TestQuoteHasRoomAndTheWhole(t *testing.T) {
+	n, add, peer := quoteNetwork()
+	cheap := add("1x1x1", "02self", "02p0", 0)
+	target := add("9x1x1", "02in", "02self", 0)
+	add("4x1x1", "02p0", "02in", 0)
+	peer("02p0", "1x1x1")
+	peer("02in", "9x1x1")
+	a := quoteRun(n, target, "", cheap)
+	a.amount = 500000000
+	a.RebalanceMethods = &withRoom{a.RebalanceMethods.(*depletedOne)}
+	quote := a.quote("pull", true)
+	assert.Equal(t, uint64(300000), quote.Candidates[0].RoomSat)
+	if assert.NotNil(t, quote.Whole) {
+		assert.Equal(t, uint64(300000), quote.Whole.Covered, "500k asked, 300k of room")
+	}
+}
+
+// What a run may take from or give to a channel: its balance above what the
+// run keeps there.
+func TestRoom(t *testing.T) {
+	c := &glightning.PeerChannel{TotalMsat: glightning.AmountFromMSat(10000000000),
+		ToUsMsat: glightning.AmountFromMSat(3000000000)}
+	pull := &RebalancePull{DepleteUpToPercent: 0.2, DepleteUpToAmount: 1000000000}
+	assert.Equal(t, uint64(2000000000), pull.room(c), "3M ours, 1M kept (the lower of 20% and 1M)")
+	push := &RebalancePush{FillUpToPercent: 0.2, FillUpToAmount: 5000000000}
+	assert.Equal(t, uint64(5000000000), push.room(c), "7M theirs, 2M kept")
+	pull.DepleteUpToAmount = 4000000000
+	assert.Equal(t, uint64(1000000000), pull.room(c))
+	c.ToUsMsat = glightning.AmountFromMSat(1000000000)
+	assert.Equal(t, uint64(0), pull.room(c), "under what it keeps")
+}

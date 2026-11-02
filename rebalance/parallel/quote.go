@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
+
+	"github.com/elementsproject/glightning/glightning"
 
 	"github.com/elementsproject/glightning/jrpc2"
 )
@@ -135,6 +138,67 @@ type Quote struct {
 	MaxPPM     uint64            `json:"maxppm"`
 	Summary    string            `json:"summary"`
 	Candidates []*QuoteCandidate `json:"candidates"`
+	// Whole is the run's whole amount against the candidates' routes and room
+	// (pull and push only)
+	Whole *WholeQuote `json:"whole,omitempty"`
+}
+
+// WholeQuote is what the routed candidates could move of a run's whole
+// amount: cheapest route first, each up to the room its channel has (what a
+// run may drain or fill), until the amount. A route's liquidity beyond the
+// first split is not known: an upper bound at those prices, not a promise.
+type WholeQuote struct {
+	Amount     uint64 `json:"amount"`      // sats the run asks for
+	Covered    uint64 `json:"covered"`     // sats the routed candidates have room for, up to amount
+	Candidates int    `json:"candidates"`  // how many of them it takes
+	MinPPM     uint64 `json:"min_ppm"`     // the cheapest route used
+	TopPPM     uint64 `json:"top_ppm"`     // the dearest route needed
+	AvgPPM     uint64 `json:"avg_ppm"`     // weighted by what each would move
+	FeeSat     uint64 `json:"fee_sat"`     // what that would cost
+	Verdict    string `json:"verdict"`
+}
+
+// wholeQuote fills the amount (msat) from the routed candidates, cheapest
+// first, each up to its room.
+func wholeQuote(amount uint64, candidates []*QuoteCandidate) *WholeQuote {
+	routed := []*QuoteCandidate{}
+	for _, c := range candidates {
+		if c.Skipped == "" && c.Error == "" && c.PPM != nil && c.RoomSat > 0 {
+			routed = append(routed, c)
+		}
+	}
+	sort.SliceStable(routed, func(i, j int) bool { return *routed[i].PPM < *routed[j].PPM })
+	w := &WholeQuote{Amount: amount / 1000}
+	left, feeMsat := amount, uint64(0)
+	for _, c := range routed {
+		if left == 0 {
+			break
+		}
+		take := util.Min(left, c.RoomSat*1000)
+		left -= take
+		feeMsat += take * *c.PPM / 1_000_000
+		if w.Candidates == 0 {
+			w.MinPPM = *c.PPM
+		}
+		w.Candidates++
+		w.TopPPM = *c.PPM
+	}
+	moved := amount - left
+	w.Covered, w.FeeSat = moved/1000, feeMsat/1000
+	if moved > 0 {
+		w.AvgPPM = feeMsat * 1_000_000 / moved
+	}
+	switch {
+	case moved == 0:
+		w.Verdict = "no candidate has a route within maxppm and room to give"
+	case left == 0:
+		w.Verdict = fmt.Sprintf("the whole %d sat: %d candidates, routes %d-%d ppm (avg %d), about %d sat in fees, "+
+			"if their routes carry more than the first split", w.Amount, w.Candidates, w.MinPPM, w.TopPPM, w.AvgPPM, w.FeeSat)
+	default:
+		w.Verdict = fmt.Sprintf("only %d of %d sat: the candidates with a route within maxppm have no more room "+
+			"(%d candidates, routes %d-%d ppm)", w.Covered, w.Amount, w.Candidates, w.MinPPM, w.TopPPM)
+	}
+	return w
 }
 
 // QuoteCandidate is one candidate channel's quote. Estimate is a rough
@@ -151,6 +215,9 @@ type QuoteCandidate struct {
 	Estimate    *float64 `json:"estimate,omitempty"`
 	GuessedHops *int     `json:"guessed_hops,omitempty"`
 	CheapestPPM uint64   `json:"cheapest_ppm,omitempty"` // when every route costs more than maxppm
+	// RoomSat is how much a run may drain (pull) or fill (push) through its
+	// channel, by its balance and the run's deplete / fill limits
+	RoomSat uint64 `json:"room_sat,omitempty"`
 	// with feeratio: the most its splits may pay (ppm), and why
 	MaxPPM    *uint64 `json:"maxppm,omitempty"`
 	Economics string  `json:"economics,omitempty"`
@@ -240,6 +307,11 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		rebalance.Node = r.Node
 		rebalance.RiskPPM = r.riskPPM
 		c := quoteCandidate(r.Node.Graph, scores, candidate, peer, rebalance)
+		if m, ok := r.RebalanceMethods.(interface {
+			room(*glightning.PeerChannel) uint64
+		}); ok {
+			c.RoomSat = m.room(peerChannel) / 1000
+		}
 		if r.feeRatio > 0 {
 			limit := e.limit
 			c.MaxPPM, c.Economics = &limit, e.String()
@@ -247,6 +319,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		result.add(c)
 	}
 	result.summarize()
+	result.Whole = wholeQuote(r.amount, result.Candidates)
 	return result
 }
 
