@@ -156,11 +156,23 @@ func (r *RebalancePull) CanUseChannel(channel *glightning.PeerChannel) error {
 	return nil
 }
 
-// room is how much a run may drain from channel, our out channel: our
-// balance above what it keeps (depleteuptopercent / depleteuptoamount), msat.
+// room is how much a run may drain from channel, our out channel: the whole
+// splits our balance above what it keeps (depleteuptopercent /
+// depleteuptoamount) can pay, each with its fee at maxppm, as CanUseChannel
+// asks; msat.
 func (r *RebalancePull) room(channel *glightning.PeerChannel) uint64 {
 	keep := util.Min(r.DepleteUpToAmount, uint64(float64(channel.TotalMsat.MSat())*r.DepleteUpToPercent))
-	return subSaturating(localBalance(channel), keep)
+	return wholeSplits(subSaturating(localBalance(channel), keep), r.splitAmount,
+		addSaturating(r.splitAmount, graph.MaxFeeForPPM(r.splitAmount, r.maxPPM)))
+}
+
+// wholeSplits is how much of room moves in whole splits of split msat, each
+// taking each msat of room (0: room as it is).
+func wholeSplits(room, split, each uint64) uint64 {
+	if split == 0 || each == 0 {
+		return room
+	}
+	return room / each * split
 }
 
 // Fire drains candidate, our out channel, into the target channel.

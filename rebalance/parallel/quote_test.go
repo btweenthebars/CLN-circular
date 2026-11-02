@@ -262,4 +262,16 @@ func TestRoom(t *testing.T) {
 	assert.Equal(t, uint64(1000000000), pull.room(c))
 	c.ToUsMsat = glightning.AmountFromMSat(1000000000)
 	assert.Equal(t, uint64(0), pull.room(c), "under what it keeps")
+
+	// whole splits only, as CanUseChannel sends them: a pull's each with its fee at maxppm
+	c.ToUsMsat = glightning.AmountFromMSat(3000000000)
+	pull.DepleteUpToAmount = 1000000000
+	pull.splitAmount, pull.maxPPM = 300000000, 1000 // 300k + 300 sat fee each
+	assert.Equal(t, uint64(1800000000), pull.room(c), "2M of room: 6 splits of 300k+300, not 2M")
+	pull.splitAmount = 500000000
+	assert.Equal(t, uint64(1500000000), pull.room(c), "500k+500 each: 3 fit in 2M")
+	push.splitAmount = 1500000000
+	assert.Equal(t, uint64(4500000000), push.room(c), "5M of room: 3 splits of 1.5M")
+	assert.Equal(t, uint64(7), wholeSplits(7, 0, 0), "no split size: the room as it is")
+	assert.Equal(t, uint64(0), wholeSplits(299, 100, 300))
 }
