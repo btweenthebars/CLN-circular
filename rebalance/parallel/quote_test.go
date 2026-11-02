@@ -221,6 +221,12 @@ func TestWholeQuote(t *testing.T) {
 	assert.Equal(t, uint64(700), w.TopPPM)
 	assert.Equal(t, uint64(180+500+280), w.FeeSat)
 	assert.Equal(t, uint64(480), w.AvgPPM)
+
+	// one route at 272 ppm for an amount that does not divide evenly: avg 272, not 271
+	one := []*QuoteCandidate{{Scid: "1x1x1", PPM: ppm(272), RoomSat: 3000000}}
+	odd := wholeQuote(2042397000, one)
+	assert.Equal(t, uint64(272), odd.AvgPPM)
+	assert.Equal(t, uint64(556), odd.FeeSat, "555.5 sat rounds to 556")
 	assert.Contains(t, w.Verdict, "the whole 2000000 sat: 3 candidates, routes 300-700 ppm (avg 480)")
 
 	w = wholeQuote(5000000000, cs)

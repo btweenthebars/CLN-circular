@@ -169,14 +169,14 @@ func wholeQuote(amount uint64, candidates []*QuoteCandidate) *WholeQuote {
 	}
 	sort.SliceStable(routed, func(i, j int) bool { return *routed[i].PPM < *routed[j].PPM })
 	w := &WholeQuote{Amount: amount / 1000}
-	left, feeMsat := amount, uint64(0)
+	left, feePPMMsat := amount, uint64(0) // msat x ppm: the fee is this / 1e6 msat
 	for _, c := range routed {
 		if left == 0 {
 			break
 		}
 		take := util.Min(left, c.RoomSat*1000)
 		left -= take
-		feeMsat += take * *c.PPM / 1_000_000
+		feePPMMsat += take * *c.PPM
 		if w.Candidates == 0 {
 			w.MinPPM = *c.PPM
 		}
@@ -184,9 +184,9 @@ func wholeQuote(amount uint64, candidates []*QuoteCandidate) *WholeQuote {
 		w.TopPPM = *c.PPM
 	}
 	moved := amount - left
-	w.Covered, w.FeeSat = moved/1000, feeMsat/1000
+	w.Covered, w.FeeSat = moved/1000, (feePPMMsat+500_000_000)/1_000_000_000
 	if moved > 0 {
-		w.AvgPPM = feeMsat * 1_000_000 / moved
+		w.AvgPPM = (feePPMMsat + moved/2) / moved // rounded: never below the cheapest route
 	}
 	switch {
 	case moved == 0:
