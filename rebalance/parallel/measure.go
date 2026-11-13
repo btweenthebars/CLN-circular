@@ -13,6 +13,7 @@ const (
 	MEASURE_TRIES      = 3  // routes a candidate's measure searches until one carries a split
 	MEASURE_STEPS      = 3  // more probes over that route, to find how much more it carries
 	MEASURE_MAX_PROBES = 40 // probes per circular-quote
+	MEASURE_MAX_STEPS  = 8  // sizing probes per candidate at most (a binary search needs few)
 )
 
 // MEASURE_MAX_TIME bounds a measured circular-quote, from the call's start (a
@@ -20,10 +21,25 @@ const (
 // Bridge does around it, the Mac's 3-minute wait still gets the answer
 var MEASURE_MAX_TIME = 100 * time.Second
 
-// measureRoutes is Rebalance.Measure with the quote's tries and steps; tests
-// replace it
-var measureRoutes = func(r *rebalance2.Rebalance, want uint64, stop func() bool) rebalance2.Measurement {
-	return r.Measure(want, MEASURE_TRIES, MEASURE_STEPS, stop)
+// measureRoutes is Rebalance.Measure; tests replace it
+var measureRoutes = func(r *rebalance2.Rebalance, want uint64, tries, steps int, stop func() bool) rebalance2.Measurement {
+	return r.Measure(want, tries, steps, stop)
+}
+
+// measureDepth is how hard a measure tries each candidate: MEASURE_TRIES
+// routes and MEASURE_STEPS sizing probes, times how many default budgets
+// maxProbes holds (so a deeper measure searches more routes per candidate,
+// not just more candidates); the steps at most MEASURE_MAX_STEPS.
+func measureDepth(maxProbes int) (tries, steps int) {
+	scale := maxProbes / MEASURE_MAX_PROBES
+	if scale < 1 {
+		scale = 1
+	}
+	steps = MEASURE_STEPS * scale
+	if steps > MEASURE_MAX_STEPS {
+		steps = MEASURE_MAX_STEPS
+	}
+	return MEASURE_TRIES * scale, steps
 }
 
 // runningRun is a circular-pull or circular-push that is running, if any.
@@ -67,6 +83,7 @@ func (q *Quote) measure(amount uint64, n *node.Node, started time.Time) {
 	if q.maxTime > 0 {
 		maxTime = q.maxTime
 	}
+	tries, steps := measureDepth(maxProbes)
 	used, deadline := 0, started.Add(maxTime)
 	// why measuring stops before the next probe, if it does: a run that started meanwhile too
 	why := func() string {
@@ -102,7 +119,7 @@ func (q *Quote) measure(amount uint64, n *node.Node, started time.Time) {
 		} else if c.RoomSat > 0 && c.RoomSat*1000 < want {
 			want = c.RoomSat * 1000
 		}
-		m := measureRoutes(r, want, stop)
+		m := measureRoutes(r, want, tries, steps, stop)
 		mr := &MeasuredRoute{CarriedSat: m.Carried / 1000, Probes: m.Probes}
 		if m.Route != nil {
 			ppm := m.Route.FeePPM()

@@ -21,11 +21,13 @@ type measuring struct {
 	wasted  int // stop() calls before a search that then sent no probe
 	asked   []string
 	wants   map[string]uint64
+	depth   [2]int // the tries and steps it was given last
 }
 
-func (m *measuring) measure(r *rebalance.Rebalance, want uint64, stop func() bool) rebalance.Measurement {
+func (m *measuring) measure(r *rebalance.Rebalance, want uint64, tries, steps int, stop func() bool) rebalance.Measurement {
 	scid := r.OutChannel.ShortChannelId
 	m.asked = append(m.asked, scid)
+	m.depth = [2]int{tries, steps}
 	m.wants[scid] = want
 	out := rebalance.Measurement{}
 	for i := 0; i < m.wasted; i++ {
@@ -175,7 +177,7 @@ func TestMeasuringStops(t *testing.T) {
 	q = a.quote("pull", true)
 	used := 0
 	saved2 := measureRoutes
-	measureRoutes = func(r *rebalance.Rebalance, want uint64, stop func() bool) rebalance.Measurement {
+	measureRoutes = func(r *rebalance.Rebalance, want uint64, tries, steps int, stop func() bool) rebalance.Measurement {
 		used++
 		a.Node.Stopped.Store(true)
 		stop()
@@ -209,8 +211,8 @@ func TestARunStartsMidMeasure(t *testing.T) {
 	inner := m.measure
 	var r *Run
 	saved := measureRoutes
-	measureRoutes = func(rb *rebalance.Rebalance, want uint64, stop func() bool) rebalance.Measurement {
-		out := inner(rb, want, stop)
+	measureRoutes = func(rb *rebalance.Rebalance, want uint64, tries, steps int, stop func() bool) rebalance.Measurement {
+		out := inner(rb, want, tries, steps, stop)
 		if r == nil {
 			r = startRun("pull", "7x1x1", 1000000, 500) // starts after the first candidate
 		}
@@ -361,6 +363,14 @@ func TestMeasureLimits(t *testing.T) {
 	(&RebalanceQuote{Measure: true}).measured(q, a.amount, a.Node, time.Now())
 	assert.Equal(t, 3, q.Whole.Probes)
 	assert.Equal(t, []string{"1x1x1", "3x1x1", "2x1x1"}, m.asked)
+	assert.Equal(t, [2]int{3, 3}, m.depth, "3 routes, 3 sizing probes each")
+
+	// measureprobes 150: each candidate is searched harder too, not only more candidates
+	a, m = measuredRun(t, three, 1)
+	a.amount = 900000000
+	q = a.quote("pull", true)
+	(&RebalanceQuote{MeasureProbes: 150}).measured(q, a.amount, a.Node, time.Now())
+	assert.Equal(t, [2]int{9, 8}, m.depth)
 
 	// measuretime 300: a quote that took longer than the default time still measures
 	a, m = measuredRun(t, three, 1)
@@ -384,4 +394,13 @@ func TestMeasureLimits(t *testing.T) {
 	assert.Empty(t, m.asked)
 	_, err := (&RebalanceQuote{InScid: "9x1x1", MeasureTime: 5000}).Call()
 	assert.EqualError(t, err, "measuretime must be between 1 and 1800 seconds", "refused before quoting")
+}
+
+func TestMeasureDepth(t *testing.T) {
+	for _, c := range []struct{ probes, tries, steps int }{
+		{40, 3, 3}, {1, 3, 3}, {79, 3, 3}, {80, 6, 6}, {150, 9, 8}, {1000, 75, 8},
+	} {
+		tries, steps := measureDepth(c.probes)
+		assert.Equal(t, [2]int{c.tries, c.steps}, [2]int{tries, steps}, "%d probes", c.probes)
+	}
 }
