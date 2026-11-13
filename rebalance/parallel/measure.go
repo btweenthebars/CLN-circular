@@ -15,10 +15,10 @@ const (
 	MEASURE_MAX_PROBES = 40 // probes per circular-quote
 )
 
-// MEASURE_MAX_TIME bounds a circular-quote's measuring (a probe started
-// before it can take node.PROBE_TIMEOUT more): callers waiting 3 minutes get
-// their answer
-var MEASURE_MAX_TIME = 2 * time.Minute
+// MEASURE_MAX_TIME bounds a measured circular-quote, from the call's start (a
+// probe started before it can take node.PROBE_TIMEOUT more): with what the
+// Bridge does around it, the Mac's 3-minute wait still gets the answer
+var MEASURE_MAX_TIME = 100 * time.Second
 
 // measureRoutes is Rebalance.Measure with the quote's tries and steps; tests
 // replace it
@@ -26,12 +26,32 @@ var measureRoutes = func(r *rebalance2.Rebalance, want uint64, stop func() bool)
 	return r.Measure(want, MEASURE_TRIES, MEASURE_STEPS, stop)
 }
 
+// runningRun is a circular-pull or circular-push that is running, if any.
+func runningRun() *Run {
+	runs.Lock()
+	defer runs.Unlock()
+	for _, r := range runs.list {
+		if r.Status == "running" {
+			return r
+		}
+	}
+	return nil
+}
+
 // measure probes the routed candidates, cheapest first, for what their routes
 // carry now (Rebalance.Measure), until amount (msat; 0: one payment each, as
 // in a pair) is covered, MEASURE_MAX_PROBES probes were sent, MEASURE_MAX_TIME
-// passed, or circular-stop. A candidate's want is the rest of the amount, up
-// to its room. With an amount, Whole becomes what the probes found.
-func (q *Quote) measure(amount uint64, n *node.Node) {
+// passed since started (the quote call's start), or circular-stop. A
+// candidate's want is the rest of the amount, up to its room. With an amount,
+// Whole becomes what the probes found. Not while a run is going: its splits
+// use the same channels, and probes holding their liquidity would make them
+// fail (NotMeasured says so).
+func (q *Quote) measure(amount uint64, n *node.Node, started time.Time) {
+	if r := runningRun(); r != nil {
+		q.NotMeasured = fmt.Sprintf("not measured: a circular-%s on %s is running, and probes would hold liquidity "+
+			"on the channels its splits use; quote again once it ended", r.Kind, r.Target)
+		return
+	}
 	order := []int{}
 	for i, c := range q.Candidates {
 		if c.Skipped == "" && c.Error == "" && c.PPM != nil && i < len(q.rebalances) && q.rebalances[i] != nil {
@@ -39,7 +59,7 @@ func (q *Quote) measure(amount uint64, n *node.Node) {
 		}
 	}
 	sort.SliceStable(order, func(a, b int) bool { return *q.Candidates[order[a]].PPM < *q.Candidates[order[b]].PPM })
-	used, deadline := 0, time.Now().Add(MEASURE_MAX_TIME)
+	used, deadline := 0, started.Add(MEASURE_MAX_TIME)
 	stopped := func() bool { return n.Stopped.Load() || used >= MEASURE_MAX_PROBES || time.Now().After(deadline) }
 	stop := func() bool { // called before each probe
 		if stopped() {
@@ -78,7 +98,13 @@ func (q *Quote) measure(amount uint64, n *node.Node) {
 		}
 	}
 	if amount > 0 {
-		q.Whole = measuredWhole(amount, q.Candidates, used, stopped())
+		probes := 0
+		for _, c := range q.Candidates {
+			if c.Measured != nil {
+				probes += c.Measured.Probes
+			}
+		}
+		q.Whole = measuredWhole(amount, q.Candidates, probes, stopped())
 	}
 }
 
@@ -135,9 +161,11 @@ func measuredWhole(amount uint64, candidates []*QuoteCandidate, probes int, cut 
 		}
 	case left == 0:
 		w.Verdict = fmt.Sprintf("measured: routes carry the whole %d sat now: %d candidates, routes %d-%d ppm (avg %d), "+
-			"about %d sat in fees (%s)", w.Amount, w.Candidates, w.MinPPM, w.TopPPM, w.AvgPPM, w.FeeSat, probed)
+			"about %d sat in fees (%s; each route measured alone: routes sharing channels may carry less together)",
+			w.Amount, w.Candidates, w.MinPPM, w.TopPPM, w.AvgPPM, w.FeeSat, probed)
 	default:
-		w.Verdict = fmt.Sprintf("measured: routes carry only %d of %d sat now (%d candidates, routes %d-%d ppm; %s)",
+		w.Verdict = fmt.Sprintf("measured: routes carry only %d of %d sat now (%d candidates, routes %d-%d ppm; %s; "+
+			"one route per candidate: a run that spreads its splits may find more)",
 			w.Covered, w.Amount, w.Candidates, w.MinPPM, w.TopPPM, probed)
 	}
 	return w

@@ -176,6 +176,15 @@ func TestSendProbeOutcomes(t *testing.T) {
 	assert.Equal(t, util.ErrSendPayTimeout.Error(), err.Error())
 	assert.Equal(t, []string{"sendpay", "waitsendpay"}, f.methods())
 
+	// when it fails later, its record goes
+	timedOut := f.params("sendpay")["payment_hash"].(string)
+	n.OnPaymentFailure(&glightning.SendPayFailure{Data: glightning.SendPayFailureData{PaymentHash: timedOut}})
+	assert.Equal(t, []string{"sendpay", "waitsendpay", "delpay"}, f.methods())
+	assert.Equal(t, timedOut, f.params("delpay")["payment_hash"])
+	_, still := timedOutProbes.Load(timedOut)
+	assert.False(t, still)
+	f.calls = nil
+
 	// settled: cannot happen
 	waitErr = nil
 	assert.Equal(t, ErrProbeSettled, n.SendProbe(route))

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/elementsproject/glightning/glightning"
@@ -17,6 +18,10 @@ const (
 	PROBE_TIMEOUT = 30 // seconds
 	PROBE_LABEL   = "circular-probe"
 )
+
+// timedOutProbes are the probes still in flight when SendProbe stopped
+// waiting: their records are deleted when they fail (OnPaymentFailure)
+var timedOutProbes sync.Map
 
 // ErrProbeSettled would mean someone settled a probe, which needs a preimage
 // that was never made: it cannot happen.
@@ -62,6 +67,8 @@ func (n *Node) SendProbe(route *graph.Route) error {
 	}
 	if err.Error() != util.ErrSendPayTimeout.Error() {
 		n.deletePayment(hash)
+	} else {
+		timedOutProbes.Store(hash, true)
 	}
 	return err
 }

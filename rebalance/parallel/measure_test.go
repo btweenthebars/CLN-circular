@@ -18,6 +18,7 @@ type measuring struct {
 	carried map[string]uint64
 	middle  map[string][]string // the route's channel ids, per candidate
 	probes  int
+	wasted  int // stop() calls before a search that then sent no probe
 	asked   []string
 	wants   map[string]uint64
 }
@@ -27,6 +28,9 @@ func (m *measuring) measure(r *rebalance.Rebalance, want uint64, stop func() boo
 	m.asked = append(m.asked, scid)
 	m.wants[scid] = want
 	out := rebalance.Measurement{}
+	for i := 0; i < m.wasted; i++ {
+		stop()
+	}
 	for i := 0; i < m.probes; i++ {
 		if stop() {
 			out.Err = errors.New("measuring stopped")
@@ -83,7 +87,7 @@ func TestMeasuredWhole(t *testing.T) {
 	a, m := measuredRun(t, map[string]uint64{"1x1x1": 200000000, "2x1x1": 300000000, "3x1x1": 900000000}, 2)
 	a.amount = 500000000
 	q := a.quote("pull", true)
-	q.measure(a.amount, a.Node)
+	q.measure(a.amount, a.Node, time.Now())
 	assert.Equal(t, []string{"1x1x1", "3x1x1"}, m.asked, "cheapest first, until it is covered")
 	assert.Equal(t, map[string]uint64{"1x1x1": 300000000, "3x1x1": 300000000}, m.wants, "the rest, up to its room")
 	w := q.Whole
@@ -96,7 +100,8 @@ func TestMeasuredWhole(t *testing.T) {
 		assert.Equal(t, uint64(200), w.TopPPM)
 		assert.Equal(t, uint64(80), w.FeeSat, "200k at 100 + 300k at 200")
 		assert.Equal(t, "measured: routes carry the whole 500000 sat now: 2 candidates, routes 100-200 ppm (avg 160), "+
-			"about 80 sat in fees (4 probes, nothing paid)", w.Verdict)
+			"about 80 sat in fees (4 probes, nothing paid; each route measured alone: routes sharing channels "+
+			"may carry less together)", w.Verdict)
 	}
 	c := q.Candidates[0]
 	if assert.NotNil(t, c.Measured) {
@@ -112,10 +117,10 @@ func TestMeasuredWhole(t *testing.T) {
 	a, _ = measuredRun(t, map[string]uint64{"1x1x1": 100000000, "3x1x1": 0, "2x1x1": 100000000}, 1)
 	a.amount = 500000000
 	q = a.quote("pull", true)
-	q.measure(a.amount, a.Node)
+	q.measure(a.amount, a.Node, time.Now())
 	assert.Equal(t, uint64(200000), q.Whole.Covered)
 	assert.Equal(t, "measured: routes carry only 200000 of 500000 sat now (2 candidates, routes 100-300 ppm; "+
-		"3 probes, nothing paid)", q.Whole.Verdict)
+		"3 probes, nothing paid; one route per candidate: a run that spreads its splits may find more)", q.Whole.Verdict)
 	assert.Equal(t, "a channel on the route could not carry the amount", q.Candidates[2].Measured.Error)
 	assert.Equal(t, uint64(0), q.Candidates[2].Measured.CarriedSat)
 
@@ -123,7 +128,7 @@ func TestMeasuredWhole(t *testing.T) {
 	a, _ = measuredRun(t, map[string]uint64{}, 1)
 	a.amount = 500000000
 	q = a.quote("pull", true)
-	q.measure(a.amount, a.Node)
+	q.measure(a.amount, a.Node, time.Now())
 	assert.Equal(t, "measured: no route carried a split (3 probes, nothing paid): a channel on the route could "+
 		"not carry the amount", q.Whole.Verdict)
 	assert.Equal(t, uint64(0), q.Whole.Covered)
@@ -133,7 +138,7 @@ func TestMeasuringStops(t *testing.T) {
 	a, m := measuredRun(t, map[string]uint64{"1x1x1": 100000000, "2x1x1": 100000000, "3x1x1": 100000000}, 15)
 	a.amount = 900000000
 	q := a.quote("pull", true)
-	q.measure(a.amount, a.Node)
+	q.measure(a.amount, a.Node, time.Now())
 	assert.Equal(t, []string{"1x1x1", "3x1x1", "2x1x1"}, m.asked)
 	assert.Equal(t, 40, q.Whole.Probes, "the budget: 15 + 15 + 10")
 	assert.Equal(t, "measuring stopped", q.Candidates[1].Measured.Error, "2x1x1 ran out of probes")
@@ -145,7 +150,7 @@ func TestMeasuringStops(t *testing.T) {
 	a.amount = 500000000
 	a.Node.Stopped.Store(true)
 	q = a.quote("pull", true)
-	q.measure(a.amount, a.Node)
+	q.measure(a.amount, a.Node, time.Now())
 	assert.Empty(t, m.asked)
 	assert.Contains(t, q.Whole.Verdict, "measured: no route carried a split (0 probes, nothing paid; measuring stopped")
 
@@ -156,8 +161,42 @@ func TestMeasuringStops(t *testing.T) {
 	a, m = measuredRun(t, map[string]uint64{"1x1x1": 100000000}, 1)
 	a.amount = 500000000
 	q = a.quote("pull", true)
-	q.measure(a.amount, a.Node)
+	q.measure(a.amount, a.Node, time.Now())
 	assert.Empty(t, m.asked)
+}
+
+// Not while a run is going: probes would hold liquidity its splits need.
+func TestNotMeasuredDuringARun(t *testing.T) {
+	a, m := measuredRun(t, map[string]uint64{"1x1x1": 100000000}, 1)
+	a.amount = 500000000
+	q := a.quote("pull", true)
+	before := q.Whole
+	r := startRun("pull", "7x1x1", 1000000, 500)
+	q.measure(a.amount, a.Node, time.Now())
+	endRun(r, nil, nil)
+	assert.Empty(t, m.asked)
+	assert.Equal(t, "not measured: a circular-pull on 7x1x1 is running, and probes would hold liquidity on the "+
+		"channels its splits use; quote again once it ended", q.NotMeasured)
+	assert.Equal(t, before, q.Whole, "the quote as it was")
+	endRun(startRun("push", "8x1x1", 1000000, 500), nil, errors.New("failed"))
+	q.measure(a.amount, a.Node, time.Now())
+	assert.NotEmpty(t, m.asked, "once it ended (one that failed has ended too)")
+}
+
+// The time counts from the quote call's start; the probes counted are those sent.
+func TestMeasureTimeAndProbes(t *testing.T) {
+	a, m := measuredRun(t, map[string]uint64{"1x1x1": 100000000}, 1)
+	a.amount = 500000000
+	q := a.quote("pull", true)
+	q.measure(a.amount, a.Node, time.Now().Add(-MEASURE_MAX_TIME))
+	assert.Empty(t, m.asked, "the quote itself took all of the time")
+
+	a, m = measuredRun(t, map[string]uint64{"1x1x1": 100000000, "2x1x1": 100000000, "3x1x1": 100000000}, 1)
+	m.wasted = 2
+	a.amount = 900000000
+	q = a.quote("pull", true)
+	q.measure(a.amount, a.Node, time.Now())
+	assert.Equal(t, 3, q.Whole.Probes, "3 sent, not the 9 checks")
 }
 
 // A pair: one payment, measured.
@@ -165,7 +204,7 @@ func TestMeasuredPair(t *testing.T) {
 	a, m := measuredRun(t, map[string]uint64{"1x1x1": 100000000}, 1)
 	q := a.quote("pull", true)
 	q.Whole = nil
-	q.measure(0, a.Node)
+	q.measure(0, a.Node, time.Now())
 	assert.Equal(t, uint64(100000000), m.wants["1x1x1"], "one split")
 	assert.Nil(t, q.Whole, "no whole for one payment")
 	assert.Equal(t, uint64(100000), q.Candidates[0].Measured.CarriedSat)

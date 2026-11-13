@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/elementsproject/glightning/glightning"
 
@@ -63,11 +64,12 @@ func (q *RebalanceQuote) New() interface{} {
 }
 
 func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
+	started := time.Now()
 	switch {
 	case q.InScid != "" && q.OutScid != "":
 		result, err := q.quotePair(node.GetNode())
 		if err == nil && q.Measure {
-			result.measure(0, node.GetNode())
+			result.measure(0, node.GetNode(), started)
 		}
 		return result, err
 	case q.InScid != "":
@@ -77,7 +79,7 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 		}
 		result := pull.quote("pull", true)
 		if q.Measure {
-			result.measure(pull.amount, pull.Node)
+			result.measure(pull.amount, pull.Node, started)
 		}
 		return result, nil
 	case q.OutScid != "":
@@ -87,7 +89,7 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 		}
 		result := push.quote("push", false)
 		if q.Measure {
-			result.measure(push.amount, push.Node)
+			result.measure(push.amount, push.Node, started)
 		}
 		return result, nil
 	}
@@ -156,6 +158,8 @@ type Quote struct {
 	// Whole is the run's whole amount against the candidates' routes and room
 	// (pull and push only)
 	Whole *WholeQuote `json:"whole,omitempty"`
+	// NotMeasured says why measure=true measured nothing (a run is going)
+	NotMeasured string `json:"not_measured,omitempty"`
 
 	// rebalances are the candidates' first payments, as quoted (nil for one
 	// skipped), for measure

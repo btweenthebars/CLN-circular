@@ -160,6 +160,10 @@ func (n *Node) deleteIfOurs(paymentHash string) error {
 }
 
 func (n *Node) OnPaymentFailure(sf *glightning.SendPayFailure) {
+	if _, probe := timedOutProbes.LoadAndDelete(sf.Data.PaymentHash); probe {
+		n.deletePayment(sf.Data.PaymentHash) // a probe that failed after SendProbe stopped waiting
+		return
+	}
 	if err := n.deleteIfOurs(sf.Data.PaymentHash); err != nil {
 		return // this payment was not made by us
 	}
