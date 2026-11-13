@@ -53,6 +53,29 @@ type RebalanceQuote struct {
 	// Measure probes the candidates' routes (payments nobody can settle:
 	// nothing is paid) for what they carry now, instead of guessing
 	Measure bool `json:"measure,omitempty"`
+	// MeasureProbes and MeasureTime (seconds) raise or lower what a measure
+	// may spend (default MEASURE_MAX_PROBES and MEASURE_MAX_TIME); either
+	// one turns measure on
+	MeasureProbes int `json:"measureprobes,omitempty"`
+	MeasureTime   int `json:"measuretime,omitempty"`
+}
+
+const (
+	MEASURE_PROBES_LIMIT = 1000 // the most measureprobes may ask for
+	MEASURE_TIME_LIMIT   = 1800 // the most measuretime may ask for, in seconds
+)
+
+// measureLimits checks measureprobes and measuretime, and says whether to
+// measure: measure=true, or either of them given.
+func (q *RebalanceQuote) measureLimits() (bool, int, time.Duration, error) {
+	if q.MeasureProbes < 0 || q.MeasureProbes > MEASURE_PROBES_LIMIT {
+		return false, 0, 0, fmt.Errorf("measureprobes must be between 1 and %d", MEASURE_PROBES_LIMIT)
+	}
+	if q.MeasureTime < 0 || q.MeasureTime > MEASURE_TIME_LIMIT {
+		return false, 0, 0, fmt.Errorf("measuretime must be between 1 and %d seconds", MEASURE_TIME_LIMIT)
+	}
+	on := q.Measure || q.MeasureProbes > 0 || q.MeasureTime > 0
+	return on, q.MeasureProbes, time.Duration(q.MeasureTime) * time.Second, nil
 }
 
 func (q *RebalanceQuote) Name() string {
@@ -65,11 +88,15 @@ func (q *RebalanceQuote) New() interface{} {
 
 func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 	started := time.Now()
+	if _, _, _, err := q.measureLimits(); err != nil {
+		return nil, err
+	}
+	measured := func(result *Quote, amount uint64, n *node.Node) { q.measured(result, amount, n, started) }
 	switch {
 	case q.InScid != "" && q.OutScid != "":
 		result, err := q.quotePair(node.GetNode())
-		if err == nil && q.Measure {
-			result.measure(0, node.GetNode(), started)
+		if err == nil {
+			measured(result, 0, node.GetNode())
 		}
 		return result, err
 	case q.InScid != "":
@@ -78,9 +105,7 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 			return nil, err
 		}
 		result := pull.quote("pull", true)
-		if q.Measure {
-			result.measure(pull.amount, pull.Node, started)
-		}
+		measured(result, pull.amount, pull.Node)
 		return result, nil
 	case q.OutScid != "":
 		push := q.push()
@@ -88,12 +113,19 @@ func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 			return nil, err
 		}
 		result := push.quote("push", false)
-		if q.Measure {
-			result.measure(push.amount, push.Node, started)
-		}
+		measured(result, push.amount, push.Node)
 		return result, nil
 	}
 	return nil, util.ErrNoRequiredParameter
+}
+
+// measured measures result's routes when asked (measure, measureprobes or
+// measuretime), within what measureprobes and measuretime allow.
+func (q *RebalanceQuote) measured(result *Quote, amount uint64, n *node.Node, started time.Time) {
+	if on, probes, limit, err := q.measureLimits(); on && err == nil {
+		result.maxProbes, result.maxTime = probes, limit
+		result.measure(amount, n, started)
+	}
 }
 
 // pull is the circular-pull the quote is of.
@@ -160,6 +192,9 @@ type Quote struct {
 	Whole *WholeQuote `json:"whole,omitempty"`
 	// NotMeasured says why measure=true measured nothing (a run is going)
 	NotMeasured string `json:"not_measured,omitempty"`
+	// what a measure may spend (measureprobes, measuretime); 0: the defaults
+	maxProbes int
+	maxTime   time.Duration
 
 	// rebalances are the candidates' first payments, as quoted (nil for one
 	// skipped), for measure
@@ -171,13 +206,13 @@ type Quote struct {
 // run may drain or fill), until the amount. A route's liquidity beyond the
 // first split is not known: an upper bound at those prices, not a promise.
 type WholeQuote struct {
-	Amount     uint64 `json:"amount"`      // sats the run asks for
-	Covered    uint64 `json:"covered"`     // sats the routed candidates have room for, up to amount
-	Candidates int    `json:"candidates"`  // how many of them it takes
-	MinPPM     uint64 `json:"min_ppm"`     // the cheapest route used
-	TopPPM     uint64 `json:"top_ppm"`     // the dearest route needed
-	AvgPPM     uint64 `json:"avg_ppm"`     // weighted by what each would move
-	FeeSat     uint64 `json:"fee_sat"`     // what that would cost
+	Amount     uint64 `json:"amount"`     // sats the run asks for
+	Covered    uint64 `json:"covered"`    // sats the routed candidates have room for, up to amount
+	Candidates int    `json:"candidates"` // how many of them it takes
+	MinPPM     uint64 `json:"min_ppm"`    // the cheapest route used
+	TopPPM     uint64 `json:"top_ppm"`    // the dearest route needed
+	AvgPPM     uint64 `json:"avg_ppm"`    // weighted by what each would move
+	FeeSat     uint64 `json:"fee_sat"`    // what that would cost
 	Verdict    string `json:"verdict"`
 	// Measured: the routes were probed (measure=true), and the figures are
 	// what they carried, not their room; Probes counts the probes

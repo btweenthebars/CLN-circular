@@ -81,7 +81,6 @@ func measuredRun(t *testing.T, carried map[string]uint64, probes int) (*Abstract
 	return a, m
 }
 
-
 func TestMeasuredWhole(t *testing.T) {
 	// 500k wanted: 1x1x1 (100 ppm) carries 200k, 3x1x1 (200 ppm) its room, 300k: 2x1x1 not needed
 	a, m := measuredRun(t, map[string]uint64{"1x1x1": 200000000, "2x1x1": 300000000, "3x1x1": 900000000}, 2)
@@ -285,8 +284,8 @@ func TestMeasuredWholeFigures(t *testing.T) {
 	cs := []*QuoteCandidate{
 		{Scid: "a", PPM: ppm(100), Measured: measured(300000, ppm(400), "")}, // its route was dearer when measured
 		{Scid: "b", PPM: ppm(200), Measured: measured(500000, ppm(150), "")},
-		{Scid: "c", PPM: ppm(300), Measured: measured(0, ppm(50), "")},       // nothing carried: not counted
-		{Scid: "d", PPM: ppm(400)},                                           // not measured
+		{Scid: "c", PPM: ppm(300), Measured: measured(0, ppm(50), "")}, // nothing carried: not counted
+		{Scid: "d", PPM: ppm(400)}, // not measured
 		{Scid: "e", PPM: ppm(500), Measured: measured(0, nil, "first error")},
 	}
 	w := measuredWhole(600000000, cs, 9, true)
@@ -304,4 +303,85 @@ func TestMeasuredWholeFigures(t *testing.T) {
 	}
 	assert.Equal(t, "measured: no route carried a split (4 probes, nothing paid): first error",
 		measuredWhole(100000000, none, 4, false).Verdict)
+}
+
+// measureprobes and measuretime: checked, either one measures, and the
+// measure keeps to them.
+func TestMeasureLimits(t *testing.T) {
+	for _, c := range []struct {
+		q      RebalanceQuote
+		on     bool
+		probes int
+		limit  time.Duration
+		err    string
+	}{
+		{q: RebalanceQuote{}},
+		{q: RebalanceQuote{Measure: true}, on: true},
+		{q: RebalanceQuote{MeasureProbes: 150}, on: true, probes: 150},
+		{q: RebalanceQuote{MeasureTime: 300}, on: true, limit: 300 * time.Second},
+		{q: RebalanceQuote{MeasureProbes: 1000, MeasureTime: 1800}, on: true, probes: 1000, limit: 1800 * time.Second},
+		{q: RebalanceQuote{MeasureProbes: -1}, err: "measureprobes must be between 1 and 1000"},
+		{q: RebalanceQuote{MeasureProbes: 1001}, err: "measureprobes must be between 1 and 1000"},
+		{q: RebalanceQuote{MeasureTime: -1}, err: "measuretime must be between 1 and 1800 seconds"},
+		{q: RebalanceQuote{MeasureTime: 1801}, err: "measuretime must be between 1 and 1800 seconds"},
+	} {
+		on, probes, limit, err := c.q.measureLimits()
+		if c.err != "" {
+			assert.EqualError(t, err, c.err)
+			continue
+		}
+		assert.NoError(t, err)
+		assert.Equal(t, c.on, on, "%+v", c.q)
+		assert.Equal(t, c.probes, probes)
+		assert.Equal(t, c.limit, limit)
+	}
+
+	three := map[string]uint64{"1x1x1": 100000000, "2x1x1": 100000000, "3x1x1": 100000000}
+	// not asked: nothing measured
+	a, m := measuredRun(t, three, 1)
+	a.amount = 900000000
+	q := a.quote("pull", true)
+	(&RebalanceQuote{}).measured(q, a.amount, a.Node, time.Now())
+	assert.Empty(t, m.asked)
+	assert.False(t, q.Whole.Measured)
+
+	// measureprobes 2: two probes, then it stops
+	a, m = measuredRun(t, three, 1)
+	a.amount = 900000000
+	q = a.quote("pull", true)
+	(&RebalanceQuote{MeasureProbes: 2}).measured(q, a.amount, a.Node, time.Now())
+	assert.Equal(t, 2, q.Whole.Probes)
+	assert.Equal(t, uint64(200000), q.Whole.Covered)
+	assert.Contains(t, q.Whole.Verdict, "measuring stopped there")
+
+	// the default: all three
+	a, m = measuredRun(t, three, 1)
+	a.amount = 900000000
+	q = a.quote("pull", true)
+	(&RebalanceQuote{Measure: true}).measured(q, a.amount, a.Node, time.Now())
+	assert.Equal(t, 3, q.Whole.Probes)
+	assert.Equal(t, []string{"1x1x1", "3x1x1", "2x1x1"}, m.asked)
+
+	// measuretime 300: a quote that took longer than the default time still measures
+	a, m = measuredRun(t, three, 1)
+	a.amount = 900000000
+	q = a.quote("pull", true)
+	(&RebalanceQuote{MeasureTime: 300}).measured(q, a.amount, a.Node, time.Now().Add(-2*MEASURE_MAX_TIME))
+	assert.Equal(t, 3, q.Whole.Probes)
+	// ... but not one past it
+	a, m = measuredRun(t, three, 1)
+	a.amount = 900000000
+	q = a.quote("pull", true)
+	(&RebalanceQuote{MeasureTime: 300}).measured(q, a.amount, a.Node, time.Now().Add(-301*time.Second))
+	assert.Empty(t, m.asked)
+	assert.Equal(t, "not measured: its 5m0s from the call's start", q.NotMeasured)
+
+	// a refused limit measures nothing (Call refuses it before quoting)
+	a, m = measuredRun(t, three, 1)
+	a.amount = 900000000
+	q = a.quote("pull", true)
+	(&RebalanceQuote{Measure: true, MeasureProbes: 5000}).measured(q, a.amount, a.Node, time.Now())
+	assert.Empty(t, m.asked)
+	_, err := (&RebalanceQuote{InScid: "9x1x1", MeasureTime: 5000}).Call()
+	assert.EqualError(t, err, "measuretime must be between 1 and 1800 seconds", "refused before quoting")
 }

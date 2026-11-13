@@ -40,8 +40,9 @@ func runningRun() *Run {
 
 // measure probes the routed candidates, cheapest first, for what their routes
 // carry now (Rebalance.Measure), until amount (msat; 0: one payment each, as
-// in a pair) is covered, MEASURE_MAX_PROBES probes were sent, MEASURE_MAX_TIME
-// passed since started (the quote call's start), or circular-stop. A
+// in a pair) is covered, its probes were sent (q.maxProbes, else
+// MEASURE_MAX_PROBES), its time passed since started (the quote call's
+// start; q.maxTime, else MEASURE_MAX_TIME), or circular-stop. A
 // candidate's want is the rest of the amount, up to its room. With an amount,
 // Whole becomes what the probes found. Not while a run is going: its splits
 // use the same channels, and probes holding their liquidity would make them
@@ -59,7 +60,14 @@ func (q *Quote) measure(amount uint64, n *node.Node, started time.Time) {
 		}
 	}
 	sort.SliceStable(order, func(a, b int) bool { return *q.Candidates[order[a]].PPM < *q.Candidates[order[b]].PPM })
-	used, deadline := 0, started.Add(MEASURE_MAX_TIME)
+	maxProbes, maxTime := MEASURE_MAX_PROBES, MEASURE_MAX_TIME
+	if q.maxProbes > 0 {
+		maxProbes = q.maxProbes
+	}
+	if q.maxTime > 0 {
+		maxTime = q.maxTime
+	}
+	used, deadline := 0, started.Add(maxTime)
 	// why measuring stops before the next probe, if it does: a run that started meanwhile too
 	why := func() string {
 		switch {
@@ -67,10 +75,10 @@ func (q *Quote) measure(amount uint64, n *node.Node, started time.Time) {
 			return "circular-stop"
 		case runningRun() != nil:
 			return "a circular run started"
-		case used >= MEASURE_MAX_PROBES:
-			return fmt.Sprintf("its %d probes", MEASURE_MAX_PROBES)
+		case used >= maxProbes:
+			return fmt.Sprintf("its %d probes", maxProbes)
 		case time.Now().After(deadline):
-			return fmt.Sprintf("its %v from the call's start", MEASURE_MAX_TIME)
+			return fmt.Sprintf("its %v from the call's start", maxTime)
 		}
 		return ""
 	}

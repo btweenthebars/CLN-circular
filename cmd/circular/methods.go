@@ -30,7 +30,8 @@ func registerMethods(p *glightning.Plugin) {
 
 	rpcQuote := glightning.NewRpcMethod(&parallel.RebalanceQuote{}, "Quote a rebalance without paying")
 	rpcQuote.LongDesc = "With the parameters of circular-pull (`inscid`), circular-push (`outscid`) or circular (both), " +
-		"show for each candidate the route a run would try first, its fee and a rough chance of success, or why it would not be tried. Nothing is paid. Give the parameters by name (-k or key=value)."
+		"show for each candidate the route a run would try first, its fee and a rough chance of success, or why it would not be tried. Nothing is paid. With measure=true it probes the routes (payments nobody can settle) for what they carry now: " +
+		"at most 40 probes and 100 s by default, or measureprobes (up to 1000) and measuretime (seconds, up to 1800). Give the parameters by name (-k or key=value)."
 	rpcQuote.Category = "utility"
 	p.RegisterMethod(rpcQuote)
 
