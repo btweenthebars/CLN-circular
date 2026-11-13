@@ -150,9 +150,12 @@ func TestMeasuringStops(t *testing.T) {
 	a.amount = 500000000
 	a.Node.Stopped.Store(true)
 	q = a.quote("pull", true)
+	before := *q.Whole
 	q.measure(a.amount, a.Node, time.Now())
 	assert.Empty(t, m.asked)
-	assert.Contains(t, q.Whole.Verdict, "measured: no route carried a split (0 probes, nothing paid; measuring stopped")
+	assert.Equal(t, "not measured: circular-stop", q.NotMeasured)
+	assert.Equal(t, before, *q.Whole, "nothing probed: the quote as it was, not \"no route carried\"")
+	a.Node.Stopped.Store(false)
 
 	// its time
 	saved := MEASURE_MAX_TIME
@@ -163,6 +166,63 @@ func TestMeasuringStops(t *testing.T) {
 	q = a.quote("pull", true)
 	q.measure(a.amount, a.Node, time.Now())
 	assert.Empty(t, m.asked)
+	assert.Equal(t, "not measured: its -1s from the call's start", q.NotMeasured)
+	assert.False(t, q.Whole.Measured)
+	MEASURE_MAX_TIME = saved
+
+	// stopped before its first probe: its candidate's measurement, of nothing, is not shown
+	a, _ = measuredRun(t, map[string]uint64{"1x1x1": 100000000}, 1)
+	a.amount = 500000000
+	q = a.quote("pull", true)
+	used := 0
+	saved2 := measureRoutes
+	measureRoutes = func(r *rebalance.Rebalance, want uint64, stop func() bool) rebalance.Measurement {
+		used++
+		a.Node.Stopped.Store(true)
+		stop()
+		return rebalance.Measurement{Err: errors.New("measuring stopped")}
+	}
+	q.measure(a.amount, a.Node, time.Now())
+	measureRoutes = saved2
+	a.Node.Stopped.Store(false)
+	assert.Equal(t, 1, used)
+	assert.Equal(t, "not measured: circular-stop", q.NotMeasured)
+	for _, c := range q.Candidates {
+		assert.Nil(t, c.Measured)
+	}
+
+	// no candidate with a route
+	a, _ = measuredRun(t, map[string]uint64{}, 1)
+	a.amount = 500000000
+	q = a.quote("pull", true)
+	for _, c := range q.Candidates {
+		c.Error = "no route"
+	}
+	q.measure(a.amount, a.Node, time.Now())
+	assert.Equal(t, "not measured: no candidate had a route to probe", q.NotMeasured)
+}
+
+// A run that starts while it measures stops it before the next probe.
+func TestARunStartsMidMeasure(t *testing.T) {
+	a, m := measuredRun(t, map[string]uint64{"1x1x1": 100000000, "2x1x1": 100000000, "3x1x1": 100000000}, 1)
+	a.amount = 900000000
+	q := a.quote("pull", true)
+	inner := m.measure
+	var r *Run
+	saved := measureRoutes
+	measureRoutes = func(rb *rebalance.Rebalance, want uint64, stop func() bool) rebalance.Measurement {
+		out := inner(rb, want, stop)
+		if r == nil {
+			r = startRun("pull", "7x1x1", 1000000, 500) // starts after the first candidate
+		}
+		return out
+	}
+	defer func() { measureRoutes = saved }()
+	q.measure(a.amount, a.Node, time.Now())
+	endRun(r, nil, nil)
+	assert.Equal(t, []string{"1x1x1"}, m.asked)
+	assert.Contains(t, q.Whole.Verdict, "measuring stopped there (its probe budget or time, circular-stop, or a run "+
+		"that started)")
 }
 
 // Not while a run is going: probes would hold liquidity its splits need.

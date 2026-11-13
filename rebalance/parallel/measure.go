@@ -60,7 +60,21 @@ func (q *Quote) measure(amount uint64, n *node.Node, started time.Time) {
 	}
 	sort.SliceStable(order, func(a, b int) bool { return *q.Candidates[order[a]].PPM < *q.Candidates[order[b]].PPM })
 	used, deadline := 0, started.Add(MEASURE_MAX_TIME)
-	stopped := func() bool { return n.Stopped.Load() || used >= MEASURE_MAX_PROBES || time.Now().After(deadline) }
+	// why measuring stops before the next probe, if it does: a run that started meanwhile too
+	why := func() string {
+		switch {
+		case n.Stopped.Load():
+			return "circular-stop"
+		case runningRun() != nil:
+			return "a circular run started"
+		case used >= MEASURE_MAX_PROBES:
+			return fmt.Sprintf("its %d probes", MEASURE_MAX_PROBES)
+		case time.Now().After(deadline):
+			return fmt.Sprintf("its %v from the call's start", MEASURE_MAX_TIME)
+		}
+		return ""
+	}
+	stopped := func() bool { return why() != "" }
 	stop := func() bool { // called before each probe
 		if stopped() {
 			return true
@@ -97,13 +111,24 @@ func (q *Quote) measure(amount uint64, n *node.Node, started time.Time) {
 			left -= util.Min(left, m.Carried)
 		}
 	}
-	if amount > 0 {
-		probes := 0
-		for _, c := range q.Candidates {
-			if c.Measured != nil {
-				probes += c.Measured.Probes
-			}
+	probes := 0
+	for _, c := range q.Candidates {
+		if c.Measured != nil {
+			probes += c.Measured.Probes
 		}
+	}
+	if probes == 0 { // nothing was probed: the quote as it was, and why
+		for _, c := range q.Candidates {
+			c.Measured = nil
+		}
+		reason := why()
+		if reason == "" {
+			reason = "no candidate had a route to probe"
+		}
+		q.NotMeasured = "not measured: " + reason
+		return
+	}
+	if amount > 0 {
 		q.Whole = measuredWhole(amount, q.Candidates, probes, stopped())
 	}
 }
@@ -151,7 +176,7 @@ func measuredWhole(amount uint64, candidates []*QuoteCandidate, probes int, cut 
 	}
 	probed := fmt.Sprintf("%d probes, nothing paid", probes)
 	if cut && left > 0 {
-		probed += "; measuring stopped there (its probe budget or time, or circular-stop)"
+		probed += "; measuring stopped there (its probe budget or time, circular-stop, or a run that started)"
 	}
 	switch {
 	case moved == 0:
