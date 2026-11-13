@@ -49,6 +49,9 @@ type RebalanceQuote struct {
 	Probe              int        `json:"probe,omitempty"`           // accepted, like maxfailstreak
 	MaxIdleRounds      util.Int   `json:"maxidlerounds,omitempty"`   // accepted, like maxfailstreak
 	ProbeFailStreak    util.Int   `json:"probefailstreak,omitempty"` // accepted, like maxfailstreak
+	// Measure probes the candidates' routes (payments nobody can settle:
+	// nothing is paid) for what they carry now, instead of guessing
+	Measure bool `json:"measure,omitempty"`
 }
 
 func (q *RebalanceQuote) Name() string {
@@ -62,19 +65,31 @@ func (q *RebalanceQuote) New() interface{} {
 func (q *RebalanceQuote) Call() (jrpc2.Result, error) {
 	switch {
 	case q.InScid != "" && q.OutScid != "":
-		return q.quotePair(node.GetNode())
+		result, err := q.quotePair(node.GetNode())
+		if err == nil && q.Measure {
+			result.measure(0, node.GetNode())
+		}
+		return result, err
 	case q.InScid != "":
 		pull := q.pull()
 		if err := pull.prepare(); err != nil {
 			return nil, err
 		}
-		return pull.quote("pull", true), nil
+		result := pull.quote("pull", true)
+		if q.Measure {
+			result.measure(pull.amount, pull.Node)
+		}
+		return result, nil
 	case q.OutScid != "":
 		push := q.push()
 		if err := push.prepare(); err != nil {
 			return nil, err
 		}
-		return push.quote("push", false), nil
+		result := push.quote("push", false)
+		if q.Measure {
+			result.measure(push.amount, push.Node)
+		}
+		return result, nil
 	}
 	return nil, util.ErrNoRequiredParameter
 }
@@ -122,7 +137,7 @@ func (q *RebalanceQuote) quotePair(n *node.Node) (*Quote, error) {
 	rebalance := rebalance2.NewRebalance(out, in, amount, maxPPM, q.Attempts, maxHops)
 	rebalance.Node = n
 	rebalance.RiskPPM = int(q.RiskPPM)
-	result.add(quoteCandidate(n.Graph, n.Graph.NodeScoresNow(), out, out.Destination, rebalance))
+	result.add(quoteCandidate(n.Graph, n.Graph.NodeScoresNow(), out, out.Destination, rebalance), rebalance)
 	result.summarize()
 	return result, nil
 }
@@ -141,6 +156,10 @@ type Quote struct {
 	// Whole is the run's whole amount against the candidates' routes and room
 	// (pull and push only)
 	Whole *WholeQuote `json:"whole,omitempty"`
+
+	// rebalances are the candidates' first payments, as quoted (nil for one
+	// skipped), for measure
+	rebalances []*rebalance2.Rebalance
 }
 
 // WholeQuote is what the routed candidates could move of a run's whole
@@ -156,6 +175,10 @@ type WholeQuote struct {
 	AvgPPM     uint64 `json:"avg_ppm"`     // weighted by what each would move
 	FeeSat     uint64 `json:"fee_sat"`     // what that would cost
 	Verdict    string `json:"verdict"`
+	// Measured: the routes were probed (measure=true), and the figures are
+	// what they carried, not their room; Probes counts the probes
+	Measured bool `json:"measured,omitempty"`
+	Probes   int  `json:"probes,omitempty"`
 }
 
 // wholeQuote fills the amount (msat) from the routed candidates, cheapest
@@ -226,6 +249,18 @@ type QuoteCandidate struct {
 	// Remembered lists the nodes on its route remembered for failing
 	// payments (circular-node-memory), with what each adds to it
 	Remembered []RememberedHop `json:"remembered,omitempty"`
+	// Measured is what probes found its routes carry now (measure=true)
+	Measured *MeasuredRoute `json:"measured,omitempty"`
+}
+
+// MeasuredRoute is what probes found a candidate's routes carry now.
+type MeasuredRoute struct {
+	CarriedSat uint64   `json:"carried_sat"`    // the most one route carried, in whole splits
+	PPM        *uint64  `json:"ppm,omitempty"`  // that route's fee for a split
+	Hops       int      `json:"hops,omitempty"` // and its length
+	Path       []string `json:"path,omitempty"` // from our out-peer to our in-peer
+	Probes     int      `json:"probes"`
+	Error      string   `json:"error,omitempty"` // why no route carried a split, or measuring stopped
 }
 
 // RememberedHop is a node on a quoted route remembered for failing
@@ -307,6 +342,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		rebalance.Node = r.Node
 		rebalance.RiskPPM = r.riskPPM
 		c := quoteCandidate(r.Node.Graph, scores, candidate, peer, rebalance)
+		result.rebalances = append(result.rebalances, rebalance)
 		if m, ok := r.RebalanceMethods.(interface {
 			room(*glightning.PeerChannel) uint64
 		}); ok {
@@ -316,7 +352,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 			limit := e.limit
 			c.MaxPPM, c.Economics = &limit, e.String()
 		}
-		result.add(c)
+		result.Candidates = append(result.Candidates, c)
 	}
 	result.summarize()
 	result.Whole = wholeQuote(r.amount, result.Candidates)
@@ -350,8 +386,14 @@ func quoteCandidate(g *graph.Graph, scores map[string]graph.NodeScore, candidate
 	return c
 }
 
-func (q *Quote) add(c *QuoteCandidate) {
+// add adds a candidate, with its first payment as quoted (rebalance), if any.
+func (q *Quote) add(c *QuoteCandidate, rebalance ...*rebalance2.Rebalance) {
 	q.Candidates = append(q.Candidates, c)
+	if len(rebalance) > 0 {
+		q.rebalances = append(q.rebalances, rebalance[0])
+	} else {
+		q.rebalances = append(q.rebalances, nil)
+	}
 }
 
 // summarize says in one line how many candidates would send a payment, at

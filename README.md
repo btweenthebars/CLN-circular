@@ -21,7 +21,7 @@ Earlier versions settled rebalances from an `htlc_accepted` hook that released t
 * `circular-push`: Push liquidity out of a channel using multiple peer channels as destinations in parallel
 * `circular`: Rebalance between two specific channels by Short Channel ID (`inscid` / `outscid`)
 * `circular-node`: Rebalance between two specific peers by Node ID (`innode` / `outnode`)
-* `circular-quote`: Show what a `circular-pull`, `circular-push` or `circular` run would try first, without paying anything
+* `circular-quote`: Show what a `circular-pull`, `circular-push` or `circular` run would try first, without paying anything; with `measure=true`, probe what its routes carry now (payments nobody can settle: nothing is paid)
 * `circular-active`: List currently active in-flight rebalancing payments
 * `circular-stats`: Get usage statistics and historical performance data
 * `circular-delete-stats`: Reset and delete saved rebalancing statistics
@@ -247,6 +247,14 @@ For a pull or a push it also answers for the whole `amount`, not just the first 
 }
 ```
 `estimate` is a rough chance that the route can carry the payment: the product of each channel's chance, as `circular-risk-ppm` describes. `guessed_hops` counts the channels no payment has told circular about, for which any balance up to the capacity is taken as equally likely. It is a guide for comparing routes, not a promise. A quote reflects what circular knows at that moment: what earlier payments taught it and the nodes it is avoiding. `remembered` lists the nodes on the route remembered for failing payments (`circular-node-memory`), with their score and what each adds to the route in the search (`penalty_ppm`); the summary counts the routes through any.
+
+#### Measure what the routes carry now (`measure=true`)
+```bash
+lightning-cli circular-quote -k inscid=123456x1x1 amount=2000000 splitamount=100000 maxppm=900 measure=true
+```
+With `measure=true` the quote no longer guesses: it sends the routes probes, payments that nobody can settle (a random payment hash, with no invoice and no preimage anywhere), so they can only fail: at your own node, which knows no such payment, once every channel along the route carried the amount; or where a channel could not. Nothing is paid, nothing moves, and each probe's record is deleted from `listsendpays` once it failed (one still in flight after 60 s keeps it until it fails). The candidates with a route are measured cheapest first, until the run's `amount` is covered: each searches up to 3 routes until one carries a split (each search avoids what the probes before found short), then probes that route up to 3 more times for how much more it carries, up to what is left of the amount and the candidate's `room_sat` (the whole of it first, then halfway: a binary search, in whole splits). Each candidate measured shows `measured`: `carried_sat` (the most its route carried), that route's `ppm`, `hops` and `path`, `probes`, and `error` when no route carried a split. `whole` then comes from what was carried, cheapest measured route first, with `measured: true`, `probes`, and a verdict that says so ("measured: routes carry the whole 2000000 sat now: 3 candidates, routes 410-760 ppm (avg 560), about 1120 sat in fees (11 probes, nothing paid)", or "measured: routes carry only 600000 of 2000000 sat now ...", or "measured: no route carried a split (9 probes, nothing paid): <why>"). Measuring stops at 40 probes or 3 minutes per quote, or at `circular-stop`, and the verdict says so when that left part of the amount unmeasured. With `inscid` and `outscid` (a pair), the one payment is measured.
+
+What the probes find is learned like a payment's outcome: a channel that carried a probe holds at least its amount; one that could not holds less, and the nodes that failed it are remembered (`circular-node-memory`). So a run started after a measure avoids what it found short. A probe holds an HTLC on each channel along its route for a second or two, like a failed payment; a measure sends at most 40. It measures one route per candidate, so a run that also uses other routes can move more than `carried_sat`; and liquidity changes, so it is what the routes carried at that moment, not a promise.
 
 ### Get stats about the usage of the plugin
 ```bash

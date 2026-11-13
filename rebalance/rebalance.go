@@ -33,6 +33,8 @@ type Rebalance struct {
 
 	// pay sends a payment over a route; tests replace payInvoice with it
 	pay func(route *graph.Route) (*graph.PrettyRoute, error)
+	// sendProbe sends a probe over a route; tests replace Node.SendProbe with it
+	sendProbe func(route *graph.Route) error
 	// refresh reads our channels with peers again; tests replace
 	// Node.RefreshPeerChannels with it
 	refresh func(peerIds ...string) error
