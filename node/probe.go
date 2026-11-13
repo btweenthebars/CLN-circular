@@ -14,7 +14,7 @@ import (
 const (
 	// PROBE_TIMEOUT is how long a probe is waited for: one that has not failed
 	// by then tells nothing (its HTLC still fails in the end: nobody can settle it)
-	PROBE_TIMEOUT = 60 // seconds
+	PROBE_TIMEOUT = 30 // seconds
 	PROBE_LABEL   = "circular-probe"
 )
 

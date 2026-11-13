@@ -15,9 +15,10 @@ const (
 	MEASURE_MAX_PROBES = 40 // probes per circular-quote
 )
 
-// MEASURE_MAX_TIME bounds a circular-quote's measuring: each probe can take
-// up to node.PROBE_TIMEOUT
-var MEASURE_MAX_TIME = 3 * time.Minute
+// MEASURE_MAX_TIME bounds a circular-quote's measuring (a probe started
+// before it can take node.PROBE_TIMEOUT more): callers waiting 3 minutes get
+// their answer
+var MEASURE_MAX_TIME = 2 * time.Minute
 
 // measureRoutes is Rebalance.Measure with the quote's tries and steps; tests
 // replace it
