@@ -143,7 +143,9 @@ func (r *AbstractRebalance) probeRanOut() string {
 	if carried == 0 {
 		return rest
 	}
-	out := fmt.Sprintf("every candidate was probed: %d carried what their routes can", carried)
+	// "a part": what a route carried is a floor (see sizeRoute), and each
+	// channel counts for one route
+	out := fmt.Sprintf("every candidate was probed: %d carried a part", carried)
 	if len(r.gone) > 0 {
 		out += "; " + strings.TrimPrefix(rest, "no candidates left: ")
 	}

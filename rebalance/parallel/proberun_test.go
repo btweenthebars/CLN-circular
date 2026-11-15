@@ -118,7 +118,7 @@ func TestAProbeOnlyRun(t *testing.T) {
 	if s := res.Carried["1x1x1"]; assert.NotNil(t, s) {
 		assert.Equal(t, map[uint64]uint64{800: 200000}, s.ByPPM)
 	}
-	assert.Equal(t, "every candidate was probed: 1 carried what their routes can; 1 failed", res.Stopped)
+	assert.Equal(t, "every candidate was probed: 1 carried a part; 1 failed", res.Stopped)
 	// 1x1x1: two cheap ways fail, the dear one arrives, then sizing: 300k
 	// fails, 200k goes (nothing between it and 300k); fired again, it finds
 	// no further way (no probe); then 2x1x1 fails once
@@ -179,7 +179,7 @@ func TestAProbeOnlyRunCoversItsAmount(t *testing.T) {
 	res = stepRun(t, p.realSplits)
 	assert.Equal(t, uint64(100000), res.CarriedAmount)
 	assert.Equal(t, 1, res.SplitsSucceeded)
-	assert.Equal(t, "every candidate was probed: 1 carried what their routes can; 1 failed", res.Stopped,
+	assert.Equal(t, "every candidate was probed: 1 carried a part; 1 failed", res.Stopped,
 		"2x1x1 has no way at all")
 	n := 0
 	for _, probe := range p.probes {
@@ -217,6 +217,19 @@ func TestAProbeOnlyRunTriesACandidatesOtherRoutes(t *testing.T) {
 	// carried the split: not among the worst nodes, no score
 	assert.Empty(t, res.WorstNodes)
 	assert.Empty(t, p.Node.Graph.NodeScores())
+}
+
+// A route that carries far more than ten splits is sized to the amount: the
+// probes grow while they arrive.
+func TestAProbeOnlyRunSizesAStrongRoute(t *testing.T) {
+	p := probePull(t, 1, probeWay{from: "02o1", via: "02a", ppm: 700})
+	p.amount = 3000000000
+	res := stepRun(t, p.realSplits)
+	assert.Equal(t, uint64(3000000), res.CarriedAmount)
+	assert.Equal(t, "", res.Stopped)
+	assert.Equal(t, []string{"1x1x1 100", "1x1x1 1000", "1x1x1 2000", "1x1x1 3000"}, p.probes)
+	assert.Equal(t, uint64(700), res.CarriedAvgPPM)
+	assert.Equal(t, uint64(2100000), res.CarriedFeeMsat)
 }
 
 // Two splits at once may find the same way: nothing moved, so it counts once.
@@ -261,7 +274,7 @@ func TestAProbeOnlyRunCountsASharedChannelOnce(t *testing.T) {
 	assert.Equal(t, uint64(100000), res.CarriedAmount, "once, not once per candidate")
 	assert.Equal(t, 1, res.SplitsSucceeded)
 	assert.Equal(t, 1, len(res.Carried))
-	assert.Equal(t, "every candidate was probed: 1 carried what their routes can; 1 failed", res.Stopped)
+	assert.Equal(t, "every candidate was probed: 1 carried a part; 1 failed", res.Stopped)
 }
 
 // A candidate's room bounds what its route is sized to.
@@ -419,9 +432,9 @@ func TestProbeRanOut(t *testing.T) {
 	assert.Empty(t, res.Carried)
 	// all that were tried carried
 	a := &AbstractRebalance{probeCarried: map[string]uint64{"a": 5, "b": 0}, gone: map[string]string{"a": goneFailed}}
-	assert.Equal(t, "every candidate was probed: 1 carried what their routes can", a.probeRanOut())
+	assert.Equal(t, "every candidate was probed: 1 carried a part", a.probeRanOut())
 	a = &AbstractRebalance{probeCarried: map[string]uint64{"a": 5, "c": 7},
 		gone: map[string]string{"a": goneFailed, "b": goneRefused, "d": "depleted"}}
-	assert.Equal(t, "every candidate was probed: 2 carried what their routes can; 1 refused by the target, "+
+	assert.Equal(t, "every candidate was probed: 2 carried a part; 1 refused by the target, "+
 		"1 skipped (depleted)", a.probeRanOut())
 }

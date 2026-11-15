@@ -344,20 +344,42 @@ func TestSizingLearnsOnlyBounds(t *testing.T) {
 	}
 }
 
-// A sizing probe is one HTLC of at most PROBE_SIZE_MAX_SPLITS splits; and an
-// amount our out channel cannot send costs no probe.
-func TestSizingProbesAreBounded(t *testing.T) {
+// The first sizing probe is at most PROBE_SIZE_FIRST_SPLITS splits; each one
+// that arrives lets the next be twice as large; and an amount our out
+// channel cannot send costs no probe.
+func TestSizingProbesGrow(t *testing.T) {
+	sized := func(holds, want uint64) (*Result, []uint64) {
+		n, out, in := shortRoute()
+		n.liquidity[id("3x1x1", "02a", "02b")] = holds
+		r := probing(n, out, in, 20000000)
+		r.ProbeOnly, r.ProbeWant = true, want
+		var sent []uint64
+		inner := r.sendProbe
+		r.sendProbe = func(route *graph.Route) error { sent = append(sent, route.Amount/1000000); return inner(route) }
+		return r.Run(), sent
+	}
+	// all of the 45 splits wanted arrive: 10, 20, 40, then the 45
+	res, sent := sized(5000000000, 900000000)
+	assert.Equal(t, uint64(900000000), res.AmountMsat)
+	assert.Equal(t, []uint64{20, 200, 400, 800, 900}, sent)
+	// the route holds 500k: 200 and 400 arrive, 800 fails; then between them: 580 fails, 480 arrives,
+	// 520 fails, 500 arrives, with the last of the seven steps
+	res, sent = sized(500000000, 900000000)
+	assert.Equal(t, []uint64{20, 200, 400, 800, 580, 480, 520, 500}, sent)
+	assert.Equal(t, uint64(500000000), res.AmountMsat)
+	assert.Equal(t, uint64(8), res.Attempts)
+	// the first one fails: never more than ten splits in one HTLC
+	res, sent = sized(100000000, 900000000)
+	assert.Equal(t, []uint64{20, 200, 100, 140, 120}, sent)
+	assert.Equal(t, uint64(100000000), res.AmountMsat)
+	// no more than ten splits wanted: that first, as before
+	res, sent = sized(5000000000, 160000000)
+	assert.Equal(t, []uint64{20, 160}, sent)
+	assert.Equal(t, uint64(160000000), res.AmountMsat)
+
 	n, out, in := shortRoute()
 	n.liquidity[id("3x1x1", "02a", "02b")] = 5000000000
 	r := probing(n, out, in, 20000000)
-	r.ProbeOnly, r.ProbeWant = true, 900000000 // 45 splits wanted
-	res := r.Run()
-	assert.Equal(t, uint64(200000000), res.AmountMsat, "ten splits: the most one probe asks for")
-	assert.Equal(t, 2, len(n.paid), "the split, then ten of them")
-
-	n, out, in = shortRoute()
-	n.liquidity[id("3x1x1", "02a", "02b")] = 5000000000
-	r = probing(n, out, in, 20000000)
 	r.ProbeOnly, r.ProbeWant = true, 100000000
 	r.Node.Peers[outP].Channels[0].SpendableMsat = glightning.AmountFromMSat(70000000)
 	res = r.Run()

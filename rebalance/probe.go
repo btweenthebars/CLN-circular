@@ -150,59 +150,66 @@ func (r *Rebalance) Measure(want uint64, tries, steps int, stop func() bool) Mea
 	return m
 }
 
-// PROBE_SIZE_MAX_SPLITS bounds a sizing probe: one HTLC of at most this many
-// splits. A probe that got stuck would hold its whole amount on our channel
-// until it failed, and one near what the target can receive would crowd out
-// the other splits' probes.
-const PROBE_SIZE_MAX_SPLITS = 10
+// PROBE_SIZE_FIRST_SPLITS bounds the first sizing probe: one HTLC of at most
+// this many splits. Each one that arrives lets the next be twice as large:
+// a probe that got stuck would hold its whole amount on our channel until it
+// failed, so the large ones go only over a route that just carried half as
+// much without delay.
+const PROBE_SIZE_FIRST_SPLITS = 10
 
 // sizeRoute finds how much of want (msat) route carries, in whole splits of
 // its amount, which a probe just carried: up to steps more probes over the
-// same channels, want first (at most PROBE_SIZE_MAX_SPLITS splits), then
-// halfway (a binary search). An amount the channels' own limits or our out
-// channel refuse costs no probe. From a probe that fails, only the channels'
-// bounds are learned (learnBounds). stop, if it returns true, ends it before
-// its next probe. -> the most carried (at least the route's amount), and the
-// probes sent.
+// same channels. They grow while they arrive: want, or
+// PROBE_SIZE_FIRST_SPLITS splits if that is less, then twice what arrived,
+// up to want. Once one fails, the rest search between what arrived and what
+// failed (halfway each time). An amount the channels' own limits or our out
+// channel refuse counts as failed, and costs no probe. From a probe that
+// fails, only the channels' bounds are learned (learnBounds). stop, if it
+// returns true, ends it before its next probe. -> the most carried (at least
+// the route's amount; a floor when the steps ran out first), and the probes
+// sent.
 func (r *Rebalance) sizeRoute(route *graph.Route, want uint64, steps int, stop func() bool) (uint64, int) {
 	split := route.Amount
 	ids := route.ChannelIds()
-	if most := split * PROBE_SIZE_MAX_SPLITS; want > most {
-		want = most
+	top := want / split * split
+	lo, hi, probes := split, top, 0
+	next, growing := top, true
+	if first := split * PROBE_SIZE_FIRST_SPLITS; next > first {
+		next = first
 	}
-	lo, hi, probes := split, want/split*split, 0
 	for s := 0; s < steps && hi > lo; s++ {
 		if stop != nil && stop() {
 			break
 		}
-		amount := hi
-		if s > 0 {
+		amount := next
+		if !growing {
 			if amount = lo + (hi-lo)/2/split*split; amount <= lo {
 				amount = lo + split
 			}
 		}
-		bigger, err := r.Node.Graph.GetRouteOverChannels(ids, amount)
-		if err != nil || r.checkFirstHop(bigger) != nil {
-			hi = amount - split
+		arrived := false
+		if bigger, err := r.Node.Graph.GetRouteOverChannels(ids, amount); err == nil && r.checkFirstHop(bigger) == nil {
+			probes++
+			var failure *glightning.PaymentErrorData
+			if arrived, failure, _ = r.sendProbeOver(bigger); failure != nil {
+				r.learnBounds(bigger, failure)
+			}
+		}
+		if !arrived {
+			hi, growing = amount-split, false
 			continue
 		}
-		probes++
-		arrived, failure, _ := r.sendProbeOver(bigger)
-		if arrived {
-			lo = amount
-			continue
+		lo = amount
+		if next = 2 * lo; next > top {
+			next = top
 		}
-		if failure != nil {
-			r.learnBounds(bigger, failure)
-		}
-		hi = amount - split
 	}
 	return lo, probes
 }
 
 // PROBE_SIZE_STEPS is how many more probes size a route that carried a
 // probe-only split (Rebalance.ProbeWant).
-const PROBE_SIZE_STEPS = 6
+const PROBE_SIZE_STEPS = 7
 
 // probed is the result of a probe-only attempt whose probe arrived over
 // route: the route is sized up to ProbeWant, and nothing was paid. Its

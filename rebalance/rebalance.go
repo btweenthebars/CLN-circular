@@ -75,9 +75,8 @@ type Rebalance struct {
 	ProbeOnly bool
 	// ProbeWant (msat), with ProbeOnly: once a probe arrived, up to
 	// PROBE_SIZE_STEPS more over that route find how much of ProbeWant it
-	// carries, in whole Amounts and one HTLC of at most
-	// PROBE_SIZE_MAX_SPLITS of them; the result's AmountMsat is that. 0, or
-	// no more than Amount: the route is not sized.
+	// carries, in whole Amounts (sizeRoute); the result's AmountMsat is
+	// that. 0, or no more than Amount: the route is not sized.
 	ProbeWant uint64
 	// Exclude holds channel ids ("scid/direction") its searches leave out,
 	// besides what the graph avoids: a probe-only run's splits get the
