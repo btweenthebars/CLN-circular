@@ -43,6 +43,7 @@ type Node struct {
 	// call leaves out (the circular-attempts ... circular-max-fee startup
 	// options)
 	Defaults       Defaults
+	proven         provenRoutes // routes probe-only runs found (RememberRoute)
 	initLock       *sync.Mutex
 	saveStats      bool
 	PeersLock      *sync.RWMutex

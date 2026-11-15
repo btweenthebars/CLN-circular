@@ -205,7 +205,10 @@ func measuredWhole(amount uint64, candidates []*QuoteCandidate, probes int, cut 
 	}
 	switch {
 	case moved == 0:
-		w.Verdict = fmt.Sprintf("measured: no route carried a split (%s)", probed)
+		// a few routes per candidate: a run tries up to its attempts on each
+		// split, and has moved liquidity after a measure found none
+		w.Verdict = fmt.Sprintf("measured: none of the few routes it tried carried a split (%s); "+
+			"this does not show that none can: a run tries far more routes (probeonly=true searches as a run does)", probed)
 		if firstErr != "" {
 			w.Verdict += ": " + firstErr
 		}

@@ -84,6 +84,14 @@ func (r *Rebalance) tryRoute(route *graph.Route, exclude map[string]bool) (*grap
 	if r.Sent != nil {
 		r.Sent.Add(1)
 	}
+	if r.ProbeOnly {
+		// a probe instead of a payment: it arrived, or what failed is
+		// learned as from a payment
+		if ok, err := r.probe(route, exclude); !ok {
+			return nil, err
+		}
+		return graph.NewPrettyRoute(route, ""), nil
+	}
 	prettyRoute, err := pay(route)
 	if err != nil {
 		// Learn from the failure now, so the next attempt avoids what failed.

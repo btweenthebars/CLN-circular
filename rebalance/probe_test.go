@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/elementsproject/glightning/glightning"
 	"github.com/stretchr/testify/assert"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -190,4 +191,116 @@ func TestMeasureStops(t *testing.T) {
 	assert.Equal(t, 1, m.Probes)
 	assert.Equal(t, uint64(0), m.Carried)
 	assert.Contains(t, m.Err.Error(), "cannot send")
+}
+
+// A probe-only rebalance is Run with probes for payments: the same search
+// and attempts, nothing paid; it succeeds when a probe arrives, and its
+// amount is what that route carried.
+func TestAProbeOnlyRebalance(t *testing.T) {
+	// the way through 02a -> 02b is short of 80k: the second attempt goes around it
+	n, out, in := shortRoute()
+	addChannel(n.Graph, "6x1x1", outP, "02c", 0)
+	addChannel(n.Graph, "7x1x1", "02c", "02d", 0)
+	addChannel(n.Graph, "8x1x1", "02d", "02b", 0)
+	r := probing(n, out, in, 80000000)
+	r.ProbeOnly, r.Attempts = true, 5
+	sent := &atomic.Int64{}
+	r.Sent = sent
+	res := r.Run()
+	assert.Equal(t, "success", res.Status, res.Message)
+	assert.Equal(t, uint64(80000000), res.AmountMsat)
+	assert.Equal(t, uint64(80000), res.Amount)
+	assert.Equal(t, uint64(2), res.Attempts, "the probe that failed and the one that arrived")
+	assert.Equal(t, int64(2), sent.Load())
+	assert.Contains(t, res.Channels, id("7x1x1", "02c", "02d"))
+	assert.Equal(t, res.Channels, n.paid[1])
+	assert.Equal(t, "a probe carried 80000 sats from "+outP+" to "+inP+" at 0 ppm (nothing paid): paying it would "+
+		"cost 0.000 sats", res.Message)
+	assert.Equal(t, uint64(60000000), n.liquidity[id("3x1x1", "02a", "02b")], "nothing moved")
+	short, _ := n.GetChannel(id("3x1x1", "02a", "02b"))
+	assert.True(t, short.Upper, "the failure is learned as a payment's")
+	assert.Less(t, short.Liquidity, uint64(80000000))
+	assert.Equal(t, map[string]int{"02a": 1}, res.FailedNodes)
+
+	// out of attempts: a failure like a payment's
+	n, out, in = shortRoute()
+	addChannel(n.Graph, "6x1x1", outP, "02c", 0)
+	addChannel(n.Graph, "7x1x1", "02c", "02d", 0)
+	addChannel(n.Graph, "8x1x1", "02d", "02b", 0)
+	r = probing(n, out, in, 80000000)
+	r.ProbeOnly = true // one attempt
+	res = r.Run()
+	assert.Equal(t, "failure", res.Status)
+	assert.Equal(t, uint64(1), res.Attempts)
+	assert.Contains(t, res.Message, "rebalance failed after 1 payments.")
+	assert.Equal(t, SideRoute, res.FailedAt)
+
+	// not probe-only: it pays (the fake's panic says so)
+	n, out, in = shortRoute()
+	r = probing(n, out, in, 20000000)
+	assert.Panics(t, func() { r.Run() })
+}
+
+// Once a probe arrived, the route is sized up to ProbeWant: shortRoute holds
+// 60k, splits of 20k, 100k wanted: 100k fails, 40k and 60k go, 80k fails.
+func TestAProbeOnlyRebalanceSizesItsRoute(t *testing.T) {
+	n, out, in := shortRoute()
+	c, _ := n.GetChannel(id("2x1x1", outP, "02a"))
+	c.FeePerMillionth = 500
+	r := probing(n, out, in, 20000000)
+	r.ProbeOnly, r.ProbeWant = true, 100000000
+	sent := &atomic.Int64{}
+	r.Sent = sent
+	res := r.Run()
+	assert.Equal(t, int64(5), sent.Load())
+	assert.Equal(t, "success", res.Status, res.Message)
+	assert.Equal(t, uint64(60000000), res.AmountMsat)
+	assert.Equal(t, uint64(60000), res.Amount)
+	assert.Equal(t, uint64(5), res.Attempts, "the split and four sizing probes")
+	assert.Equal(t, 5, len(n.paid))
+	assert.Equal(t, uint64(500), res.PPM, "the route's rate for a split")
+	assert.Equal(t, uint64(30000), res.Fee, "three splits of 20k at 500 ppm")
+	assert.Contains(t, res.Message, "a probe carried 60000 sats")
+	assert.Contains(t, res.Message, "paying it would cost 30.000 sats")
+	assert.Equal(t, uint64(10000), res.Route.Fee, "the route is priced for one split")
+	assert.Equal(t, uint64(60000000), n.liquidity[id("3x1x1", "02a", "02b")], "nothing moved")
+
+	// nothing more wanted than the split: no sizing
+	n, out, in = shortRoute()
+	r = probing(n, out, in, 20000000)
+	r.ProbeOnly, r.ProbeWant = true, 20000000
+	res = r.Run()
+	assert.Equal(t, uint64(20000000), res.AmountMsat)
+	assert.Equal(t, uint64(1), res.Attempts)
+
+	// the run stopped meanwhile: no sizing probes
+	n, out, in = shortRoute()
+	r = probing(n, out, in, 20000000)
+	r.ProbeOnly, r.ProbeWant = true, 100000000
+	halt := &atomic.Bool{}
+	r.Halt = halt
+	inner := r.sendProbe
+	r.sendProbe = func(route *graph.Route) error { halt.Store(true); return inner(route) }
+	res = r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Equal(t, uint64(20000000), res.AmountMsat)
+	assert.Equal(t, 1, len(n.paid))
+
+	// circular-stop meanwhile: none either
+	n, out, in = shortRoute()
+	r = probing(n, out, in, 20000000)
+	r.ProbeOnly, r.ProbeWant = true, 100000000
+	inner = r.sendProbe
+	r.sendProbe = func(route *graph.Route) error { r.Node.Stopped.Store(true); return inner(route) }
+	res = r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Equal(t, 1, len(n.paid))
+
+	// what is wanted counts in whole splits: 50k wanted is 40k
+	n, out, in = shortRoute()
+	r = probing(n, out, in, 20000000)
+	r.ProbeOnly, r.ProbeWant = true, 50000000
+	res = r.Run()
+	assert.Equal(t, uint64(40000000), res.AmountMsat)
+	assert.Equal(t, 2, len(n.paid), "a split, then the 40k")
 }

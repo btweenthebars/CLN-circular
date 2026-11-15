@@ -22,7 +22,9 @@ type Run struct {
 	Started int64  `json:"started"` // unix seconds
 	Ended   int64  `json:"ended,omitempty"`
 	Status  string `json:"status"` // running / done / failed
-	Error   string `json:"error,omitempty"`
+	// ProbeOnly: the run pays nothing (probeonly=true)
+	ProbeOnly bool   `json:"probe_only,omitempty"`
+	Error     string `json:"error,omitempty"`
 	// Result is what the call returned (circular-pull's result)
 	Result jrpc2.Result `json:"result,omitempty"`
 }
@@ -41,6 +43,13 @@ func startRun(kind, target string, amount, maxPPM uint64) *Run {
 	runs.list = append(runs.list, r)
 	runs.Unlock()
 	return r
+}
+
+// probeOnlyRun marks a run that pays nothing.
+func probeOnlyRun(r *Run, on bool) {
+	runs.Lock()
+	r.ProbeOnly = on
+	runs.Unlock()
 }
 
 // endRun notes its result, and keeps only the last RUNS_KEPT finished runs.

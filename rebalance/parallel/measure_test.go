@@ -130,8 +130,9 @@ func TestMeasuredWhole(t *testing.T) {
 	a.amount = 500000000
 	q = a.quote("pull", true)
 	q.measure(a.amount, a.Node, time.Now())
-	assert.Equal(t, "measured: no route carried a split (3 probes, nothing paid): a channel on the route could "+
-		"not carry the amount", q.Whole.Verdict)
+	assert.Equal(t, "measured: none of the few routes it tried carried a split (3 probes, nothing paid); this does "+
+		"not show that none can: a run tries far more routes (probeonly=true searches as a run does): a channel "+
+		"on the route could not carry the amount", q.Whole.Verdict)
 	assert.Equal(t, uint64(0), q.Whole.Covered)
 }
 
@@ -303,7 +304,8 @@ func TestMeasuredWholeFigures(t *testing.T) {
 		{Scid: "x", Measured: measured(0, nil, "first error")},
 		{Scid: "y", Measured: measured(0, nil, "second error")},
 	}
-	assert.Equal(t, "measured: no route carried a split (4 probes, nothing paid): first error",
+	assert.Equal(t, "measured: none of the few routes it tried carried a split (4 probes, nothing paid); this does "+
+		"not show that none can: a run tries far more routes (probeonly=true searches as a run does): first error",
 		measuredWhole(100000000, none, 4, false).Verdict)
 }
 

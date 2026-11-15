@@ -55,6 +55,11 @@ func (r *Rebalance) SetPay(pay func(route *graph.Route) (*graph.PrettyRoute, err
 	r.pay = pay
 }
 
+// SetProbe replaces Node.SendProbe (tests).
+func (r *Rebalance) SetProbe(probe func(route *graph.Route) error) {
+	r.sendProbe = probe
+}
+
 // checkFirstHop checks that our out channel can send what the route's first
 // hop carries: the amount plus the fees of the hops after it.
 func (r *Rebalance) checkFirstHop(route *graph.Route) error {

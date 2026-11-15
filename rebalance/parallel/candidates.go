@@ -50,7 +50,7 @@ func (r *AbstractRebalance) FindCandidates(exclude string) error {
 	for _, id := range ids {
 		cost[id] = r.ownFeeCost(found[id])
 	}
-	for _, id := range r.Node.RankCandidates(ids, cost) {
+	for _, id := range r.provenFirst(r.Node.RankCandidates(ids, cost), found) {
 		r.Node.Logln(glightning.Debug, "adding candidate to candidates:", id)
 		r.Candidates.PushBack(found[id])
 	}

@@ -186,6 +186,10 @@ type AbstractRebalance struct {
 	// (priceHeld; in circular-push, a candidate left out for its peer's
 	// fee): only then does a round that moved nothing step the price up
 	roundPriced bool
+	// probeOnly: the run pays nothing (see setProbeOnly); probe, when set,
+	// sends every split's probes instead of lightningd (tests)
+	probeOnly bool
+	probe     func(route *graph.Route) error
 	RebalanceMethods
 }
 
@@ -275,8 +279,17 @@ func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount u
 		rebalance.MinAmount = amount
 	}
 	rebalance.Route = r.routes[candidate.ShortChannelId]
+	if r.probeOnly {
+		rebalance.ProbeOnly, rebalance.ProbeWant = true, r.probeWant(candidate)
+	} else if rebalance.Route == nil {
+		// what a probe-only run found between these two channels, once
+		rebalance.Route = r.Node.ProvenRoute(out.ShortChannelId, in.ShortChannelId, true)
+	}
 	if r.pay != nil {
 		rebalance.SetPay(r.pay)
+	}
+	if r.probe != nil {
+		rebalance.SetProbe(r.probe)
 	}
 	return rebalance
 }

@@ -58,6 +58,9 @@ type RebalanceQuote struct {
 	// one turns measure on
 	MeasureProbes int `json:"measureprobes,omitempty"`
 	MeasureTime   int `json:"measuretime,omitempty"`
+	// ProbeOnly is accepted, so a probe-only run's call can be quoted: the
+	// quote itself probes nothing for it
+	ProbeOnly bool `json:"probeonly,omitempty"`
 }
 
 const (

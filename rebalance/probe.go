@@ -4,6 +4,7 @@ import (
 	"circular/graph"
 	"circular/util"
 	"errors"
+	"fmt"
 
 	"github.com/elementsproject/glightning/glightning"
 )
@@ -20,6 +21,11 @@ func (r *Rebalance) Probe(route *graph.Route, exclude map[string]bool) (bool, er
 	if err := r.checkFirstHop(route); err != nil {
 		return false, err
 	}
+	return r.probe(route, exclude)
+}
+
+// probe is Probe once the first hop is checked.
+func (r *Rebalance) probe(route *graph.Route, exclude map[string]bool) (bool, error) {
 	send := r.sendProbe
 	if send == nil {
 		send = r.Node.SendProbe
@@ -76,7 +82,6 @@ type Measurement struct {
 func (r *Rebalance) Measure(want uint64, tries, steps int, stop func() bool) Measurement {
 	var m Measurement
 	split := r.Amount
-	want = want / split * split // below a split: the split, which the first probe finds
 	exclude := r.startExclude()
 	for t := 0; t < tries && m.Route == nil; t++ {
 		if stop != nil && stop() {
@@ -102,8 +107,21 @@ func (r *Rebalance) Measure(want uint64, tries, steps int, stop func() bool) Mea
 	if m.Route == nil {
 		return m
 	}
-	ids := m.Route.ChannelIds()
-	lo, hi := split, want
+	carried, probes := r.sizeRoute(m.Route, want, steps, exclude, stop)
+	m.Carried, m.Probes = carried, m.Probes+probes
+	return m
+}
+
+// sizeRoute finds how much of want (msat) route carries, in whole splits of
+// its amount, which a probe just carried: up to steps more probes over the
+// same channels, want first, then halfway (a binary search). An amount the
+// channels' own limits refuse costs no probe. stop, if it returns true, ends
+// it before its next probe. -> the most carried (at least the route's
+// amount), and the probes sent.
+func (r *Rebalance) sizeRoute(route *graph.Route, want uint64, steps int, exclude map[string]bool, stop func() bool) (uint64, int) {
+	split := route.Amount
+	ids := route.ChannelIds()
+	lo, hi, probes := split, want/split*split, 0
 	for s := 0; s < steps && hi > lo; s++ {
 		if stop != nil && stop() {
 			break
@@ -114,17 +132,45 @@ func (r *Rebalance) Measure(want uint64, tries, steps int, stop func() bool) Mea
 				amount = lo + split
 			}
 		}
-		route, err := r.Node.Graph.GetRouteOverChannels(ids, amount)
+		bigger, err := r.Node.Graph.GetRouteOverChannels(ids, amount)
 		if err != nil {
 			hi = amount - split
 			continue
 		}
-		m.Probes++
-		if ok, _ := r.Probe(route, exclude); ok {
-			lo, m.Carried = amount, amount
+		probes++
+		if ok, _ := r.Probe(bigger, exclude); ok {
+			lo = amount
 		} else {
 			hi = amount - split
 		}
 	}
-	return m
+	return lo, probes
+}
+
+// PROBE_SIZE_STEPS is how many more probes size a route that carried a
+// probe-only split (Rebalance.ProbeWant).
+const PROBE_SIZE_STEPS = 6
+
+// probed is the result of a probe-only attempt whose probe arrived over
+// route: the route is sized up to ProbeWant, and nothing was paid. Its
+// AmountMsat is what the route carried, its Fee what that many splits would
+// pay over it.
+func (r *Rebalance) probed(route *graph.Route, pretty *graph.PrettyRoute, exclude map[string]bool) *Result {
+	carried, probes := r.sizeRoute(route, r.ProbeWant, PROBE_SIZE_STEPS, exclude, func() bool {
+		return r.Node.Stopped.Load() || (r.Halt != nil && r.Halt.Load())
+	})
+	r.payments += probes
+	if r.Sent != nil {
+		r.Sent.Add(int64(probes))
+	}
+	result := NewResult("success", carried/1000, r.OutChannel.Destination, r.InChannel.Source)
+	result.AmountMsat = carried
+	result.Channels = route.ChannelIds()
+	result.Fee = pretty.Fee * (carried / route.Amount)
+	result.PPM = pretty.FeePPM
+	result.Route = pretty
+	result.Message = fmt.Sprintf("a probe carried %d sats from %s to %s at %d ppm (nothing paid): paying it would cost %.3f sats",
+		result.Amount, r.Node.Graph.GetAlias(r.OutChannel.Destination), r.Node.Graph.GetAlias(r.InChannel.Source),
+		result.PPM, float64(result.Fee)/1000)
+	return result
 }

@@ -19,12 +19,12 @@ func registerMethods(p *glightning.Plugin) {
 	p.RegisterMethod(rpcRebalanceByScid)
 
 	rpcRebalancePull := glightning.NewRpcMethod(&parallel.RebalancePull{}, "Pull liquidity into a channel from many sources in parallel")
-	rpcRebalancePull.LongDesc = "Rebalance the channel `inscid` from many channels concurrently"
+	rpcRebalancePull.LongDesc = "Rebalance the channel `inscid` from many channels concurrently. With probeonly=true nothing is paid: every payment is a probe (a payment nobody can settle), and the result is what the routes were found to carry."
 	rpcRebalancePull.Category = "utility"
 	p.RegisterMethod(rpcRebalancePull)
 
 	rpcRebalancePush := glightning.NewRpcMethod(&parallel.RebalancePush{}, "Push liquidity out of a channel to many destinations in parallel")
-	rpcRebalancePush.LongDesc = "Rebalance the channel `outscid` from many channels concurrently"
+	rpcRebalancePush.LongDesc = "Rebalance the channel `outscid` from many channels concurrently. With probeonly=true nothing is paid: every payment is a probe (a payment nobody can settle), and the result is what the routes were found to carry."
 	rpcRebalancePush.Category = "utility"
 	p.RegisterMethod(rpcRebalancePush)
 

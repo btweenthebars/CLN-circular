@@ -39,6 +39,7 @@ type RebalancePush struct {
 	Probe           int        `json:"probe,omitempty"`           // sats a stepped-up round tries (default 20% of what is left)
 	MaxIdleRounds   util.Int   `json:"maxidlerounds,omitempty"`   // slow mode: end after this many rounds in a row at the most the run can pay that moved nothing (default 3 with stepppm; -1 never)
 	ProbeFailStreak util.Int   `json:"probefailstreak,omitempty"` // slow mode: a probe round stops after this many failed payments in a row (default 100 with stepppm; -1: as maxfailstreak)
+	ProbeOnly       bool       `json:"probeonly,omitempty"`       // pay nothing: probes in place of payments (payments nobody can settle); what they find the routes carry is the result
 	AbstractRebalance
 }
 
@@ -55,6 +56,7 @@ func (r *RebalancePush) Call() (jrpc2.Result, error) {
 		return nil, err
 	}
 	run := startRun("push", r.OutScid, r.Amount, r.MaxPPM)
+	probeOnlyRun(run, r.ProbeOnly)
 	r.FireCandidates()
 	res, err := r.WaitForResult()
 	endRun(run, res, err)
@@ -90,6 +92,9 @@ func (r *RebalancePush) prepare() error {
 	}
 	r.setMaxIdleRounds(int(r.MaxIdleRounds))
 	r.setProbeFailStreak(int(r.ProbeFailStreak))
+	if err := r.setProbeOnly(r.ProbeOnly); err != nil {
+		return err
+	}
 
 	if err := r.validateParameters(); err != nil {
 		return err

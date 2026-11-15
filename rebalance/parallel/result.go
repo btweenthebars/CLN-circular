@@ -110,6 +110,11 @@ type Result struct {
 	// its target: the target channel took no more, too many payments failed
 	// in a row (maxfailstreak), or no candidate was left (and why).
 	Stopped string `json:"stopped,omitempty"`
+	// ProbeOnly: the run paid nothing (probeonly=true). RebalancedAmount is
+	// what its probes found the routes to carry, FeesPaidMsat and AvgPPM
+	// what moving that over them would cost, Successes those routes'
+	// candidates; nothing moved.
+	ProbeOnly bool `json:"probe_only,omitempty"`
 }
 
 func NewResult(target uint64) *Result {
@@ -162,6 +167,7 @@ func contains(ids []string, id string) bool {
 func (r *AbstractRebalance) WaitForResult() (jrpc2.Result, error) {
 	start := time.Now()
 	r.Result = NewResult(r.amount)
+	r.Result.ProbeOnly = r.probeOnly
 
 	every := r.progressEvery
 	if every <= 0 {
@@ -204,6 +210,9 @@ func (r *AbstractRebalance) waitForRound(start time.Time, tick, deadline <-chan 
 		}
 
 		if rebalanceResult.Status == "success" {
+			if r.probeOnly {
+				r.probeSucceeded(rebalanceResult)
+			}
 			r.Node.Logln(glightning.Info, rebalanceResult.Message)
 			if rebalanceResult.Route != nil {
 				r.Node.Logln(glightning.Info, "\n"+rebalanceResult.Route.String())
@@ -217,8 +226,10 @@ func (r *AbstractRebalance) waitForRound(start time.Time, tick, deadline <-chan 
 			}
 			r.movedMsat += rebalanceResult.AmountMsat
 
-			// put the candidate back in front of the queue
-			r.EnqueueCandidate(rebalanceResult)
+			if !r.probeOnly {
+				// put the candidate back in front of the queue
+				r.EnqueueCandidate(rebalanceResult)
+			}
 		} else {
 			r.Node.Logf(glightning.Debug, "Failed rebalance attempt: %s", rebalanceResult.Message)
 			if !rebalanceResult.Halted {
@@ -413,7 +424,12 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 		return
 	}
 	if result.Status == "success" {
-		r.Node.RecordCandidate(result.Candidate, true, result.AmountMsat, result.Fee)
+		if r.probeOnly {
+			// it carried a probe: no amount moved, no fee paid
+			r.Node.RecordCandidate(result.Candidate, true, 0, 0)
+		} else {
+			r.Node.RecordCandidate(result.Candidate, true, result.AmountMsat, result.Fee)
+		}
 		r.targetRechecked = false
 		r.refusedAlone = ""
 		r.targetSucceeded(result.Candidate)
@@ -631,7 +647,7 @@ func (r *AbstractRebalance) refreshPeers(peerIds ...string) error {
 }
 
 func (r *AbstractRebalance) UpdateAmounts(result *rebalance.Result) {
-	if result.Status == "success" {
+	if result.Status == "success" && !r.probeOnly {
 		// Read both channels again, so that the deplete and fill checks of the
 		// next splits see the new balances rather than those of the last peer
 		// refresh. Adjusting the cached balances instead counted a payment
@@ -873,8 +889,12 @@ func (r *AbstractRebalance) progress(start time.Time) string {
 	if payments < r.TotalAttempts {
 		payments = r.TotalAttempts
 	}
-	line := fmt.Sprintf("%s%s: %d/%d sats moved in %ds, %d payments", name, target, moved/1000, r.amount/1000,
-		int(time.Since(start).Seconds()), payments)
+	did, sent := "moved", "payments"
+	if r.probeOnly {
+		did, sent = "carried by probes", "probes"
+	}
+	line := fmt.Sprintf("%s%s: %d/%d sats %s in %ds, %d %s", name, target, moved/1000, r.amount/1000, did,
+		int(time.Since(start).Seconds()), payments, sent)
 	if r.movedMsat > 0 {
 		line += fmt.Sprintf(", avg %d ppm", avgPPM(r.Result.FeesPaidMsat, r.movedMsat))
 	}

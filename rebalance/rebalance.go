@@ -68,6 +68,16 @@ type Rebalance struct {
 	// (with RunMaxPPM): "feeratio 0.9 × 1300 ppm earned by the filled
 	// channel − 0 ppm our fee on the drained one"
 	LimitWhy string
+	// ProbeOnly: the rebalance pays nothing. Each of its payments is a probe
+	// (Probe: a payment nobody can settle), and it succeeds when one arrives:
+	// that route carried the amount. Everything else is as when paying: the
+	// searches, the attempts, what is learned from failures.
+	ProbeOnly bool
+	// ProbeWant (msat), with ProbeOnly: once a probe arrived, up to
+	// PROBE_SIZE_STEPS more over that route find how much of ProbeWant it
+	// carries, in whole Amounts; the result's AmountMsat is that. 0, or no
+	// more than Amount: the route is not sized.
+	ProbeWant uint64
 
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity
@@ -392,6 +402,9 @@ func (r *Rebalance) runAttempt(exclude map[string]bool, route *graph.Route) (*Re
 	prettyRoute, err := r.tryRoute(route, exclude)
 	if err != nil {
 		return nil, route, err
+	}
+	if r.ProbeOnly {
+		return r.probed(route, prettyRoute, exclude), nil, nil
 	}
 
 	result := NewResult("success", route.Amount/1000,
