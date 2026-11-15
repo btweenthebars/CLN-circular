@@ -190,6 +190,11 @@ type AbstractRebalance struct {
 	// sends every split's probes instead of lightningd (tests)
 	probeOnly bool
 	probe     func(route *graph.Route) error
+	// probeProven holds the channels (not our own) of the routes a
+	// probe-only run counted, and probeCarried what each candidate's routes
+	// carried (msat)
+	probeProven  map[string]bool
+	probeCarried map[string]uint64
 	RebalanceMethods
 }
 
@@ -281,6 +286,7 @@ func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount u
 	rebalance.Route = r.routes[candidate.ShortChannelId]
 	if r.probeOnly {
 		rebalance.ProbeOnly, rebalance.ProbeWant = true, r.probeWant(candidate)
+		rebalance.Exclude = r.probeExclude()
 	} else if rebalance.Route == nil {
 		// what a probe-only run found between these two channels, once
 		rebalance.Route = r.Node.ProvenRoute(out.ShortChannelId, in.ShortChannelId, true)

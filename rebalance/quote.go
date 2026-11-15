@@ -14,6 +14,9 @@ func (r *Rebalance) startExclude() map[string]bool {
 	// they are the ends of ours: excluding them would leave no route.
 	delete(exclude, r.OutChannel.Destination)
 	delete(exclude, r.InChannel.Source)
+	for _, id := range r.Exclude {
+		exclude[id] = true
+	}
 	return exclude
 }
 

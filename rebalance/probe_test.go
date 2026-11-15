@@ -304,3 +304,85 @@ func TestAProbeOnlyRebalanceSizesItsRoute(t *testing.T) {
 	assert.Equal(t, uint64(40000000), res.AmountMsat)
 	assert.Equal(t, 2, len(n.paid), "a split, then the 40k")
 }
+
+// Sizing probes that fail teach the channels' bounds and nothing else: the
+// node that just carried the split is not marked for an amount nobody asked
+// it to carry.
+func TestSizingLearnsOnlyBounds(t *testing.T) {
+	n, out, in := shortRoute()
+	n.SetNodeMemory(24 * time.Hour)
+	r := probing(n, out, in, 20000000)
+	r.ProbeOnly, r.ProbeWant = true, 100000000
+	res := r.Run()
+	assert.Equal(t, uint64(60000000), res.AmountMsat)
+	assert.Empty(t, n.NodeScores(), "no node is remembered as failing")
+	assert.Empty(t, res.FailedNodes)
+	assert.Equal(t, 0, res.MiddleFailures)
+	c, _ := n.GetChannel(id("3x1x1", "02a", "02b"))
+	assert.True(t, c.Upper, "the channel holds less than the 80k that failed")
+	assert.Less(t, c.Liquidity, uint64(80000000))
+	assert.GreaterOrEqual(t, c.Liquidity, uint64(60000000))
+	before, _ := n.GetChannel(id("2x1x1", outP, "02a"))
+	assert.GreaterOrEqual(t, before.Liquidity, uint64(100000000), "the channel before it carried the 100k")
+	assert.Empty(t, n.Avoided(time.Now().Unix()), "nothing is avoided")
+
+	// failures that say nothing of a channel's liquidity teach nothing
+	n, out, in = shortRoute()
+	r = probing(n, out, in, 20000000)
+	route, _ := r.getRoute(r.startExclude())
+	hop := route.Hops[2]
+	for _, f := range []*glightning.PaymentErrorData{
+		{ErringNode: hop.Source, FailCode: failFeeInsufficient},
+		{ErringNode: self, FailCode: failTemporaryChannelFailure},
+		{ErringNode: "02nowhere", FailCode: failTemporaryChannelFailure},
+		{ErringNode: route.Hops[len(route.Hops)-1].Source, FailCode: failTemporaryChannelFailure}, // our in channel
+	} {
+		r.learnBounds(route, f)
+	}
+	for _, c := range n.Channels {
+		assert.False(t, c.Upper, c.ShortChannelId)
+	}
+}
+
+// A sizing probe is one HTLC of at most PROBE_SIZE_MAX_SPLITS splits; and an
+// amount our out channel cannot send costs no probe.
+func TestSizingProbesAreBounded(t *testing.T) {
+	n, out, in := shortRoute()
+	n.liquidity[id("3x1x1", "02a", "02b")] = 5000000000
+	r := probing(n, out, in, 20000000)
+	r.ProbeOnly, r.ProbeWant = true, 900000000 // 45 splits wanted
+	res := r.Run()
+	assert.Equal(t, uint64(200000000), res.AmountMsat, "ten splits: the most one probe asks for")
+	assert.Equal(t, 2, len(n.paid), "the split, then ten of them")
+
+	n, out, in = shortRoute()
+	n.liquidity[id("3x1x1", "02a", "02b")] = 5000000000
+	r = probing(n, out, in, 20000000)
+	r.ProbeOnly, r.ProbeWant = true, 100000000
+	r.Node.Peers[outP].Channels[0].SpendableMsat = glightning.AmountFromMSat(70000000)
+	res = r.Run()
+	assert.Equal(t, uint64(60000000), res.AmountMsat, "what our channel can send in one HTLC")
+	assert.Equal(t, uint64(3), res.Attempts, "the split, 40k, 60k: 100k and 80k were never sent")
+	assert.Equal(t, 3, len(n.paid))
+}
+
+// Exclude keeps its searches off the channels given.
+func TestExcludedChannels(t *testing.T) {
+	n, out, in := shortRoute()
+	addChannel(n.Graph, "6x1x1", outP, "02c", 0)
+	addChannel(n.Graph, "7x1x1", "02c", "02d", 0)
+	addChannel(n.Graph, "8x1x1", "02d", "02b", 0)
+	r := probing(n, out, in, 20000000)
+	route, err := r.getRoute(r.startExclude())
+	assert.NoError(t, err)
+	assert.Contains(t, route.ChannelIds(), id("3x1x1", "02a", "02b"), "the short way")
+	r.Exclude = []string{id("3x1x1", "02a", "02b")}
+	route, err = r.getRoute(r.startExclude())
+	assert.NoError(t, err)
+	assert.NotContains(t, route.ChannelIds(), id("3x1x1", "02a", "02b"))
+	assert.Contains(t, route.ChannelIds(), id("7x1x1", "02c", "02d"))
+	r.ProbeOnly = true
+	res := r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Contains(t, res.Channels, id("7x1x1", "02c", "02d"), "the run's own searches too")
+}

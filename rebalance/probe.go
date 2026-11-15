@@ -26,6 +26,20 @@ func (r *Rebalance) Probe(route *graph.Route, exclude map[string]bool) (bool, er
 
 // probe is Probe once the first hop is checked.
 func (r *Rebalance) probe(route *graph.Route, exclude map[string]bool) (bool, error) {
+	arrived, failure, err := r.sendProbeOver(route)
+	if arrived {
+		return true, nil
+	}
+	if failure != nil {
+		return false, r.learnFromFailure(route, failure, exclude)
+	}
+	return false, err
+}
+
+// sendProbeOver sends route a probe. -> whether it arrived (the graph then
+// learns that each channel carried its hop's amount); if not, the failure
+// lightningd reported, for the caller to learn from, or else the error.
+func (r *Rebalance) sendProbeOver(route *graph.Route) (bool, *glightning.PaymentErrorData, error) {
 	send := r.sendProbe
 	if send == nil {
 		send = r.Node.SendProbe
@@ -37,14 +51,38 @@ func (r *Rebalance) probe(route *graph.Route, exclude map[string]bool) (bool, er
 			// our node refused it, as it refuses any payment it has no
 			// invoice for: it got here
 			r.learnFromProbe(route)
-			return true, nil
+			return true, nil, nil
 		}
-		return false, r.learnFromFailure(route, paymentError.Data, exclude)
+		return false, paymentError.Data, nil
 	}
 	if err == nil {
 		err = errors.New("a probe was not refused")
 	}
-	return false, err
+	return false, nil, err
+}
+
+// learnBounds takes from a sizing probe's failure only what it shows of the
+// channels: those before the one that failed carried the amount, and that
+// one, short of liquidity, holds less. The node is not marked: it had just
+// forwarded a split over that channel, and failed only an amount nobody
+// asked it to carry. Nothing is excluded or avoided, and nothing counted.
+func (r *Rebalance) learnBounds(route *graph.Route, failure *glightning.PaymentErrorData) {
+	if failure.FailCode != failTemporaryChannelFailure {
+		return
+	}
+	for k, hop := range route.Hops { // (our own node is the source of hop 0)
+		if hop.Source != failure.ErringNode {
+			continue
+		}
+		if k < 1 || k == len(route.Hops)-1 {
+			return // one of our own channels: read from lightningd instead
+		}
+		for i := 1; i < k; i++ {
+			r.Node.Graph.LearnLowerBound(channelId(route.Hops[i].Channel), route.Hops[i].MilliSatoshi)
+		}
+		r.Node.Graph.LearnUpperBound(channelId(hop.Channel), hop.MilliSatoshi)
+		return
+	}
 }
 
 // learnFromProbe records that a probe went all the way: each channel along the
@@ -107,20 +145,31 @@ func (r *Rebalance) Measure(want uint64, tries, steps int, stop func() bool) Mea
 	if m.Route == nil {
 		return m
 	}
-	carried, probes := r.sizeRoute(m.Route, want, steps, exclude, stop)
+	carried, probes := r.sizeRoute(m.Route, want, steps, stop)
 	m.Carried, m.Probes = carried, m.Probes+probes
 	return m
 }
 
+// PROBE_SIZE_MAX_SPLITS bounds a sizing probe: one HTLC of at most this many
+// splits. A probe that got stuck would hold its whole amount on our channel
+// until it failed, and one near what the target can receive would crowd out
+// the other splits' probes.
+const PROBE_SIZE_MAX_SPLITS = 10
+
 // sizeRoute finds how much of want (msat) route carries, in whole splits of
 // its amount, which a probe just carried: up to steps more probes over the
-// same channels, want first, then halfway (a binary search). An amount the
-// channels' own limits refuse costs no probe. stop, if it returns true, ends
-// it before its next probe. -> the most carried (at least the route's
-// amount), and the probes sent.
-func (r *Rebalance) sizeRoute(route *graph.Route, want uint64, steps int, exclude map[string]bool, stop func() bool) (uint64, int) {
+// same channels, want first (at most PROBE_SIZE_MAX_SPLITS splits), then
+// halfway (a binary search). An amount the channels' own limits or our out
+// channel refuse costs no probe. From a probe that fails, only the channels'
+// bounds are learned (learnBounds). stop, if it returns true, ends it before
+// its next probe. -> the most carried (at least the route's amount), and the
+// probes sent.
+func (r *Rebalance) sizeRoute(route *graph.Route, want uint64, steps int, stop func() bool) (uint64, int) {
 	split := route.Amount
 	ids := route.ChannelIds()
+	if most := split * PROBE_SIZE_MAX_SPLITS; want > most {
+		want = most
+	}
 	lo, hi, probes := split, want/split*split, 0
 	for s := 0; s < steps && hi > lo; s++ {
 		if stop != nil && stop() {
@@ -133,16 +182,20 @@ func (r *Rebalance) sizeRoute(route *graph.Route, want uint64, steps int, exclud
 			}
 		}
 		bigger, err := r.Node.Graph.GetRouteOverChannels(ids, amount)
-		if err != nil {
+		if err != nil || r.checkFirstHop(bigger) != nil {
 			hi = amount - split
 			continue
 		}
 		probes++
-		if ok, _ := r.Probe(bigger, exclude); ok {
+		arrived, failure, _ := r.sendProbeOver(bigger)
+		if arrived {
 			lo = amount
-		} else {
-			hi = amount - split
+			continue
 		}
+		if failure != nil {
+			r.learnBounds(bigger, failure)
+		}
+		hi = amount - split
 	}
 	return lo, probes
 }
@@ -155,8 +208,8 @@ const PROBE_SIZE_STEPS = 6
 // route: the route is sized up to ProbeWant, and nothing was paid. Its
 // AmountMsat is what the route carried, its Fee what that many splits would
 // pay over it.
-func (r *Rebalance) probed(route *graph.Route, pretty *graph.PrettyRoute, exclude map[string]bool) *Result {
-	carried, probes := r.sizeRoute(route, r.ProbeWant, PROBE_SIZE_STEPS, exclude, func() bool {
+func (r *Rebalance) probed(route *graph.Route, pretty *graph.PrettyRoute) *Result {
+	carried, probes := r.sizeRoute(route, r.ProbeWant, PROBE_SIZE_STEPS, func() bool {
 		return r.Node.Stopped.Load() || (r.Halt != nil && r.Halt.Load())
 	})
 	r.payments += probes

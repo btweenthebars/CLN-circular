@@ -75,9 +75,15 @@ type Rebalance struct {
 	ProbeOnly bool
 	// ProbeWant (msat), with ProbeOnly: once a probe arrived, up to
 	// PROBE_SIZE_STEPS more over that route find how much of ProbeWant it
-	// carries, in whole Amounts; the result's AmountMsat is that. 0, or no
-	// more than Amount: the route is not sized.
+	// carries, in whole Amounts and one HTLC of at most
+	// PROBE_SIZE_MAX_SPLITS of them; the result's AmountMsat is that. 0, or
+	// no more than Amount: the route is not sized.
 	ProbeWant uint64
+	// Exclude holds channel ids ("scid/direction") its searches leave out,
+	// besides what the graph avoids: a probe-only run's splits get the
+	// channels of the routes it already counted, so that what it finds
+	// next is on top of them.
+	Exclude []string
 
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity
@@ -404,7 +410,7 @@ func (r *Rebalance) runAttempt(exclude map[string]bool, route *graph.Route) (*Re
 		return nil, route, err
 	}
 	if r.ProbeOnly {
-		return r.probed(route, prettyRoute, exclude), nil, nil
+		return r.probed(route, prettyRoute), nil, nil
 	}
 
 	result := NewResult("success", route.Amount/1000,

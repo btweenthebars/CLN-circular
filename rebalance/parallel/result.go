@@ -110,11 +110,16 @@ type Result struct {
 	// its target: the target channel took no more, too many payments failed
 	// in a row (maxfailstreak), or no candidate was left (and why).
 	Stopped string `json:"stopped,omitempty"`
-	// ProbeOnly: the run paid nothing (probeonly=true). RebalancedAmount is
-	// what its probes found the routes to carry, FeesPaidMsat and AvgPPM
-	// what moving that over them would cost, Successes those routes'
-	// candidates; nothing moved.
-	ProbeOnly bool `json:"probe_only,omitempty"`
+	// ProbeOnly: the run paid nothing (probeonly=true), so RebalancedAmount,
+	// FeesPaidMsat and AvgPPM are 0 and Successes empty. What its probes
+	// found is in Carried (as Successes: per candidate, the sats its routes
+	// carried at each rate), CarriedAmount (sats), CarriedFeeMsat and
+	// CarriedAvgPPM (what moving that over those routes would cost).
+	ProbeOnly      bool                `json:"probe_only,omitempty"`
+	Carried        map[string]*Success `json:"carried,omitempty"`
+	CarriedAmount  uint64              `json:"carried_amount,omitempty"`
+	CarriedFeeMsat uint64              `json:"carried_fee_msat,omitempty"`
+	CarriedAvgPPM  uint64              `json:"carried_avg_ppm,omitempty"`
 }
 
 func NewResult(target uint64) *Result {
@@ -209,10 +214,11 @@ func (r *AbstractRebalance) waitForRound(start time.Time, tick, deadline <-chan 
 			r.leftQueue(rebalanceResult.Candidate, r.howItFailed(rebalanceResult))
 		}
 
-		if rebalanceResult.Status == "success" {
-			if r.probeOnly {
-				r.probeSucceeded(rebalanceResult)
-			}
+		if rebalanceResult.Status == "success" && r.probeOnly && !r.probeSucceeded(rebalanceResult) {
+			// a probe arrived, but what its route carried does not count
+			// (see probeSucceeded): neither a success nor a failure
+			r.Node.Logln(glightning.Debug, "not counted: ", rebalanceResult.Message)
+		} else if rebalanceResult.Status == "success" {
 			r.Node.Logln(glightning.Info, rebalanceResult.Message)
 			if rebalanceResult.Route != nil {
 				r.Node.Logln(glightning.Info, "\n"+rebalanceResult.Route.String())
@@ -284,6 +290,8 @@ func (r *AbstractRebalance) endRun(start time.Time) (jrpc2.Result, error) {
 		case r.firstStop != "":
 			// a stop during a hold that circular-resume then ended
 			r.Result.Stopped = r.firstStop
+		case !r.targetStopped && !r.streakStopped && !r.timeStopped && !r.feeStopped && r.probeOnly:
+			r.Result.Stopped = r.probeRanOut() + r.feeratioHint()
 		case !r.targetStopped && !r.streakStopped && !r.timeStopped && !r.feeStopped:
 			// nothing stopped it: no candidate was left to fire
 			r.Result.Stopped = r.ranOut() + r.feeratioHint()
@@ -297,6 +305,12 @@ func (r *AbstractRebalance) endRun(start time.Time) (jrpc2.Result, error) {
 		r.Result.Stopped = ""
 	}
 	r.Result.Time = fmt.Sprintf("%.3fs", float64(time.Since(start).Milliseconds())/1000)
+	if r.probeOnly {
+		r.probeResult()
+		r.Node.Logf(glightning.Info, "Probe-only run finished. Total probes: %d, time: %s, nothing paid: its routes carried %d sats",
+			r.Result.Attempts, r.Result.Time, r.Result.CarriedAmount)
+		return r.Result, nil
+	}
 	r.Node.Logf(glightning.Info, "Parallel rebalance finished. Total payments: %d, time: %s, amount rebalanced: %d sats",
 		r.Result.Attempts, r.Result.Time, r.Result.RebalancedAmount)
 	return r.Result, nil
@@ -454,6 +468,12 @@ func (r *AbstractRebalance) judgeCandidate(result *rebalance.Result) {
 	}
 	switch result.FailedAt {
 	case r.candidateSide, rebalance.SideRoute:
+		if r.probeOnly && r.probeCarried[result.Candidate] > 0 {
+			// its routes carried their part: finding no further one is not
+			// the candidate failing (the record would rank it last for the
+			// run that pays)
+			break
+		}
 		r.Node.RecordCandidate(result.Candidate, false, 0, 0)
 	case rebalance.SideNone:
 		// neither channel's fault
