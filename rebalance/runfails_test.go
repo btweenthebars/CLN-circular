@@ -250,3 +250,43 @@ func TestSavedListChangedMeanwhile(t *testing.T) {
 	assert.Equal(t, "success", res.Status)
 	assert.Equal(t, 2, len(n.paid), "the first through 02a, then around it, though 6x1x1 was never tried")
 }
+
+// What Dropped gives is the caller's own: appending to it, as a split adds
+// the saved list, never writes into the run's list, where it would take the
+// place of the next node dropped.
+func TestDroppedIsACopy(t *testing.T) {
+	f := &RunFailures{Limit: 1}
+	for _, n := range []string{"02n1", "02n2", "02n3"} { // 3 in a slice with room for 4
+		f.fail(n)
+	}
+	got := f.Dropped()
+	got = append(got, "03saved")
+	f.fail("02hub")
+	assert.Equal(t, []string{"02n1", "02n2", "02n3", "02hub"}, f.Dropped())
+	assert.Equal(t, "03saved", got[3])
+
+	// splits adding the saved list while others drop nodes: no race (-race)
+	n, out, in := shortRoute()
+	r := rebalanceOn(n, out, in, 50000000)
+	dir := t.TempDir()
+	_, err := r.Node.AvoidCall(dir, &node.AvoidCmd{Add: "3x1x1"})
+	assert.NoError(t, err)
+	r.RunFailures = f
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if i == 0 {
+					f.fail(fmt.Sprintf("02x%d", j))
+				} else {
+					r.excludeMeanwhile(map[string]bool{})
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	assert.Len(t, f.Dropped(), 54)
+	assert.Equal(t, "02hub", f.Dropped()[3])
+}

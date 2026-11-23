@@ -453,9 +453,11 @@ func (r *Rebalance) runAttempt(exclude map[string]bool, route *graph.Route) (*Re
 func (r *Rebalance) excludeMeanwhile(exclude map[string]bool) {
 	ends := map[string]bool{r.OutChannel.Destination: true, r.InChannel.Source: true,
 		channelId(r.OutChannel): true, channelId(r.InChannel): true}
-	for _, id := range append(r.RunFailures.Dropped(), node.ExcludeKeys(r.Node.AvoidedKeys())...) {
-		if !ends[id] {
-			exclude[id] = true
+	for _, ids := range [][]string{r.RunFailures.Dropped(), node.ExcludeKeys(r.Node.AvoidedKeys())} {
+		for _, id := range ids {
+			if !ends[id] {
+				exclude[id] = true
+			}
 		}
 	}
 }

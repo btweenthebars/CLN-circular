@@ -44,14 +44,16 @@ func (f *RunFailures) fail(node string) bool {
 	return true
 }
 
-// Dropped is the nodes dropped so far, in the order they were.
+// Dropped is a copy of the nodes dropped so far, in the order they were. A
+// copy: the splits share f.dropped, and one appending to what it was given
+// would write into its spare room, over the next node dropped.
 func (f *RunFailures) Dropped() []string {
 	if f == nil {
 		return nil
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.dropped // appended to only: what it holds now does not change
+	return append([]string(nil), f.dropped...)
 }
 
 // DroppedNode is a dropped node and the failures counted against it.
