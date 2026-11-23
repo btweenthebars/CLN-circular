@@ -122,8 +122,21 @@ func TestRunFailuresSpareOurPeers(t *testing.T) {
 	r.RunFailures.fail(inP)
 	r.RunFailures.fail("02z")
 	exclude := map[string]bool{}
-	r.excludeDropped(exclude)
+	r.excludeMeanwhile(exclude)
 	assert.Equal(t, map[string]bool{"02z": true}, exclude)
+	// the saved list, re-read: our own two channels on it are not left out either
+	dir := t.TempDir()
+	for _, k := range []string{out.ShortChannelId, in.ShortChannelId, "3x1x1"} {
+		_, err := r.Node.AvoidCall(dir, &node.AvoidCmd{Add: k})
+		assert.NoError(t, err)
+	}
+	r.excludeMeanwhile(exclude)
+	for _, k := range []string{"02z", "3x1x1/0", "3x1x1/1"} {
+		assert.True(t, exclude[k], k)
+	}
+	for _, k := range []string{outP, inP, channelId(out), channelId(in)} { // the ways this split goes
+		assert.False(t, exclude[k], k)
+	}
 }
 
 // What every search starts without: the graph's avoid list, the saved
@@ -209,4 +222,31 @@ func TestSetupNeedsTheAvoidList(t *testing.T) {
 	if err := r.Setup(); err != nil {
 		assert.NotContains(t, err.Error(), "avoid list")
 	}
+}
+
+// What is added to the saved list while a split is out is left out from its
+// next attempt on, but never the split's own ends.
+func TestSavedListChangedMeanwhile(t *testing.T) {
+	n, out, in := shortRoute()
+	n.liquidity[id("3x1x1", "02a", "02b")] = 0
+	c := addChannel(n.Graph, "6x1x1", "02a", "02b", 0)
+	n.liquidity[channelId(c)] = 0
+	addChannel(n.Graph, "7x1x1", outP, "02ok", 5000)
+	addChannel(n.Graph, "8x1x1", "02ok", "02b", 5000)
+	r := rebalanceOn(n, out, in, 50000000)
+	r.Attempts, r.MaxNodeFails = 5, 50
+	dir := t.TempDir()
+	pay := r.pay
+	r.pay = func(route *graph.Route) (*graph.PrettyRoute, error) {
+		if len(n.paid) == 0 { // added while this payment is out: 02a's channels, and our own two
+			for _, k := range []string{"3x1x1", "6x1x1", out.ShortChannelId, in.ShortChannelId} {
+				_, err := r.Node.AvoidCall(dir, &node.AvoidCmd{Add: k})
+				assert.NoError(t, err, k)
+			}
+		}
+		return pay(route)
+	}
+	res := r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Equal(t, 2, len(n.paid), "the first through 02a, then around it, though 6x1x1 was never tried")
 }

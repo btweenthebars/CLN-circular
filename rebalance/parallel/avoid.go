@@ -7,6 +7,7 @@ import (
 	"circular/util"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // setAvoid sets the run's own avoid list (the call's `avoid`: node ids,
@@ -28,6 +29,25 @@ func (r *AbstractRebalance) setAvoid(keys []string, maxRunNodeFails int) error {
 	}
 	r.maxRunNodeFails = maxRunNodeFails
 	r.runFailures = &rebalance2.RunFailures{Limit: maxRunNodeFails}
+	return nil
+}
+
+// avoidsEnd refuses a call's avoid that names one of the run's fixed ends:
+// the target channel (any direction) or its peer. The run goes through them,
+// so such an entry could not be kept; it is refused rather than ignored.
+func avoidsEnd(avoid []string, self string, ends ...*graph.Channel) error {
+	for _, ch := range ends {
+		peer := ch.Destination
+		if ch.Source != self {
+			peer = ch.Source
+		}
+		for _, k := range avoid {
+			if k == peer || k == ch.ShortChannelId || strings.HasPrefix(k, ch.ShortChannelId+"/") {
+				return fmt.Errorf("avoid: %s is this run's own channel %s or its peer, which the run goes "+
+					"through: it cannot be avoided", k, ch.ShortChannelId)
+			}
+		}
+	}
 	return nil
 }
 

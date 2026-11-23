@@ -211,12 +211,12 @@ func (r *Rebalance) Run() *Result {
 	r.failedAt = map[string]int{}
 	r.payments, r.midFailures = 0, 0
 
-	r.excludeDropped(exclude)
+	r.excludeMeanwhile(exclude)
 	// a route that worked before needs no search
 	known := r.knownRoute(exclude)
 	for i <= r.Attempts {
 		r.Node.Logln(glightning.Debug, "===================== ATTEMPT ", i, " =====================")
-		r.excludeDropped(exclude) // what the run's other splits found failing meanwhile
+		r.excludeMeanwhile(exclude) // what the run's other splits found failing meanwhile
 
 		// One search returns the route with the fewest hops within maxppm,
 		// and the cheapest of those.
@@ -446,12 +446,16 @@ func (r *Rebalance) runAttempt(exclude map[string]bool, route *graph.Route) (*Re
 	return result, nil, nil
 }
 
-// excludeDropped adds to exclude the nodes its run dropped (RunFailures),
-// but not our two channels' peers, the ends of every route.
-func (r *Rebalance) excludeDropped(exclude map[string]bool) {
-	for _, n := range r.RunFailures.Dropped() {
-		if n != r.OutChannel.Destination && n != r.InChannel.Source {
-			exclude[n] = true
+// excludeMeanwhile adds to exclude what was put off limits since the split
+// started: the nodes its run dropped (RunFailures), and what was added to the
+// saved avoid list (circular-avoid). Never the split's own two channels or
+// their peers, which it goes through.
+func (r *Rebalance) excludeMeanwhile(exclude map[string]bool) {
+	ends := map[string]bool{r.OutChannel.Destination: true, r.InChannel.Source: true,
+		channelId(r.OutChannel): true, channelId(r.InChannel): true}
+	for _, id := range append(r.RunFailures.Dropped(), node.ExcludeKeys(r.Node.AvoidedKeys())...) {
+		if !ends[id] {
+			exclude[id] = true
 		}
 	}
 }

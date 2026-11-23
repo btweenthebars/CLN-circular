@@ -113,6 +113,9 @@ func (r *RebalancePull) prepare() error {
 		return err
 	}
 	r.TargetChannel = incomingChannel
+	if err := avoidsEnd(r.callAvoid, r.Node.Id, r.TargetChannel); err != nil {
+		return err
+	}
 
 	r.excludePeer = r.TargetChannel.Source
 	if err = r.FindCandidates(r.excludePeer); err != nil {

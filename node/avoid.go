@@ -21,9 +21,10 @@ import (
 const AVOID_FILE = "avoid.json"
 
 var (
-	reNodeId  = regexp.MustCompile(`^0[23][0-9a-f]{64}$`)
-	reScid    = regexp.MustCompile(`^[0-9]+x[0-9]+x[0-9]+$`)
-	reScidDir = regexp.MustCompile(`^[0-9]+x[0-9]+x[0-9]+/[01]$`)
+	reNodeId = regexp.MustCompile(`^0[23][0-9a-f]{64}$`)
+	// no leading zeros: "0812345x12x0" would never match the graph's keys
+	reScid    = regexp.MustCompile(`^(0|[1-9][0-9]*)x(0|[1-9][0-9]*)x(0|[1-9][0-9]*)$`)
+	reScidDir = regexp.MustCompile(`^(0|[1-9][0-9]*)x(0|[1-9][0-9]*)x(0|[1-9][0-9]*)/[01]$`)
 )
 
 // AvoidKey checks key: a node id, a short channel id (both directions) or
@@ -210,6 +211,9 @@ type AvoidResult struct {
 	Changed string       `json:"changed,omitempty"`
 	Count   int          `json:"count"`
 	Avoid   []AvoidEntry `json:"avoid"`
+	// the saved file could not be read: runs are refused, and Avoid holds
+	// only the entries that could
+	Error string `json:"error,omitempty"`
 }
 
 func (c *AvoidCmd) Name() string {
@@ -249,11 +253,16 @@ func (n *Node) AvoidCall(dir string, c *AvoidCmd) (*AvoidResult, error) {
 	n.avoidList.Lock()
 	for _, e := range n.avoidList.entries {
 		if reNodeId.MatchString(e.Key) && n.Graph != nil {
-			e.Alias = n.Graph.GetAlias(e.Key)
+			if alias := n.Graph.GetAlias(e.Key); alias != e.Key { // its id when unknown
+				e.Alias = alias
+			}
 		}
 		out.Avoid = append(out.Avoid, e)
 	}
 	n.avoidList.Unlock()
+	if err := n.AvoidListError(); err != nil {
+		out.Error = err.Error()
+	}
 	sort.Slice(out.Avoid, func(i, j int) bool { return out.Avoid[i].Key < out.Avoid[j].Key })
 	if out.Avoid == nil {
 		out.Avoid = []AvoidEntry{}

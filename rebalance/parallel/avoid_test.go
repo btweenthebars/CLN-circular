@@ -5,6 +5,7 @@ import (
 	"circular/node"
 	"circular/rebalance"
 	"fmt"
+	"github.com/elementsproject/glightning/glightning"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,10 +242,33 @@ func TestThePairQuoteAvoids(t *testing.T) {
 	q.Avoid.V = []string{"CoinGate"}
 	_, err := q.quotePair(p.Node)
 	assert.Contains(t, err.Error(), "avoid: ")
+	for _, k := range []string{"9x1x1/1", "1x1x1"} { // its own two channels
+		q.Avoid.V = []string{k}
+		_, err = q.quotePair(p.Node)
+		assert.Contains(t, err.Error(), "cannot be avoided", k)
+	}
 	q.Avoid.V = nil
 	dir := t.TempDir()
 	assert.NoError(t, os.WriteFile(filepath.Join(dir, node.AVOID_FILE), []byte("{broken"), 0o600))
 	assert.Error(t, p.Node.LoadAvoidList(dir))
 	_, err = q.quotePair(p.Node)
 	assert.Contains(t, err.Error(), "the avoid list cannot be read")
+}
+
+// A call's avoid that names the run's own channel or its peer is refused,
+// not ignored: the run goes through them.
+func TestAvoidsEnd(t *testing.T) {
+	self := "02self"
+	in := &graph.Channel{Channel: &glightning.Channel{ShortChannelId: "9x1x1", Source: "02in", Destination: self}}
+	out := &graph.Channel{Channel: &glightning.Channel{ShortChannelId: "1x1x1", Source: self, Destination: "02o1"}}
+	for _, k := range []string{"9x1x1", "9x1x1/0", "9x1x1/1", "02in"} {
+		err := avoidsEnd([]string{"5x5x5", k}, self, in)
+		assert.Contains(t, err.Error(), "avoid: "+k+" is this run's own channel 9x1x1 or its peer", k)
+	}
+	for _, k := range []string{"1x1x1/1", "02o1"} {
+		assert.Error(t, avoidsEnd([]string{k}, self, in, out), k)
+		assert.NoError(t, avoidsEnd([]string{k}, self, in), k)
+	}
+	assert.NoError(t, avoidsEnd([]string{"99x1x1", "9x1x11/0", "19x1x1/1", self + "x"}, self, in, out))
+	assert.NoError(t, avoidsEnd(nil, self, in, out))
 }

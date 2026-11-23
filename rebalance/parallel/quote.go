@@ -188,6 +188,9 @@ func (q *RebalanceQuote) quotePair(n *node.Node) (*Quote, error) {
 		}
 		avoid = append(avoid, key)
 	}
+	if err := avoidsEnd(avoid, n.Id, out, in); err != nil {
+		return nil, err
+	}
 	rebalance := rebalance2.NewRebalance(out, in, amount, maxPPM, q.Attempts, maxHops)
 	rebalance.Node = n
 	rebalance.RiskPPM = int(q.RiskPPM)
