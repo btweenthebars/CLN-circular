@@ -2,6 +2,8 @@ package rebalance
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -190,4 +192,21 @@ func TestDroppedMeanwhile(t *testing.T) {
 	assert.Equal(t, "success", res.Status)
 	assert.Contains(t, res.Channels, id("7x1x1", outP, "02ok"))
 	assert.Equal(t, 1, len(n.paid))
+}
+
+// The single circular command refuses to run while the saved list cannot be
+// read: what it holds could not be avoided.
+func TestSetupNeedsTheAvoidList(t *testing.T) {
+	n, out, in := shortRoute()
+	r := rebalanceOn(n, out, in, 50000000)
+	dir := t.TempDir()
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, node.AVOID_FILE), []byte("{broken"), 0o600))
+	assert.Error(t, r.Node.LoadAvoidList(dir))
+	err := r.Setup()
+	assert.Contains(t, err.Error(), "the avoid list cannot be read")
+	assert.NoError(t, os.Remove(filepath.Join(dir, node.AVOID_FILE)))
+	assert.NoError(t, r.Node.LoadAvoidList(dir))
+	if err := r.Setup(); err != nil {
+		assert.NotContains(t, err.Error(), "avoid list")
+	}
 }

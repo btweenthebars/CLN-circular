@@ -101,8 +101,11 @@ func (n *Node) LoadAvoidList(dir string) error {
 		}
 		for _, e := range list {
 			key, kerr := AvoidKey(e.Key)
-			if kerr != nil && err == nil {
-				err = fmt.Errorf("%s: %w", AVOID_FILE, kerr)
+			if kerr != nil {
+				if err == nil {
+					err = fmt.Errorf("%s: %w", AVOID_FILE, kerr)
+				}
+				continue
 			}
 			e.Key = key
 			entries[key] = e
@@ -130,7 +133,18 @@ func (n *Node) saveAvoidList(dir string, entries map[string]AvoidEntry) error {
 	}
 	path := filepath.Join(dir, AVOID_FILE)
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync() // on disk before it replaces the list: a power loss leaves the old one, or this
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

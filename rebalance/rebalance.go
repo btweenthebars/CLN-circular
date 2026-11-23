@@ -178,6 +178,10 @@ func NewRebalance(outChannel, inChannel *graph.Channel, amount, maxppm uint64, a
 func (r *Rebalance) Setup() error {
 	r.setDefaults()
 
+	if err := r.Node.AvoidListError(); err != nil {
+		return err // what the user listed could not be avoided
+	}
+
 	if err := r.validateLiquidityParameters(r.OutChannel, r.InChannel); err != nil {
 		return err
 	}

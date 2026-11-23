@@ -66,7 +66,17 @@ func (r *AbstractRebalance) splitExclude() []string {
 // droppedNodes is the nodes this run dropped, in every round, with their
 // aliases.
 func (r *AbstractRebalance) droppedNodes() []rebalance2.DroppedNode {
-	all := append(append([]rebalance2.DroppedNode(nil), r.droppedBefore...), r.runFailures.DroppedNodes()...)
+	// a node dropped in several rounds once, with its failures in all of them
+	var all []rebalance2.DroppedNode
+	at := map[string]int{}
+	for _, d := range append(append([]rebalance2.DroppedNode(nil), r.droppedBefore...), r.runFailures.DroppedNodes()...) {
+		if i, ok := at[d.NodeId]; ok {
+			all[i].Failures += d.Failures
+			continue
+		}
+		at[d.NodeId] = len(all)
+		all = append(all, d)
+	}
 	for i := range all {
 		all[i].Alias = r.Node.Graph.GetAlias(all[i].NodeId)
 		if all[i].Alias == all[i].NodeId {

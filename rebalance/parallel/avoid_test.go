@@ -179,6 +179,13 @@ func TestDroppedNodesAcrossRounds(t *testing.T) {
 	rebalance.FailForTest(p.runFailures, "02y")
 	assert.Equal(t, []rebalance.DroppedNode{{NodeId: "02x", Alias: "Hub", Failures: 2}, {NodeId: "02y", Failures: 2}},
 		p.droppedNodes())
+	// dropped again in another round: listed once, with its failures in both
+	p.newRound(p.maxPPM, false)
+	for i := 0; i < 3; i++ {
+		rebalance.FailForTest(p.runFailures, "02x")
+	}
+	assert.Equal(t, []rebalance.DroppedNode{{NodeId: "02x", Alias: "Hub", Failures: 5}, {NodeId: "02y", Failures: 2}},
+		p.droppedNodes())
 }
 
 // A run refuses to start while the saved list cannot be read: what it holds
@@ -209,4 +216,29 @@ func TestTheQuoteAvoids(t *testing.T) {
 	assert.Equal(t, []string{"02o1", "02a", "02in"}, quoted())
 	p.callAvoid = []string{"02a"}
 	assert.Equal(t, []string{"02o1", "02b", "02in"}, quoted())
+}
+
+// The pair quote (inscid and outscid) checks and applies its avoid too.
+func TestThePairQuoteAvoids(t *testing.T) {
+	viaA, viaB := "02"+strings.Repeat("a", 64), "02"+strings.Repeat("b", 64)
+	p := probePull(t, 1, probeWay{from: "02o1", via: viaA, ppm: 100}, probeWay{from: "02o1", via: viaB, ppm: 700})
+	p.Node.IndexPeersForTest()
+	q := &RebalanceQuote{InScid: "9x1x1", OutScid: "1x1x1", Amount: 100000, MaxPPM: 2000}
+	path := func() []string {
+		res, err := q.quotePair(p.Node)
+		assert.NoError(t, err)
+		return res.Candidates[0].Path
+	}
+	assert.Equal(t, []string{"02o1", viaA, "02in"}, path())
+	q.Avoid.V = []string{strings.ToUpper(viaA)}
+	assert.Equal(t, []string{"02o1", viaB, "02in"}, path())
+	q.Avoid.V = []string{"CoinGate"}
+	_, err := q.quotePair(p.Node)
+	assert.Contains(t, err.Error(), "avoid: ")
+	q.Avoid.V = nil
+	dir := t.TempDir()
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, node.AVOID_FILE), []byte("{broken"), 0o600))
+	assert.Error(t, p.Node.LoadAvoidList(dir))
+	_, err = q.quotePair(p.Node)
+	assert.Contains(t, err.Error(), "the avoid list cannot be read")
 }

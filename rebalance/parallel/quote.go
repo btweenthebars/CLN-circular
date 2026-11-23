@@ -177,9 +177,21 @@ func (q *RebalanceQuote) quotePair(n *node.Node) (*Quote, error) {
 	}
 	result := &Quote{Mode: "pair", Target: q.InScid, TargetPeer: n.Graph.GetAlias(in.Source),
 		Amount: amount / 1000, MaxPPM: maxPPM}
+	if err := n.AvoidListError(); err != nil {
+		return nil, err
+	}
+	var avoid []string
+	for _, k := range q.Avoid.V {
+		key, err := node.AvoidKey(k)
+		if err != nil {
+			return nil, fmt.Errorf("avoid: %w", err)
+		}
+		avoid = append(avoid, key)
+	}
 	rebalance := rebalance2.NewRebalance(out, in, amount, maxPPM, q.Attempts, maxHops)
 	rebalance.Node = n
 	rebalance.RiskPPM = int(q.RiskPPM)
+	rebalance.Exclude = node.ExcludeKeys(avoid)
 	result.add(quoteCandidate(n.Graph, n.Graph.NodeScoresNow(), out, out.Destination, rebalance), rebalance)
 	result.summarize()
 	return result, nil

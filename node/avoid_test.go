@@ -87,6 +87,7 @@ func TestTheAvoidList(t *testing.T) {
 		b := &Node{}
 		assert.Error(t, b.LoadAvoidList(dir))
 		assert.Contains(t, b.AvoidListError().Error(), "the avoid list cannot be read")
+		assert.NotContains(t, b.AvoidedKeys(), "", "a bad key is not kept")
 		_, err = b.AvoidCall(dir, &AvoidCmd{Add: "7x7x7"})
 		assert.Contains(t, err.Error(), "not written over")
 		data, _ := os.ReadFile(path)

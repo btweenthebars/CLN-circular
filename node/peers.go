@@ -67,6 +67,19 @@ func (n *Node) PeerCount() int {
 	return len(n.Peers)
 }
 
+// IndexPeersForTest builds the scid index from Peers, as a peer refresh
+// would; for tests that set Peers by hand.
+func (n *Node) IndexPeersForTest() {
+	n.PeersLock.Lock()
+	defer n.PeersLock.Unlock()
+	n.scidToPeer = map[string]*glightning.Peer{}
+	for _, peer := range n.Peers {
+		for _, channel := range peer.Channels {
+			n.scidToPeer[channel.ShortChannelId] = peer
+		}
+	}
+}
+
 func (n *Node) GetChannelPeerFromScid(scid string) (*glightning.Peer, error) {
 	n.PeersLock.RLock()
 	defer n.PeersLock.RUnlock()
