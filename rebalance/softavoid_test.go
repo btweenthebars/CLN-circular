@@ -167,6 +167,21 @@ func TestTheQuoteSoftAvoids(t *testing.T) {
 	if assert.NotNil(t, m.Route) {
 		assert.Contains(t, m.Route.ChannelIds(), id("7x1x1", outP, "02ok"))
 	}
+
+	// what a measure's probes find failing lets no node back: a quote shows how a run starts
+	n, r = softNet()
+	n.liquidity[id("8x1x1", "02ok", "02b")] = 0
+	r.sendProbe = n.probe
+	r.Soft = NewSoftAvoid([]string{"02a"}, 1)
+	r.Measure(r.Amount, 3, 0, nil)
+	assert.Equal(t, 2, len(n.paid), "a failure in the middle, then through 02a (no other way left)")
+	assert.Equal(t, []string{"02a"}, r.Soft.Active())
+	assert.False(t, r.measuring)
+	n2, r2 := softNet() // a split of a run, with the same soft avoid: its failures count
+	n2.liquidity[id("8x1x1", "02ok", "02b")] = 0
+	r2.Soft = r.Soft
+	r2.Run()
+	assert.Nil(t, r2.Soft.Active())
 }
 
 // Only failures in the middle of a route count towards letting them back:

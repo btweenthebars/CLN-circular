@@ -94,6 +94,9 @@ type Rebalance struct {
 	// this split's searches go through them from then on.
 	Soft         *SoftAvoid
 	SoftFellBack bool
+	// measuring: a quote's Measure is probing; its failures do not count
+	// towards letting the soft-avoided back (a quote shows how a run starts)
+	measuring bool
 
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity

@@ -104,8 +104,10 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		}
 		r.failedAt[failure.ErringNode]++
 		if k > 1 {
-			r.midFailures++    // past our out-peer
-			r.Soft.paid(false) // a route that is hard to come by: towards letting the soft-avoided back
+			r.midFailures++ // past our out-peer
+			if !r.measuring {
+				r.Soft.paid(false) // a route that is hard to come by: towards letting the soft-avoided back
+			}
 			if failsTheNode(failure.FailCode) {
 				g.NodeFailed(failure.ErringNode) // remembered across runs
 			}

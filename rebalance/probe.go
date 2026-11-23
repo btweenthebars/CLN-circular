@@ -118,6 +118,8 @@ type Measurement struct {
 // halfway (a binary search). Nothing is paid. stop, if it returns true, ends
 // it before its next probe.
 func (r *Rebalance) Measure(want uint64, tries, steps int, stop func() bool) Measurement {
+	r.measuring = true // what fails here lets no soft-avoided node back
+	defer func() { r.measuring = false }()
 	var m Measurement
 	split := r.Amount
 	exclude := r.startExclude()
