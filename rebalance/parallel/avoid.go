@@ -108,3 +108,69 @@ func (r *AbstractRebalance) droppedNodes() []rebalance2.DroppedNode {
 	}
 	return all
 }
+
+// setSoftAvoid sets what the run's routes leave out at first (softAvoidOf).
+func (r *AbstractRebalance) setSoftAvoid(keys []string, score float64, streak int) error {
+	soft, scores, err := softAvoidOf(r.Node, keys, score, streak)
+	if err != nil {
+		return err
+	}
+	r.softAvoid, r.softScores = soft, scores
+	return nil
+}
+
+// softAvoidOf is a run's soft avoid: keys (node ids, short channel ids or
+// scid/direction: the call's softavoid) and the nodes circular-node-memory
+// scores at score or more (0, or below: none), most failing first. Its
+// splits leave them out of their routes until a search finds no route
+// without them, or until streak failed payments in a row (0: the default;
+// below 0: never) let them back for the rest of the run. Also the scores
+// that put nodes on it.
+func softAvoidOf(n *node.Node, keys []string, score float64, streak int) (*rebalance2.SoftAvoid, map[string]float64, error) {
+	var ids []string
+	seen := map[string]bool{n.Id: true}
+	for _, k := range keys {
+		key, err := node.AvoidKey(k)
+		if err != nil {
+			return nil, nil, fmt.Errorf("softavoid: %w", err)
+		}
+		for _, id := range node.ExcludeKeys([]string{key}) {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	scores := map[string]float64{}
+	if score > 0 {
+		var remembered []string
+		for id, s := range n.Graph.NodeScoresNow() {
+			if s.Score >= score {
+				scores[id] = s.Score
+				if !seen[id] {
+					seen[id] = true
+					remembered = append(remembered, id)
+				}
+			}
+		}
+		sort.Slice(remembered, func(i, j int) bool {
+			if scores[remembered[i]] != scores[remembered[j]] {
+				return scores[remembered[i]] > scores[remembered[j]]
+			}
+			return remembered[i] < remembered[j]
+		})
+		ids = append(ids, remembered...)
+	}
+	return rebalance2.NewSoftAvoid(ids, streak), scores, nil
+}
+
+// softReport is what a result or quote says of a soft avoid: nil for none.
+func softReport(n *node.Node, soft *rebalance2.SoftAvoid, scores map[string]float64) *rebalance2.SoftAvoidReport {
+	alias := func(k string) string {
+		if a := n.Graph.GetAlias(k); a != k {
+			return a
+		}
+		return ""
+	}
+	return soft.Report(alias, func(k string) float64 { return scores[k] })
+}

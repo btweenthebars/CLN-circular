@@ -36,7 +36,7 @@ func (r *Rebalance) Quote() (*graph.Route, error) {
 	if err := r.validateLiquidityParameters(r.OutChannel, r.InChannel); err != nil {
 		return nil, err
 	}
-	route, err := r.getRoute(r.startExclude())
+	route, err := r.searchRoute(r.startExclude())
 	if err != nil {
 		return nil, err
 	}

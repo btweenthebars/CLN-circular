@@ -88,6 +88,12 @@ type Rebalance struct {
 	// a route for its whole run, and drops a node for the rest of the run
 	// at its limit: each attempt leaves out the nodes dropped so far.
 	RunFailures *RunFailures
+	// Soft, when set, is the run's soft avoid: nodes its searches leave out
+	// at first (searchRoute); its payments' outcomes count towards letting
+	// them back. SoftFellBack: the last search found a route only through
+	// them.
+	Soft         *SoftAvoid
+	SoftFellBack bool
 
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity
@@ -411,7 +417,7 @@ func (r *Rebalance) runAttempt(exclude map[string]bool, route *graph.Route) (*Re
 
 	if route == nil {
 		var err error
-		if route, err = r.getRoute(exclude); err != nil {
+		if route, err = r.searchRoute(exclude); err != nil {
 			return nil, nil, err
 		}
 	}

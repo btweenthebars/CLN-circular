@@ -42,6 +42,9 @@ type RebalancePush struct {
 	ProbeOnly       bool       `json:"probeonly,omitempty"`       // pay nothing: probes in place of payments (payments nobody can settle); what they find the routes carry is the result
 	Avoid           util.Keys  `json:"avoid,omitempty"`           // node ids, short channel ids or scid/direction this run never routes through (with the saved list, circular-avoid)
 	MaxRunNodeFails util.Int   `json:"maxrunnodefails,omitempty"` // a node that fails this many of the run's payments, across its splits, is routed around for the rest of it (default 10; -1 never)
+	SoftAvoid       util.Keys  `json:"softavoid,omitempty"`       // nodes (or channels) its routes leave out at first, let back when a split finds no route without them or after softavoidstreak failed payments in a row
+	SoftAvoidScore  util.Float `json:"softavoidscore,omitempty"`  // also soft-avoid the nodes circular-nodes scores at least this (0: none)
+	SoftAvoidStreak util.Int   `json:"softavoidstreak,omitempty"` // failed payments in a row that let the soft-avoided nodes back for the rest of the run (default 60; -1 never)
 	AbstractRebalance
 }
 
@@ -98,6 +101,9 @@ func (r *RebalancePush) prepare() error {
 		return err
 	}
 	if err := r.setAvoid(r.Avoid.V, int(r.MaxRunNodeFails)); err != nil {
+		return err
+	}
+	if err := r.setSoftAvoid(r.SoftAvoid.V, r.SoftAvoidScore.V, int(r.SoftAvoidStreak)); err != nil {
 		return err
 	}
 

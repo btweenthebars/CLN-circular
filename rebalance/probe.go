@@ -126,7 +126,7 @@ func (r *Rebalance) Measure(want uint64, tries, steps int, stop func() bool) Mea
 			m.Err = errMeasureStopped
 			return m
 		}
-		route, err := r.getRoute(exclude)
+		route, err := r.searchRoute(exclude)
 		if err != nil {
 			m.Err = err
 			return m

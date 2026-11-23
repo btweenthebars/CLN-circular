@@ -1,0 +1,165 @@
+package rebalance
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestSoftAvoid(t *testing.T) {
+	assert.Nil(t, NewSoftAvoid(nil, 5), "none: no soft avoid")
+	var none *SoftAvoid
+	assert.Nil(t, none.Active())
+	none.paid(false) // nil-safe
+	none.fellBack()
+	assert.Nil(t, none.Report(nil, nil))
+
+	keys := []string{"02a", "02b"}
+	s := NewSoftAvoid(keys, 0)
+	keys[0] = "changed" // the caller's slice is its own
+	assert.Equal(t, DEFAULT_SOFT_AVOID_STREAK, s.Limit, "0: the default")
+	got := s.Active()
+	got[0] = "x"
+	assert.Equal(t, []string{"02a", "02b"}, s.Active(), "a copy")
+
+	s = NewSoftAvoid([]string{"02a"}, 3)
+	s.paid(false)
+	s.paid(false)
+	s.paid(true) // a payment went through: the streak starts over
+	s.paid(false)
+	s.paid(false)
+	assert.Equal(t, []string{"02a"}, s.Active())
+	s.paid(false)
+	assert.Nil(t, s.Active(), "3 in a row: let back")
+	s.paid(true)
+	assert.Nil(t, s.Active(), "for the rest of the run")
+	r := s.Report(nil, nil)
+	assert.Equal(t, "after 3 failed payments in a row", r.Lifted)
+
+	never := NewSoftAvoid([]string{"02a"}, -1)
+	for i := 0; i < 500; i++ {
+		never.paid(false)
+	}
+	assert.Equal(t, []string{"02a"}, never.Active(), "-1: never by a streak")
+
+	s = NewSoftAvoid([]string{"02a", "02b", "3x1x1/0"}, 0)
+	s.fellBack()
+	s.fellBack()
+	r = s.Report(func(k string) string { return map[string]string{"02b": "Hub"}[k] },
+		func(k string) float64 { return map[string]float64{"02b": 9, "02a": 2}[k] })
+	assert.Equal(t, &SoftAvoidReport{Fallbacks: 2, Nodes: []SoftAvoidNode{
+		{Key: "02b", Alias: "Hub", Score: 9}, {Key: "02a", Score: 2}, {Key: "3x1x1/0"}}}, r, "most failing first")
+}
+
+// softNet is shortRoute with a second way, dearer, around 02a: out-peer →
+// 02ok → 02b.
+func softNet() (*network, *Rebalance) {
+	n, out, in := shortRoute()
+	addChannel(n.Graph, "7x1x1", outP, "02ok", 5000)
+	addChannel(n.Graph, "8x1x1", "02ok", "02b", 5000)
+	r := rebalanceOn(n, out, in, 50000000)
+	r.Attempts, r.MaxNodeFails = 10, 50
+	return n, r
+}
+
+// The soft-avoided nodes are left out while another route exists; with none
+// left, the split goes through them at once; and its own peers never count.
+func TestSoftAvoidedNodesAreRoutedAround(t *testing.T) {
+	n, r := softNet()
+	res := r.Run()
+	assert.Contains(t, res.Channels, id("3x1x1", "02a", "02b"), "without soft avoid: the cheap way, via 02a")
+
+	n, r = softNet()
+	r.Soft = NewSoftAvoid([]string{"02a"}, 0)
+	res = r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Contains(t, res.Channels, id("7x1x1", outP, "02ok"), "around 02a")
+	assert.False(t, r.SoftFellBack)
+	assert.Equal(t, 1, len(n.paid))
+
+	// no way without them: the same search goes through them
+	n, r = softNet()
+	r.Soft = NewSoftAvoid([]string{"02a", "02ok"}, 0)
+	res = r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Contains(t, res.Channels, id("3x1x1", "02a", "02b"))
+	assert.True(t, r.SoftFellBack)
+	assert.Equal(t, 1, r.Soft.Report(nil, nil).Fallbacks)
+	assert.Equal(t, []string{"02a", "02ok"}, r.Soft.Active(), "a fallback lets them back for that search only")
+
+	// a route above maxppm without them is no route either
+	n, r = softNet()
+	r.MaxPPM = 150 // 02ok's way costs 200 ppm
+	r.Soft = NewSoftAvoid([]string{"02a"}, 0)
+	res = r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Contains(t, res.Channels, id("3x1x1", "02a", "02b"))
+
+	// the split's own peers are never left out
+	n, r = softNet()
+	r.Soft = NewSoftAvoid([]string{outP, inP, "02a"}, 0)
+	with := r.softExclude(map[string]bool{"02z": true})
+	assert.Equal(t, map[string]bool{"02z": true, "02a": true}, with, "the ends: never")
+	r.Soft = NewSoftAvoid([]string{outP, inP}, 0)
+	res = r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.False(t, r.SoftFellBack)
+	assert.Equal(t, 0, r.Soft.Report(nil, nil).Fallbacks)
+}
+
+// Payments that keep failing on the other routes let the soft-avoided nodes
+// back for the whole run, though routes without them are still found.
+func TestAFailureStreakLetsThemBack(t *testing.T) {
+	build := func() (*network, *Rebalance) {
+		n, r := softNet()
+		n.liquidity[id("8x1x1", "02ok", "02b")] = 0
+		for _, s := range []string{"10", "11", "12"} { // three more ways around 02a, all drained
+			via := "02w" + s
+			addChannel(n.Graph, s+"x1x1", outP, via, 5000)
+			c := addChannel(n.Graph, s+"x2x1", via, "02b", 5000)
+			n.liquidity[channelId(c)] = 0
+		}
+		return n, r
+	}
+	n, r := build()
+	r.Soft = NewSoftAvoid([]string{"02a"}, 2)
+	res := r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Equal(t, 3, len(n.paid), "two failures around 02a, then through it")
+	assert.Contains(t, res.Channels, id("3x1x1", "02a", "02b"))
+	rep := r.Soft.Report(nil, nil)
+	assert.Equal(t, "after 2 failed payments in a row", rep.Lifted)
+	assert.Equal(t, 0, rep.Fallbacks, "let back by the streak, not for want of a route")
+
+	// probes count as payments do
+	n, r = build()
+	r.ProbeOnly = true
+	r.sendProbe = n.probe
+	r.Soft = NewSoftAvoid([]string{"02a"}, 2)
+	res = r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Equal(t, "after 2 failed payments in a row", r.Soft.Report(nil, nil).Lifted)
+}
+
+// A quote and a measure search as a run does.
+func TestTheQuoteSoftAvoids(t *testing.T) {
+	_, r := softNet()
+	r.Soft = NewSoftAvoid([]string{"02a"}, 0)
+	route, err := r.Quote()
+	assert.NoError(t, err)
+	assert.Contains(t, route.ChannelIds(), id("7x1x1", outP, "02ok"))
+	_, r = softNet()
+	r.Soft = NewSoftAvoid([]string{"02a", "02ok"}, 0)
+	route, err = r.Quote()
+	assert.NoError(t, err)
+	assert.Contains(t, route.ChannelIds(), id("3x1x1", "02a", "02b"))
+	assert.True(t, r.SoftFellBack)
+
+	n, r := softNet()
+	r.sendProbe = n.probe
+	r.Soft = NewSoftAvoid([]string{"02a"}, 0)
+	m := r.Measure(r.Amount, 3, 0, nil)
+	if assert.NotNil(t, m.Route) {
+		assert.Contains(t, m.Route.ChannelIds(), id("7x1x1", outP, "02ok"))
+	}
+}

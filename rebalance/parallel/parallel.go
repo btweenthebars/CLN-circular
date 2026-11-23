@@ -202,6 +202,11 @@ type AbstractRebalance struct {
 	maxRunNodeFails int
 	runFailures     *rebalance2.RunFailures
 	droppedBefore   []rebalance2.DroppedNode
+	// softAvoid: what the run's routes leave out at first (softavoid,
+	// softavoidscore), shared by its splits; softScores: the memory scores
+	// that put nodes on it
+	softAvoid  *rebalance2.SoftAvoid
+	softScores map[string]float64
 	RebalanceMethods
 }
 
@@ -293,6 +298,7 @@ func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount u
 	rebalance.Route = r.routes[candidate.ShortChannelId]
 	rebalance.Exclude = r.splitExclude()
 	rebalance.RunFailures = r.runFailures
+	rebalance.Soft = r.softAvoid
 	if r.probeOnly {
 		rebalance.ProbeOnly, rebalance.ProbeWant = true, r.probeWant(candidate)
 	} else if rebalance.Route == nil {

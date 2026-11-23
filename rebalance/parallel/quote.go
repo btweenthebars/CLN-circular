@@ -65,6 +65,12 @@ type RebalanceQuote struct {
 	// no payment)
 	Avoid           util.Keys `json:"avoid,omitempty"`
 	MaxRunNodeFails util.Int  `json:"maxrunnodefails,omitempty"`
+	// SoftAvoid, SoftAvoidScore: as circular-pull's; the routes quoted leave
+	// them out unless no route is found without them (through_soft_avoided).
+	// SoftAvoidStreak is accepted (a quote fails no payments).
+	SoftAvoid       util.Keys  `json:"softavoid,omitempty"`
+	SoftAvoidScore  util.Float `json:"softavoidscore,omitempty"`
+	SoftAvoidStreak util.Int   `json:"softavoidstreak,omitempty"`
 }
 
 const (
@@ -141,7 +147,8 @@ func (q *RebalanceQuote) pull() *RebalancePull {
 		MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
 		DepleteUpToPercent: q.DepleteUpToPercent, DepleteUpToAmount: q.DepleteUpToAmount,
 		Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio,
-		Avoid: q.Avoid, MaxRunNodeFails: q.MaxRunNodeFails}
+		Avoid: q.Avoid, MaxRunNodeFails: q.MaxRunNodeFails,
+		SoftAvoid: q.SoftAvoid, SoftAvoidScore: q.SoftAvoidScore, SoftAvoidStreak: q.SoftAvoidStreak}
 }
 
 // push is the circular-push the quote is of.
@@ -150,7 +157,8 @@ func (q *RebalanceQuote) push() *RebalancePush {
 		MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
 		FillUpToPercent: q.FillUpToPercent, FillUpToAmount: q.FillUpToAmount,
 		Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio,
-		Avoid: q.Avoid, MaxRunNodeFails: q.MaxRunNodeFails}
+		Avoid: q.Avoid, MaxRunNodeFails: q.MaxRunNodeFails,
+		SoftAvoid: q.SoftAvoid, SoftAvoidScore: q.SoftAvoidScore, SoftAvoidStreak: q.SoftAvoidStreak}
 }
 
 // quotePair quotes one rebalance from OutScid to InScid, as circular would
@@ -191,12 +199,18 @@ func (q *RebalanceQuote) quotePair(n *node.Node) (*Quote, error) {
 	if err := avoidsEnd(avoid, n.Id, out, in); err != nil {
 		return nil, err
 	}
+	soft, softScores, err := softAvoidOf(n, q.SoftAvoid.V, q.SoftAvoidScore.V, int(q.SoftAvoidStreak))
+	if err != nil {
+		return nil, err
+	}
 	rebalance := rebalance2.NewRebalance(out, in, amount, maxPPM, q.Attempts, maxHops)
 	rebalance.Node = n
 	rebalance.RiskPPM = int(q.RiskPPM)
 	rebalance.Exclude = node.ExcludeKeys(avoid)
+	rebalance.Soft = soft
 	result.add(quoteCandidate(n.Graph, n.Graph.NodeScoresNow(), out, out.Destination, rebalance), rebalance)
 	result.summarize()
+	result.SoftAvoid = softReport(n, soft, softScores)
 	return result, nil
 }
 
@@ -216,6 +230,9 @@ type Quote struct {
 	Whole *WholeQuote `json:"whole,omitempty"`
 	// NotMeasured says why measure=true measured nothing (a run is going)
 	NotMeasured string `json:"not_measured,omitempty"`
+	// SoftAvoid is what the routes quoted left out at first (softavoid,
+	// softavoidscore), and how many needed it
+	SoftAvoid *rebalance2.SoftAvoidReport `json:"soft_avoid,omitempty"`
 	// what a measure may spend (measureprobes, measuretime); 0: the defaults
 	maxProbes int
 	maxTime   time.Duration
@@ -314,6 +331,9 @@ type QuoteCandidate struct {
 	Remembered []RememberedHop `json:"remembered,omitempty"`
 	// Measured is what probes found its routes carry now (measure=true)
 	Measured *MeasuredRoute `json:"measured,omitempty"`
+	// ThroughSoftAvoided: no route was found without the soft-avoided nodes,
+	// so its route goes through them
+	ThroughSoftAvoided bool `json:"through_soft_avoided,omitempty"`
 }
 
 // MeasuredRoute is what probes found a candidate's routes carry now.
@@ -408,6 +428,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		rebalance.Node = r.Node
 		rebalance.RiskPPM = r.riskPPM
 		rebalance.Exclude = r.splitExclude()
+		rebalance.Soft = r.softAvoid
 		c := quoteCandidate(r.Node.Graph, scores, candidate, peer, rebalance)
 		result.rebalances = append(result.rebalances, rebalance)
 		if m, ok := r.RebalanceMethods.(interface {
@@ -422,6 +443,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		result.Candidates = append(result.Candidates, c)
 	}
 	result.summarize()
+	result.SoftAvoid = softReport(r.Node, r.softAvoid, r.softScores)
 	result.Whole = wholeQuote(r.amount, result.Candidates)
 	return result
 }
@@ -432,6 +454,7 @@ func quoteCandidate(g *graph.Graph, scores map[string]graph.NodeScore, candidate
 	rebalance *rebalance2.Rebalance) *QuoteCandidate {
 	c := &QuoteCandidate{Scid: candidate.ShortChannelId, Alias: g.GetAlias(peer), NodeId: peer}
 	route, err := rebalance.Quote()
+	c.ThroughSoftAvoided = route != nil && rebalance.SoftFellBack
 	if route != nil {
 		ppm, fee := route.FeePPM(), route.Fee()
 		c.PPM, c.FeeMsat, c.Hops = &ppm, &fee, len(route.Hops)

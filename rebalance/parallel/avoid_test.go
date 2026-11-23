@@ -4,12 +4,14 @@ import (
 	"circular/graph"
 	"circular/node"
 	"circular/rebalance"
+	"circular/util"
 	"fmt"
 	"github.com/elementsproject/glightning/glightning"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/elementsproject/glightning/jrpc2"
 	"github.com/stretchr/testify/assert"
@@ -271,4 +273,87 @@ func TestAvoidsEnd(t *testing.T) {
 	}
 	assert.NoError(t, avoidsEnd([]string{"99x1x1", "9x1x11/0", "19x1x1/1", self + "x"}, self, in, out))
 	assert.NoError(t, avoidsEnd(nil, self, in, out))
+}
+
+// A run's soft avoid: the call's keys (validated, scids both ways), then the
+// nodes remembered at the score or more, most failing first; never our node.
+func TestSoftAvoidOf(t *testing.T) {
+	p := probePull(t, 1, probeWay{from: "02o1", via: "02a", ppm: 100})
+	g := p.Node.Graph
+	g.SetNodeMemory(24 * time.Hour)
+	hub, other, self := "03"+strings.Repeat("c", 64), "02"+strings.Repeat("d", 64), p.Node.Id
+	for i := 0; i < 12; i++ {
+		g.NodeFailed(hub)
+	}
+	for i := 0; i < 6; i++ {
+		g.NodeFailed(other)
+		g.NodeFailed(self)
+	}
+	for i := 0; i < 2; i++ {
+		g.NodeFailed("02e" + strings.Repeat("e", 63))
+	}
+	soft, scores, err := softAvoidOf(p.Node, []string{strings.ToUpper(other), "5x5x5"}, 5, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{other, "5x5x5/0", "5x5x5/1", hub}, soft.Active(), "given first, then remembered; once each")
+	assert.Equal(t, rebalance.DEFAULT_SOFT_AVOID_STREAK, soft.Limit)
+	assert.InDelta(t, 12, scores[hub], 0.1)
+	_, has := scores["02e"+strings.Repeat("e", 63)]
+	assert.False(t, has, "under the score")
+
+	soft, _, err = softAvoidOf(p.Node, nil, 0, 7)
+	assert.NoError(t, err)
+	assert.Nil(t, soft, "nothing given, no score: none")
+	soft, _, _ = softAvoidOf(p.Node, nil, 3, 7)
+	assert.Equal(t, []string{hub, other}, soft.Active(), "most failing first")
+	assert.Equal(t, 7, soft.Limit)
+	_, _, err = softAvoidOf(p.Node, []string{"CoinGate"}, 0, 0)
+	assert.Contains(t, err.Error(), "softavoid: ")
+}
+
+// A run's splits share its soft avoid, and the result says what it was.
+func TestARunSoftAvoids(t *testing.T) {
+	p := probePull(t, 1, probeWay{from: "02o1", via: "02soft", ppm: 100}, probeWay{from: "02o1", via: "02ok", ppm: 600})
+	p.Node.Graph.Aliases["02soft"] = "Soft"
+	p.softAvoid = rebalance.NewSoftAvoid([]string{"02soft"}, 0)
+	p.softScores = map[string]float64{"02soft": 8}
+	var routes [][]string
+	inner := p.probe
+	p.probe = func(route *graph.Route) error {
+		routes = append(routes, route.ChannelIds())
+		return inner(route)
+	}
+	res := stepRun(t, p.realSplits)
+	assert.NotZero(t, res.CarriedAmount)
+	for _, r := range routes {
+		assert.NotContains(t, r, "1x2x1/"+util.GetDirection("02o1", "02soft"), "never through 02soft")
+	}
+	assert.Contains(t, routes[0], "2x2x1/"+util.GetDirection("02o1", "02ok"), "around 02soft")
+	assert.Equal(t, &rebalance.SoftAvoidReport{Nodes: []rebalance.SoftAvoidNode{{Key: "02soft", Alias: "Soft", Score: 8}}},
+		res.SoftAvoid)
+}
+
+// The quote shows the routes a run would take: around the soft-avoided
+// nodes, or through them when there is no other, flagged.
+func TestTheQuoteSoftAvoidsToo(t *testing.T) {
+	p := probePull(t, 1, probeWay{from: "02o1", via: "02soft", ppm: 100}, probeWay{from: "02o1", via: "02ok", ppm: 600})
+	p.softAvoid = rebalance.NewSoftAvoid([]string{"02soft"}, 0)
+	q := p.quote("pull", true)
+	for _, c := range q.Candidates {
+		if c.Scid == "1x1x1" {
+			assert.Equal(t, []string{"02o1", "02ok", "02in"}, c.Path)
+			assert.False(t, c.ThroughSoftAvoided)
+		}
+	}
+	assert.Equal(t, 0, q.SoftAvoid.Fallbacks)
+	p.softAvoid = rebalance.NewSoftAvoid([]string{"02soft", "02ok"}, 0)
+	q = p.quote("pull", true)
+	for _, c := range q.Candidates {
+		if c.Scid == "1x1x1" {
+			assert.Equal(t, []string{"02o1", "02soft", "02in"}, c.Path)
+			assert.True(t, c.ThroughSoftAvoided)
+		}
+	}
+	assert.Equal(t, 1, q.SoftAvoid.Fallbacks)
+	assert.Equal(t, []rebalance.SoftAvoidNode{{Key: "02soft"}, {Key: "02ok"}}, q.SoftAvoid.Nodes,
+		"no alias for a node the graph does not name (not its id)")
 }
