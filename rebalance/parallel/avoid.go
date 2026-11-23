@@ -109,6 +109,10 @@ func (r *AbstractRebalance) droppedNodes() []rebalance2.DroppedNode {
 	return all
 }
 
+// SOFT_AVOID_REMEMBERED_MAX: at most this many nodes from circular-node-memory
+// (softavoidscore) are soft-avoided, the most failing.
+const SOFT_AVOID_REMEMBERED_MAX = 50
+
 // setSoftAvoid sets what the run's routes leave out at first (softAvoidOf).
 func (r *AbstractRebalance) setSoftAvoid(keys []string, score float64, streak int) error {
 	soft, scores, err := softAvoidOf(r.Node, keys, score, streak)
@@ -159,6 +163,9 @@ func softAvoidOf(n *node.Node, keys []string, score float64, streak int) (*rebal
 			}
 			return remembered[i] < remembered[j]
 		})
+		if len(remembered) > SOFT_AVOID_REMEMBERED_MAX {
+			remembered = remembered[:SOFT_AVOID_REMEMBERED_MAX]
+		}
 		ids = append(ids, remembered...)
 	}
 	return rebalance2.NewSoftAvoid(ids, streak), scores, nil

@@ -26,7 +26,7 @@ type SoftAvoid struct {
 	nodes     []string // node ids, or scid/direction
 	streak    int
 	lifted    string // why they were let back; "" while they are avoided
-	fallbacks int    // searches that found no route without them and used them
+	fallbacks int    // splits that found no route without them and used them
 }
 
 // NewSoftAvoid makes a run's soft avoid of keys (node ids, short channel ids
@@ -54,8 +54,11 @@ func (s *SoftAvoid) Active() []string {
 	return append([]string(nil), s.nodes...)
 }
 
-// paid counts a payment's (or probe's) outcome: a failure adds to the streak,
-// which at the limit lets the nodes back; one that went through ends it.
+// paid counts a payment's (or probe's) outcome: a failure in the middle of
+// its route (past our out-peer, not on our in channel: one that says the
+// routes are hard to come by) adds to the streak, which at the limit lets the
+// nodes back; one that went through ends it. Failures of our own channels or
+// node, and errors before anything was sent, count for neither.
 func (s *SoftAvoid) paid(ok bool) {
 	if s == nil {
 		return
@@ -85,7 +88,7 @@ func (s *SoftAvoid) fellBack() {
 type SoftAvoidReport struct {
 	Nodes     []SoftAvoidNode `json:"nodes"`
 	Lifted    string          `json:"let_back,omitempty"`
-	Fallbacks int             `json:"searches_through_them,omitempty"`
+	Fallbacks int             `json:"splits_through_them,omitempty"`
 }
 
 // SoftAvoidNode is one soft-avoided node or channel, and why.
@@ -96,7 +99,7 @@ type SoftAvoidNode struct {
 }
 
 // Report says what was soft-avoided, whether and why it was let back, and
-// how many searches went through it for lack of another route. alias and
+// how many splits went through it for lack of another route. alias and
 // score name each key (nil: none).
 func (s *SoftAvoid) Report(alias func(string) string, score func(string) float64) *SoftAvoidReport {
 	if s == nil {
@@ -141,9 +144,13 @@ func (r *Rebalance) softExclude(exclude map[string]bool) map[string]bool {
 // searchRoute is getRoute, leaving out the soft-avoided nodes first. With no
 // route (or none within maxppm) without them, it searches again with them:
 // they still cost their risk penalty (circular-node-memory) in that search.
-// r.SoftFellBack says whether the route needed them.
+// r.SoftFellBack says the route search went through them; from then on the
+// split searches with them at once: what it leaves out only grows, so a
+// search without them would fail again.
 func (r *Rebalance) searchRoute(exclude map[string]bool) (*graph.Route, error) {
-	r.SoftFellBack = false
+	if r.SoftFellBack {
+		return r.getRoute(exclude)
+	}
 	soft := r.softExclude(exclude)
 	if soft == nil {
 		return r.getRoute(exclude)

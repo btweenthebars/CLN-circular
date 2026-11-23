@@ -90,8 +90,8 @@ type Rebalance struct {
 	RunFailures *RunFailures
 	// Soft, when set, is the run's soft avoid: nodes its searches leave out
 	// at first (searchRoute); its payments' outcomes count towards letting
-	// them back. SoftFellBack: the last search found a route only through
-	// them.
+	// them back. SoftFellBack: a search found a route only through them, and
+	// this split's searches go through them from then on.
 	Soft         *SoftAvoid
 	SoftFellBack bool
 

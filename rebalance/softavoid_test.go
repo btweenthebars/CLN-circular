@@ -1,7 +1,12 @@
 package rebalance
 
 import (
+	"circular/graph"
+	"circular/util"
+	"errors"
 	"testing"
+
+	"github.com/elementsproject/glightning/glightning"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -161,5 +166,80 @@ func TestTheQuoteSoftAvoids(t *testing.T) {
 	m := r.Measure(r.Amount, 3, 0, nil)
 	if assert.NotNil(t, m.Route) {
 		assert.Contains(t, m.Route.ChannelIds(), id("7x1x1", outP, "02ok"))
+	}
+}
+
+// Only failures in the middle of a route count towards letting them back:
+// not our own channels or node, the in-peer's, nor errors before sending.
+func TestOnlyRouteFailuresCount(t *testing.T) {
+	fail := func(data *glightning.PaymentErrorData) func(*graph.Route) (*graph.PrettyRoute, error) {
+		return func(route *graph.Route) (*graph.PrettyRoute, error) {
+			if data == nil {
+				return nil, errors.New("unable to create invoice")
+			}
+			return nil, &glightning.PaymentError{Data: data}
+		}
+	}
+	dirOf := func(scid, from, to string) int {
+		if util.GetDirection(from, to) == "1" {
+			return 1
+		}
+		return 0
+	}
+	var r *Rebalance
+	for name, pay := range map[string]func(*graph.Route) (*graph.PrettyRoute, error){
+		"local error": fail(nil),
+		"our out channel": fail(&glightning.PaymentErrorData{ErringNode: self, ErringIndex: 0,
+			FailCode: failTemporaryChannelFailure, FailCodeName: "WIRE_TEMPORARY_CHANNEL_FAILURE"}),
+		"the out-peer": fail(&glightning.PaymentErrorData{ErringNode: outP, ErringIndex: 1, ErringChannel: "7x1x1",
+			ErringDirection: dirOf("7x1x1", outP, "02ok"), FailCode: failTemporaryChannelFailure,
+			FailCodeName: "WIRE_TEMPORARY_CHANNEL_FAILURE"}),
+		"the in channel": fail(&glightning.PaymentErrorData{ErringNode: inP, ErringIndex: 4, ErringChannel: "5x1x1",
+			ErringDirection: dirOf("5x1x1", inP, self), FailCode: failTemporaryChannelFailure,
+			FailCodeName: "WIRE_TEMPORARY_CHANNEL_FAILURE"}),
+	} {
+		_, r = softNet()
+		r.Attempts = 3
+		r.Soft = NewSoftAvoid([]string{"02a"}, 1)
+		r.pay = pay
+		r.Run()
+		assert.Equal(t, []string{"02a"}, r.Soft.Active(), name)
+	}
+	// one in the middle does
+	n, r := softNet()
+	n.liquidity[id("8x1x1", "02ok", "02b")] = 0
+	r.Soft = NewSoftAvoid([]string{"02a"}, 1)
+	r.Run()
+	assert.Nil(t, r.Soft.Active())
+}
+
+// Once a split went through them for want of another route, its later
+// searches do too, without first searching in vain without them.
+func TestASplitThatFellBackStaysThrough(t *testing.T) {
+	n, r := softNet()
+	n.liquidity[id("3x1x1", "02a", "02b")] = 0
+	r.Soft = NewSoftAvoid([]string{"02a", "02ok"}, -1)
+	res := r.Run()
+	assert.Equal(t, "success", res.Status)
+	assert.Equal(t, 2, len(n.paid), "via 02a (short), then via 02ok")
+	assert.Equal(t, 1, r.Soft.Report(nil, nil).Fallbacks, "one split, one fallback")
+}
+
+// A payment that goes through ends the streak, for every split of the run.
+func TestASuccessEndsTheStreak(t *testing.T) {
+	for _, probe := range []bool{false, true} {
+		soft := NewSoftAvoid([]string{"02a"}, 2)
+		for i := 0; i < 3; i++ { // each split: one failure in the middle, then through
+			n, r := softNet()
+			n.liquidity[id("8x1x1", "02ok", "02b")] = 0
+			r.Soft = soft
+			if probe {
+				r.ProbeOnly, r.sendProbe = true, n.probe
+			}
+			res := r.Run()
+			assert.Equal(t, "success", res.Status)
+			assert.Equal(t, 2, len(n.paid))
+		}
+		assert.Equal(t, []string{"02a"}, soft.Active(), "never 2 in a row: probe-only %v", probe)
 	}
 }

@@ -306,6 +306,12 @@ func TestSoftAvoidOf(t *testing.T) {
 	soft, _, _ = softAvoidOf(p.Node, nil, 3, 7)
 	assert.Equal(t, []string{hub, other}, soft.Active(), "most failing first")
 	assert.Equal(t, 7, soft.Limit)
+	for i := 0; i < SOFT_AVOID_REMEMBERED_MAX+5; i++ {
+		g.NodeFailed(fmt.Sprintf("03%064x", i+1))
+	}
+	soft, _, _ = softAvoidOf(p.Node, nil, 1, 0)
+	assert.Len(t, soft.Active(), SOFT_AVOID_REMEMBERED_MAX, "the most failing")
+	assert.Equal(t, hub, soft.Active()[0])
 	_, _, err = softAvoidOf(p.Node, []string{"CoinGate"}, 0, 0)
 	assert.Contains(t, err.Error(), "softavoid: ")
 }

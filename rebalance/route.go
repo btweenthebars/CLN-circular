@@ -88,14 +88,18 @@ func (r *Rebalance) tryRoute(route *graph.Route, exclude map[string]bool) (*grap
 		// a probe instead of a payment: it arrived, or what failed is
 		// learned as from a payment
 		ok, err := r.probe(route, exclude)
-		r.Soft.paid(ok)
+		if ok {
+			r.Soft.paid(true) // a failure counts in learnFromFailure, when past our out-peer
+		}
 		if !ok {
 			return nil, err
 		}
 		return graph.NewPrettyRoute(route, ""), nil
 	}
 	prettyRoute, err := pay(route)
-	r.Soft.paid(err == nil)
+	if err == nil {
+		r.Soft.paid(true) // a failure counts in learnFromFailure, when past our out-peer
+	}
 	if err != nil {
 		// Learn from the failure now, so the next attempt avoids what failed.
 		var paymentError *glightning.PaymentError
