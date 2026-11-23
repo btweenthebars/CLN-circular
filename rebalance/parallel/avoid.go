@@ -6,6 +6,7 @@ import (
 	rebalance2 "circular/rebalance"
 	"circular/util"
 	"fmt"
+	"sort"
 )
 
 // setAvoid sets the run's own avoid list (the call's `avoid`: node ids,
@@ -77,6 +78,8 @@ func (r *AbstractRebalance) droppedNodes() []rebalance2.DroppedNode {
 		at[d.NodeId] = len(all)
 		all = append(all, d)
 	}
+	// most failures first, as within a round
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Failures > all[j].Failures })
 	for i := range all {
 		all[i].Alias = r.Node.Graph.GetAlias(all[i].NodeId)
 		if all[i].Alias == all[i].NodeId {

@@ -147,7 +147,16 @@ func (n *Node) saveAvoidList(dir string, entries map[string]AvoidEntry) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	// the rename itself on disk too; not every file system can sync a
+	// directory, and the list is saved either way
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 // changeAvoidList adds key (with note) or removes it, and saves the list;
@@ -174,7 +183,7 @@ func (n *Node) changeAvoidList(dir, key, note string, add bool) error {
 		entries[key] = e
 	} else {
 		if _, ok := entries[key]; !ok {
-			return fmt.Errorf("%s is not on the list", key)
+			return fmt.Errorf("%s is not on the list (remove an entry by its key as the list shows it)", key)
 		}
 		delete(entries, key)
 	}

@@ -65,7 +65,7 @@ func TestTheAvoidList(t *testing.T) {
 	assert.Equal(t, "removed 9x9x9", res.Changed)
 	assert.Equal(t, []string{nodeA}, n.AvoidedKeys())
 	_, err = n.AvoidCall(dir, &AvoidCmd{Remove: "9x9x9"})
-	assert.EqualError(t, err, "9x9x9 is not on the list")
+	assert.EqualError(t, err, "9x9x9 is not on the list (remove an entry by its key as the list shows it)")
 	_, err = n.AvoidCall(dir, &AvoidCmd{Add: "CoinGate"})
 	assert.Error(t, err)
 	_, err = n.AvoidCall(dir, &AvoidCmd{Add: nodeA, Remove: nodeA})

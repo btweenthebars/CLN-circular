@@ -186,6 +186,12 @@ func TestDroppedNodesAcrossRounds(t *testing.T) {
 	}
 	assert.Equal(t, []rebalance.DroppedNode{{NodeId: "02x", Alias: "Hub", Failures: 5}, {NodeId: "02y", Failures: 2}},
 		p.droppedNodes())
+	// most failures first over the whole run, not in the order they were dropped
+	for i := 0; i < 4; i++ {
+		rebalance.FailForTest(p.runFailures, "02y")
+	}
+	assert.Equal(t, []rebalance.DroppedNode{{NodeId: "02y", Failures: 6}, {NodeId: "02x", Alias: "Hub", Failures: 5}},
+		p.droppedNodes())
 }
 
 // A run refuses to start while the saved list cannot be read: what it holds
