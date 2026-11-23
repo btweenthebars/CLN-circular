@@ -78,11 +78,16 @@ type Rebalance struct {
 	// carries, in whole Amounts (sizeRoute); the result's AmountMsat is
 	// that. 0, or no more than Amount: the route is not sized.
 	ProbeWant uint64
-	// Exclude holds channel ids ("scid/direction") its searches leave out,
-	// besides what the graph avoids: a probe-only run's splits get the
-	// channels of the routes it already counted, so that what it finds
-	// next is on top of them.
+	// Exclude holds node ids and channel ids ("scid/direction") its
+	// searches leave out, besides what the graph avoids and the saved avoid
+	// list (circular-avoid): a call's own avoid list, and a probe-only run's
+	// channels of the routes it already counted, so that what it finds next
+	// is on top of them. Our two channels' peers stay usable as the ends.
 	Exclude []string
+	// RunFailures, when set, counts its payments' failures in the middle of
+	// a route for its whole run, and drops a node for the rest of the run
+	// at its limit: each attempt leaves out the nodes dropped so far.
+	RunFailures *RunFailures
 
 	// nodeFailures counts, per node, the payments of this run that it could
 	// not forward for lack of liquidity
@@ -202,10 +207,12 @@ func (r *Rebalance) Run() *Result {
 	r.failedAt = map[string]int{}
 	r.payments, r.midFailures = 0, 0
 
+	r.excludeDropped(exclude)
 	// a route that worked before needs no search
 	known := r.knownRoute(exclude)
 	for i <= r.Attempts {
 		r.Node.Logln(glightning.Debug, "===================== ATTEMPT ", i, " =====================")
+		r.excludeDropped(exclude) // what the run's other splits found failing meanwhile
 
 		// One search returns the route with the fewest hops within maxppm,
 		// and the cheapest of those.
@@ -433,4 +440,14 @@ func (r *Rebalance) runAttempt(exclude map[string]bool, route *graph.Route) (*Re
 	}
 
 	return result, nil, nil
+}
+
+// excludeDropped adds to exclude the nodes its run dropped (RunFailures),
+// but not our two channels' peers, the ends of every route.
+func (r *Rebalance) excludeDropped(exclude map[string]bool) {
+	for _, n := range r.RunFailures.Dropped() {
+		if n != r.OutChannel.Destination && n != r.InChannel.Source {
+			exclude[n] = true
+		}
+	}
 }

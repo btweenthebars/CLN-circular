@@ -61,6 +61,10 @@ type RebalanceQuote struct {
 	// ProbeOnly is accepted, so a probe-only run's call can be quoted: the
 	// quote itself probes nothing for it
 	ProbeOnly bool `json:"probeonly,omitempty"`
+	// Avoid: as circular-pull's; MaxRunNodeFails is accepted (a quote fails
+	// no payment)
+	Avoid           util.Keys `json:"avoid,omitempty"`
+	MaxRunNodeFails util.Int  `json:"maxrunnodefails,omitempty"`
 }
 
 const (
@@ -136,7 +140,8 @@ func (q *RebalanceQuote) pull() *RebalancePull {
 	return &RebalancePull{InScid: q.InScid, OutList: q.OutList, MaxOutPPM: q.MaxOutPPM, Amount: q.Amount,
 		MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
 		DepleteUpToPercent: q.DepleteUpToPercent, DepleteUpToAmount: q.DepleteUpToAmount,
-		Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio}
+		Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio,
+		Avoid: q.Avoid, MaxRunNodeFails: q.MaxRunNodeFails}
 }
 
 // push is the circular-push the quote is of.
@@ -144,7 +149,8 @@ func (q *RebalanceQuote) push() *RebalancePush {
 	return &RebalancePush{OutScid: q.OutScid, InList: q.InList, MinOutPPM: q.MinOutPPM, Amount: q.Amount,
 		MaxPPM: q.MaxPPM, Splits: q.Splits, SplitAmount: q.SplitAmount, MinSplit: q.MinSplit,
 		FillUpToPercent: q.FillUpToPercent, FillUpToAmount: q.FillUpToAmount,
-		Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio}
+		Attempts: q.Attempts, MaxHops: q.MaxHops, MaxNodeFails: q.MaxNodeFails, RiskPPM: q.RiskPPM, FeeRatio: q.FeeRatio,
+		Avoid: q.Avoid, MaxRunNodeFails: q.MaxRunNodeFails}
 }
 
 // quotePair quotes one rebalance from OutScid to InScid, as circular would
@@ -359,6 +365,9 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 			out, in = candidate, r.TargetChannel
 		}
 		peerChannel, err := r.Node.GetPeerChannelFromGraphChannel(candidate)
+		if why := r.avoided(candidate); err == nil && why != "" {
+			err = errors.New(why)
+		}
 		if err == nil {
 			err = r.CanUseChannel(peerChannel)
 		}
@@ -383,6 +392,7 @@ func (r *AbstractRebalance) quote(mode string, pull bool) *Quote {
 		rebalance := rebalance2.NewRebalance(out, in, r.splitAmount, e.limit, r.attempts, r.maxHops)
 		rebalance.Node = r.Node
 		rebalance.RiskPPM = r.riskPPM
+		rebalance.Exclude = r.splitExclude()
 		c := quoteCandidate(r.Node.Graph, scores, candidate, peer, rebalance)
 		result.rebalances = append(result.rebalances, rebalance)
 		if m, ok := r.RebalanceMethods.(interface {

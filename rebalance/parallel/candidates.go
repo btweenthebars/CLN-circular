@@ -103,6 +103,12 @@ func (r *AbstractRebalance) GetNextCandidate() (*graph.Channel, error) {
 			continue
 		}
 
+		if why := r.avoided(candidate); why != "" {
+			r.Node.Logln(glightning.Debug, "channel not usable: ", why)
+			r.leftQueue(candidateId(candidate), why)
+			continue
+		}
+
 		// check if we can use the channel
 		if err := r.CanUseChannel(peerChannel); err != nil {
 			r.Node.Logln(glightning.Debug, "channel not usable:", err)

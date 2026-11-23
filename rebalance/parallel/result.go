@@ -110,6 +110,10 @@ type Result struct {
 	// its target: the target channel took no more, too many payments failed
 	// in a row (maxfailstreak), or no candidate was left (and why).
 	Stopped string `json:"stopped,omitempty"`
+	// DroppedNodes are the nodes the run routed around for the rest of it
+	// (of a round, in slow mode) after maxrunnodefails of its payments failed
+	// at them in the middle of a route, across all its splits
+	DroppedNodes []rebalance.DroppedNode `json:"dropped_nodes,omitempty"`
 	// ProbeOnly: the run paid nothing (probeonly=true), so RebalancedAmount,
 	// FeesPaidMsat and AvgPPM are 0 and Successes empty. What its probes
 	// found is in Carried (as Successes: per candidate, the sats its routes
@@ -280,6 +284,7 @@ func (r *AbstractRebalance) endRun(start time.Time) (jrpc2.Result, error) {
 	}
 	r.Result.AvgPPM = avgPPM(r.Result.FeesPaidMsat, r.movedMsat)
 	r.Result.WorstNodes = r.worstNodes()
+	r.Result.DroppedNodes = r.droppedNodes()
 	r.Result.FeeratioSkipped = len(r.feeratioSkipped)
 	if r.AmountRebalanced < r.amount && r.Result.Stopped == "" {
 		switch {
@@ -1285,6 +1290,9 @@ func (r *AbstractRebalance) newRound(price uint64, probe bool) {
 	r.failStreak, r.streakStopped, r.targetStopped = 0, false, false
 	r.halt.Store(false)
 	r.firstStop, r.Result.Stopped = "", ""
+	// liquidity may have come back since: the nodes dropped start over
+	r.droppedBefore = append(r.droppedBefore, r.runFailures.DroppedNodes()...)
+	r.runFailures = &rebalance.RunFailures{Limit: r.maxRunNodeFails}
 	r.gone = nil
 	r.retried = map[string]bool{}
 	r.targetCap, r.capSuccesses, r.capSetAt, r.probing, r.probeSeq, r.capBackoff = 0, 0, 0, false, 0, 0

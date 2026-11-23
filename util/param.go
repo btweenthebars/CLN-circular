@@ -67,3 +67,27 @@ func parseNumber(data []byte) (float64, error) {
 	}
 	return f, nil
 }
+
+// Keys is a list of strings a parameter takes as a JSON array or as one
+// string, whose items are separated by commas or spaces: lightning-cli -k
+// passes `avoid=02ab...` as a string and `avoid=["02ab...","1x2x3"]` as an
+// array. It is a struct, so that glightning, which reads an array into a
+// slice itself and refuses a string for one, always calls UnmarshalJSON.
+type Keys struct{ V []string }
+
+func (k *Keys) UnmarshalJSON(data []byte) error {
+	var list []string
+	if err := json.Unmarshal(data, &list); err == nil {
+		k.V = list
+		return nil
+	}
+	var one *string
+	if err := json.Unmarshal(data, &one); err != nil {
+		return fmt.Errorf("expected a list of strings, or one string: %s", data)
+	}
+	k.V = nil
+	if one != nil {
+		k.V = strings.FieldsFunc(*one, func(r rune) bool { return r == ',' || r == ' ' })
+	}
+	return nil
+}

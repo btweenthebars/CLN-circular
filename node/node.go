@@ -44,6 +44,7 @@ type Node struct {
 	// options)
 	Defaults       Defaults
 	proven         provenRoutes // routes probe-only runs found (RememberRoute)
+	avoidList      avoidList    // nodes and channels never routed through (circular-avoid)
 	initLock       *sync.Mutex
 	saveStats      bool
 	PeersLock      *sync.RWMutex
@@ -109,6 +110,11 @@ func (n *Node) Init(lightning *glightning.Lightning, plugin *glightning.Plugin, 
 	n.Graph.SetNodeMemory(n.nodeMemory)
 	n.dataDir = config.LightningDir + "/" + CIRCULAR_DIR
 	n.loadLearned()
+	if err := n.LoadAvoidList(n.dataDir); err != nil {
+		// rebalances are refused until it can be read (AvoidListError): routing through what the
+		// user wants avoided would be worse
+		n.Logln(glightning.Unusual, "unable to read the avoid list: ", err)
+	}
 
 	n.Logln(glightning.Debug, "refreshing peers")
 	if err = n.refreshPeers(); err != nil {

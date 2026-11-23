@@ -125,6 +125,11 @@ func (r *Rebalance) learnFromFailure(route *graph.Route, failure *glightning.Pay
 		}
 		g.LearnUpperBound(id, hop.MilliSatoshi)
 		exclude[id] = true
+		if k > 1 && r.RunFailures != nil && r.RunFailures.fail(failure.ErringNode) {
+			// past our out-peer: for the rest of the run, this split's next attempt included
+			r.Node.Logf(glightning.Info, "%s could not forward %d of this run's payments: routing around it for the rest of the run",
+				g.GetAlias(failure.ErringNode), r.RunFailures.limit())
+		}
 		if r.nodeFailures == nil {
 			r.nodeFailures = map[string]int{}
 		}

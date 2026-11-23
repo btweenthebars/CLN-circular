@@ -195,6 +195,13 @@ type AbstractRebalance struct {
 	// carried (msat)
 	probeProven  map[string]bool
 	probeCarried map[string]uint64
+	// callAvoid is the call's own avoid list (keys as node.AvoidKey); the
+	// splits share runFailures, which drops a node for the rest of the
+	// round after maxRunNodeFails failures (droppedBefore: earlier rounds')
+	callAvoid       []string
+	maxRunNodeFails int
+	runFailures     *rebalance2.RunFailures
+	droppedBefore   []rebalance2.DroppedNode
 	RebalanceMethods
 }
 
@@ -284,9 +291,10 @@ func (r *AbstractRebalance) newSplit(out, in, candidate *graph.Channel, amount u
 		rebalance.MinAmount = amount
 	}
 	rebalance.Route = r.routes[candidate.ShortChannelId]
+	rebalance.Exclude = r.splitExclude()
+	rebalance.RunFailures = r.runFailures
 	if r.probeOnly {
 		rebalance.ProbeOnly, rebalance.ProbeWant = true, r.probeWant(candidate)
-		rebalance.Exclude = r.probeExclude()
 	} else if rebalance.Route == nil {
 		// what a probe-only run found between these two channels, once
 		rebalance.Route = r.Node.ProvenRoute(out.ShortChannelId, in.ShortChannelId, true)

@@ -2,6 +2,7 @@ package rebalance
 
 import (
 	"circular/graph"
+	"circular/node"
 	"time"
 )
 
@@ -9,14 +10,20 @@ import (
 // recent rebalances learned to avoid, and our own node.
 func (r *Rebalance) startExclude() map[string]bool {
 	exclude := r.Node.Graph.Avoided(time.Now().Unix())
+	for _, id := range node.ExcludeKeys(r.Node.AvoidedKeys()) {
+		exclude[id] = true // the saved avoid list (circular-avoid)
+	}
+	for _, id := range r.Exclude {
+		exclude[id] = true
+	}
 	exclude[r.Node.Id] = true
 	// Our own peers may be avoided as middle hops of other routes, but here
 	// they are the ends of ours: excluding them would leave no route.
 	delete(exclude, r.OutChannel.Destination)
 	delete(exclude, r.InChannel.Source)
-	for _, id := range r.Exclude {
-		exclude[id] = true
-	}
+	// so are our two channels (a candidate on the avoid list is never fired)
+	delete(exclude, channelId(r.OutChannel))
+	delete(exclude, channelId(r.InChannel))
 	return exclude
 }
 

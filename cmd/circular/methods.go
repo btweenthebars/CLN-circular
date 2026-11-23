@@ -70,6 +70,14 @@ func registerMethods(p *glightning.Plugin) {
 	rpcResults.Category = "utility"
 	p.RegisterMethod(rpcResults)
 
+	rpcAvoid := glightning.NewRpcMethod(&node.AvoidCmd{}, "Nodes and channels rebalances never route through")
+	rpcAvoid.LongDesc = "add=<node id | short channel id | scid/direction> [note=...] puts it on the saved list, " +
+		"remove=<...> takes it off; without either, the list. Rebalances never route through what is on it, and " +
+		"a candidate channel on it, or whose peer is, is skipped (the target channel is not). Kept in " +
+		"circular/avoid.json until removed."
+	rpcAvoid.Category = "utility"
+	p.RegisterMethod(rpcAvoid)
+
 	rpcResume := glightning.NewRpcMethod(&node.Resume{}, "Resume circular")
 	rpcResume.LongDesc = "Resume activity after a stop command. Allows htlcs to be fired"
 	rpcResume.Category = "utility"
